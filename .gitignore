@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# build output
+dist/
+**/dist/
+*.tsbuildinfo
+
+# env — NUNCA versionar credenciais/hosts sensíveis
+.env
+.env.hml
+.env.prod
+.env.local
+**/.env
+**/.env.hml
+**/.env.prod
+**/.env.local
+
+# logs
+*.log
+npm-debug.log*
+
+# editor / os
+.DS_Store
+.vscode/
+.idea/
+
+# config local do Claude Code
+.claude/settings.local.json
+
+# Fonte Degular é COMERCIAL (licença da Opea) — não redistribuir em repo público.
+# Cada dev copia os TTFs localmente (ver README); sem eles a UI cai no fallback Inter/system-ui.
+apps/web/public/fonts/*.ttf
+
+# uploads temporários do backend
+apps/api/uploads/
+apps/api/tmp/

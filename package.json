@@ -1,0 +1,19 @@
+{
+  "name": "cadastro-lote-sinqia",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:api": "npm run dev --workspace @cadastro-lote/api",
+    "dev:web": "npm run dev --workspace @cadastro-lote/web",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
