@@ -40,8 +40,9 @@ Esta é uma ferramenta **local**: "produção" significa apontar para o ambiente
 **produção da Sinqia** e rodar os artefatos de build (não o dev server). Continua
 rodando na sua máquina, atrás da VPN da Opea — não é um deploy em servidor.
 
-> ⚠️ Em produção os cadastros são **reais**. Confirme o host real de produção da
-> Sinqia com a Sinqia/BRQ antes (o `.env.prod` traz um palpite a validar).
+> ⚠️ Em produção os cadastros são **reais**. Garanta que `SINQIA_BASE_URL` no seu
+> `apps/api/.env.prod` é o host de produção correto (mesmo padrão do host de HML,
+> com o prefixo de produção) antes de executar qualquer lote.
 
 ### 1. Selecionar o ambiente de produção
 
@@ -105,7 +106,7 @@ Trocar de ambiente copia o arquivo correto para `.env`:
 ```bash
 cd apps/api
 npm run env:hml     # aponta para HML
-npm run env:prod    # aponta para PROD (confirmar host real com Sinqia/BRQ)
+npm run env:prod    # aponta para PROD
 # Os hosts da Sinqia não são versionados — preencha SINQIA_BASE_URL nos seus
 # .env.hml / .env.prod locais (peça à Sinqia/BRQ ou consulte a wiki interna).
 ```
