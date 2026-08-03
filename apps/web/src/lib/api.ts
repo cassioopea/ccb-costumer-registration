@@ -1,4 +1,10 @@
 // Cliente da API local. Usa caminhos relativos /api (proxy do Vite → backend).
+//
+// AUTENTICAÇÃO: nenhuma função aqui recebe usuário/senha. A sessão viaja no
+// cookie httpOnly que o backend setou no login, enviado automaticamente pelo
+// fetch e pelo EventSource (mesma origem, via proxy do Vite).
+
+import { lerResposta } from "./session";
 
 /** Ações aceitas pela Sinqia: Incluir / Alterar / Excluir / Consultar. */
 export type IdAcao = "IN" | "AL" | "EX" | "CO";
@@ -43,7 +49,8 @@ export interface RowResult {
   nome: string;
   documento: string;
   tipo: "PF" | "PJ" | "?";
-  status: "OK" | "ERRO" | "PULADO";
+  /** NAO_ENVIADO = sessão expirou antes desta linha ser tentada. */
+  status: "OK" | "ERRO" | "PULADO" | "NAO_ENVIADO";
   httpStatus: number | null;
   envelopeStatus?: string;
   globalMessage?: string;
@@ -65,15 +72,8 @@ export async function getEnv(): Promise<EnvInfo> {
   return res.json();
 }
 
-function buildForm(
-  file: File,
-  username: string,
-  password: string,
-  control: BatchControlPayload,
-): FormData {
+function buildForm(file: File, control: BatchControlPayload): FormData {
   const fd = new FormData();
-  fd.append("username", username);
-  fd.append("password", password);
   fd.append("control", JSON.stringify(control));
   fd.append("file", file);
   return fd;
@@ -81,32 +81,24 @@ function buildForm(
 
 export async function validate(
   file: File,
-  username: string,
-  password: string,
   control: BatchControlPayload,
 ): Promise<ValidateResponse> {
   const res = await fetch("/api/validate", {
     method: "POST",
-    body: buildForm(file, username, password, control),
+    body: buildForm(file, control),
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json?.error ?? `Falha na validação (HTTP ${res.status}).`);
-  return json;
+  return lerResposta<ValidateResponse>(res, "Falha na validação");
 }
 
 export async function startImport(
   file: File,
-  username: string,
-  password: string,
   control: BatchControlPayload,
 ): Promise<{ jobId: string; total: number; validas: number; puladas: number; env: string }> {
   const res = await fetch("/api/import", {
     method: "POST",
-    body: buildForm(file, username, password, control),
+    body: buildForm(file, control),
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json?.error ?? `Falha ao iniciar o lote (HTTP ${res.status}).`);
-  return json;
+  return lerResposta(res, "Falha ao iniciar o lote");
 }
 
 export interface StreamHandlers {
@@ -126,8 +118,10 @@ export interface StreamHandlers {
     success: number;
     error: number;
     skipped: number;
+    naoEnviado?: number;
   }) => void;
-  onRelogin?: (d: { index: number }) => void;
+  /** Sessão morreu no meio: o restante ficou como NAO_ENVIADO. */
+  onSessaoExpirada?: (d: { message: string }) => void;
   onFatal?: (d: { message: string }) => void;
   onDone?: (d: { total: number; success: number; error: number }) => void;
   onError?: (e: Event) => void;
@@ -163,18 +157,14 @@ export interface TodosClientesResponse {
  * O filtro por número/nome/documento acontece localmente sobre esse conjunto.
  */
 export async function listarTodosClientes(
-  username: string,
-  password: string,
   tipoPessoa?: string,
 ): Promise<TodosClientesResponse> {
   const res = await fetch("/api/clientes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password, tipoPessoa }),
+    body: JSON.stringify({ tipoPessoa }),
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json?.error ?? `Falha ao listar clientes (HTTP ${res.status}).`);
-  return json;
+  return lerResposta<TodosClientesResponse>(res, "Falha ao listar clientes");
 }
 
 export interface SituacaoAlvo {
@@ -190,7 +180,8 @@ export interface SituacaoRowResult {
   documento: string;
   situacaoAnterior: string;
   situacaoNova: string;
-  status: "OK" | "ERRO";
+  /** NAO_ENVIADO = sessão expirou antes deste cliente ser tentado. */
+  status: "OK" | "ERRO" | "NAO_ENVIADO";
   httpStatus: number | null;
   envelopeStatus?: string;
   globalMessage?: string;
@@ -199,19 +190,15 @@ export interface SituacaoRowResult {
 }
 
 export async function startAlterarSituacao(
-  username: string,
-  password: string,
   cdSituacao: number,
   alvos: SituacaoAlvo[],
 ): Promise<{ jobId: string; total: number; env: string }> {
   const res = await fetch("/api/situacao", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password, cdSituacao, alvos }),
+    body: JSON.stringify({ cdSituacao, alvos }),
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json?.error ?? `Falha ao iniciar a alteração (HTTP ${res.status}).`);
-  return json;
+  return lerResposta(res, "Falha ao iniciar a alteração");
 }
 
 export interface SituacaoStreamHandlers {
@@ -224,8 +211,16 @@ export interface SituacaoStreamHandlers {
     done: boolean;
   }) => void;
   onRow?: (row: SituacaoRowResult) => void;
-  onProgress?: (p: { processed: number; total: number; success: number; error: number }) => void;
+  onProgress?: (p: {
+    processed: number;
+    total: number;
+    success: number;
+    error: number;
+    naoEnviado?: number;
+  }) => void;
   onFatal?: (d: { message: string }) => void;
+  /** Sessão morreu no meio: o restante ficou como NAO_ENVIADO. */
+  onSessaoExpirada?: (d: { message: string }) => void;
   onDone?: (d: { total: number; success: number; error: number }) => void;
   onError?: (e: Event) => void;
 }
@@ -249,6 +244,7 @@ export function streamSituacao(jobId: string, handlers: SituacaoStreamHandlers):
   on("row", handlers.onRow);
   on("progress", handlers.onProgress);
   on("fatal", handlers.onFatal);
+  on("sessao-expirada", handlers.onSessaoExpirada);
   on("done", (d) => {
     handlers.onDone?.(d);
     es.close();
@@ -277,7 +273,7 @@ export function streamImport(jobId: string, handlers: StreamHandlers): () => voi
   on("snapshot", handlers.onSnapshot);
   on("row", handlers.onRow);
   on("progress", handlers.onProgress);
-  on("relogin", handlers.onRelogin);
+  on("sessao-expirada", handlers.onSessaoExpirada);
   on("fatal", handlers.onFatal);
   on("done", (d) => {
     handlers.onDone?.(d);

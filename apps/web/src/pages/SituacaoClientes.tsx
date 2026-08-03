@@ -9,7 +9,6 @@ import {
   Loader2,
   RefreshCw,
   Search,
-  ShieldCheck,
   X,
   XCircle,
 } from "lucide-react";
@@ -54,6 +53,13 @@ import {
   type TodosClientesResponse,
 } from "@/lib/api";
 import { exportSituacaoCsv } from "@/lib/export-csv";
+import {
+  MARGEM_CURTA_MS,
+  SessaoExpiradaError,
+  formatarRestante,
+  useRestante,
+  useSession,
+} from "@/lib/session";
 
 type Phase = "idle" | "carregando" | "carregado" | "alterando" | "done";
 
@@ -61,9 +67,6 @@ type Phase = "idle" | "carregando" | "carregado" | "alterando" | "done";
 const MAX_LINHAS_VISIVEIS = 200;
 
 export function SituacaoClientes() {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-
   const [tipoPessoa, setTipoPessoa] = useState("");
   const [filtro, setFiltro] = useState("");
 
@@ -81,30 +84,40 @@ export function SituacaoClientes() {
   const [selecionados, setSelecionados] = useState<Map<number, ClienteResumo>>(new Map());
   const [cdSituacao, setCdSituacao] = useState<number>(SITUACOES[0].codigo);
 
-  const [progress, setProgress] = useState({ processed: 0, total: 0, success: 0, error: 0 });
+  const [progress, setProgress] = useState({
+    processed: 0,
+    total: 0,
+    success: 0,
+    error: 0,
+    naoEnviado: 0,
+  });
   const [results, setResults] = useState<SituacaoRowResult[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [verSelecionados, setVerSelecionados] = useState(false);
 
-  const temCredenciais = !!username && !!password;
   const busy = phase === "carregando" || phase === "alterando";
   const totalSelecionados = selecionados.size;
-  const podeAlterar = totalSelecionados > 0 && temCredenciais && !busy;
+  const podeAlterar = totalSelecionados > 0 && !busy;
+
+  /** Sem renovação automática, uma alteração em lote pode ser interrompida. */
+  const { session } = useSession();
+  const restanteSessao = useRestante(session);
+  const sessaoCurta = restanteSessao > 0 && restanteSessao < MARGEM_CURTA_MS;
 
   const carregar = useCallback(async () => {
-    if (!temCredenciais) return;
     setError(null);
     setPhase("carregando");
     try {
-      const res = await listarTodosClientes(username, password, tipoPessoa || undefined);
+      const res = await listarTodosClientes(tipoPessoa || undefined);
       setBase(res);
       setPhase("carregado");
     } catch (e) {
-      setError((e as Error).message);
-      setPhase("idle");
+      // Sessão expirada já abre o modal de reautenticação — não vira erro na tela.
+      if (!(e instanceof SessaoExpiradaError)) setError((e as Error).message);
+      setPhase(base ? "carregado" : "idle");
     }
-  }, [username, password, tipoPessoa, temCredenciais]);
+  }, [tipoPessoa, base]);
 
   /* ---------------------------------------------------------------- */
   /* Filtro local: número do cliente, nome ou CPF/CNPJ                 */
@@ -175,7 +188,7 @@ export function SituacaoClientes() {
     setConfirmOpen(false);
     setError(null);
     setResults([]);
-    setProgress({ processed: 0, total: totalSelecionados, success: 0, error: 0 });
+    setProgress({ processed: 0, total: totalSelecionados, success: 0, error: 0, naoEnviado: 0 });
     setPhase("alterando");
 
     const alvos = [...selecionados.values()].map((c) => ({
@@ -186,11 +199,16 @@ export function SituacaoClientes() {
     }));
 
     try {
-      const { jobId, total } = await startAlterarSituacao(username, password, cdSituacao, alvos);
+      const { jobId, total } = await startAlterarSituacao(cdSituacao, alvos);
       setProgress((p) => ({ ...p, total }));
       streamSituacao(jobId, {
         onRow: (row) => setResults((prev) => [...prev, row]),
-        onProgress: (p) => setProgress(p),
+        onProgress: (p) => setProgress({ ...p, naoEnviado: p.naoEnviado ?? 0 }),
+        onSessaoExpirada: (d) => {
+          setError(
+            `${d.message} Os concluídos estão no relatório; refaça apenas os marcados como NÃO ENVIADO.`,
+          );
+        },
         onFatal: (d) => {
           setError(`Erro na alteração: ${d.message}`);
           setPhase("done");
@@ -199,7 +217,7 @@ export function SituacaoClientes() {
         onError: () => setError("Conexão de progresso (SSE) caiu. Verifique o backend."),
       });
     } catch (e) {
-      setError((e as Error).message);
+      if (!(e instanceof SessaoExpiradaError)) setError((e as Error).message);
       setPhase("carregado");
     }
   }
@@ -232,6 +250,18 @@ export function SituacaoClientes() {
         </div>
       )}
 
+      {sessaoCurta && (
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)] bg-[var(--warning)]/15 px-4 py-3 text-sm">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            A sessão expira em <strong>{formatarRestante(restanteSessao)}</strong> e não há
+            renovação automática. Uma alteração em lote iniciada agora pode ser interrompida — os
+            clientes restantes ficariam como <strong>NÃO ENVIADO</strong>. Saia e entre novamente
+            antes de executar.
+          </span>
+        </div>
+      )}
+
       {error && (
         <div className="flex items-start gap-2 rounded-lg border border-[var(--destructive)] bg-[var(--destructive)]/10 px-4 py-3 text-sm text-[var(--destructive)]">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -239,44 +269,8 @@ export function SituacaoClientes() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Credenciais */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-[var(--primary)]" />
-              Credenciais Sinqia
-            </CardTitle>
-            <CardDescription>
-              Usadas apenas para o login. Trafegam somente nesta sessão — não são gravadas em
-              disco, log ou código.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="sit-username">Usuário</Label>
-              <Input
-                id="sit-username"
-                autoComplete="off"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="usuário da Sinqia"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="sit-password">Senha</Label>
-              <Input
-                id="sit-password"
-                type="password"
-                autoComplete="off"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </div>
-          </CardContent>
-        </Card>
-
+      {/* Sem card de credenciais: a autenticação virou a sessão do login. */}
+      <div className="grid gap-6">
         {/* Carga */}
         <Card>
           <CardHeader>
@@ -309,7 +303,7 @@ export function SituacaoClientes() {
             <Button
               variant="outline"
               onClick={() => void carregar()}
-              disabled={!temCredenciais || busy}
+              disabled={busy}
               className="w-full"
             >
               {phase === "carregando" ? (
@@ -519,8 +513,16 @@ export function SituacaoClientes() {
                       <TableCell className="text-muted-foreground">{r.situacaoAnterior}</TableCell>
                       <TableCell>{r.situacaoNova}</TableCell>
                       <TableCell>
-                        <Badge variant={r.status === "OK" ? "success" : "destructive"}>
-                          {r.status}
+                        <Badge
+                          variant={
+                            r.status === "OK"
+                              ? "success"
+                              : r.status === "NAO_ENVIADO"
+                                ? "secondary"
+                                : "destructive"
+                          }
+                        >
+                          {r.status === "NAO_ENVIADO" ? "NÃO ENVIADO" : r.status}
                         </Badge>
                       </TableCell>
                       <TableCell className="tabular-nums">{r.httpStatus ?? "—"}</TableCell>

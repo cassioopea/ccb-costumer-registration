@@ -1,6 +1,7 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Clock, LogOut, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpeaLogo } from "./OpeaLogo";
+import { formatarRestante, useRestante, useSession } from "@/lib/session";
 
 const ENV = (import.meta.env.VITE_SINQIA_ENV ?? "hml").toLowerCase();
 const IS_PROD = ENV === "prod";
@@ -23,6 +24,48 @@ function EnvironmentChip() {
       </span>
       <ChevronDown className="size-3 opacity-70" />
     </span>
+  );
+}
+
+/**
+ * Estado da sessão no header: usuário, validade e sair.
+ *
+ * A validade é o menor prazo entre inatividade (30 min), teto absoluto (8 h) e
+ * expiração do token. Quando o token é opaco a Sinqia não informa a validade
+ * dele — o tooltip diz isso em vez de fingir precisão.
+ */
+function SessionChip() {
+  const { session, sair } = useSession();
+  const restante = useRestante(session);
+  if (!session) return null;
+
+  const tokenDesc =
+    session.tokenFormato === "jwt" && session.tokenTtlSegundos !== null
+      ? `Token JWT da Sinqia: validade de ${Math.round(session.tokenTtlSegundos / 60)} min.`
+      : "A Sinqia não informa a validade deste token (formato opaco).";
+
+  return (
+    <div className="flex items-center gap-3">
+      <span className="hidden items-center gap-1.5 text-caption text-sidebar-foreground/75 sm:flex">
+        <UserRound className="size-3.5" />
+        {session.username}
+      </span>
+      <span
+        className="hidden items-center gap-1.5 text-caption text-sidebar-foreground/60 md:flex"
+        title={`Sessão expira em ${formatarRestante(restante)}. ${tokenDesc}`}
+      >
+        <Clock className="size-3.5" />
+        {formatarRestante(restante)}
+      </span>
+      <button
+        type="button"
+        onClick={() => void sair()}
+        className="flex items-center gap-1.5 rounded-md border border-sidebar-foreground/20 px-2.5 py-1 text-caption text-sidebar-foreground/85 transition-colors hover:bg-sidebar-foreground/10"
+      >
+        <LogOut className="size-3.5" />
+        Sair
+      </button>
+    </div>
   );
 }
 
@@ -49,7 +92,7 @@ export function Topbar() {
       </div>
 
       {/* Faixa principal */}
-      <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-8 px-8">
+      <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-8 px-8">
         <div className="flex items-center gap-3 text-sidebar-foreground">
           <OpeaLogo className="h-6 w-auto text-sidebar-foreground" />
           <span aria-hidden className="h-5 w-px bg-sidebar-foreground/25" />
@@ -58,6 +101,7 @@ export function Topbar() {
           </span>
         </div>
 
+        <SessionChip />
       </div>
     </header>
   );

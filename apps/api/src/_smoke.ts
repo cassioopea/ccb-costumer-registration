@@ -1,6 +1,17 @@
-// Smoke test offline (sem VPN): valida parsing/validação/template.
+// Smoke test offline (sem VPN): valida parsing/validação/template/sessão.
 import { buildTemplateCsv } from "./template.js";
 import { parseCsv, parseJson, validateRows, buildRequest } from "./parse-input.js";
+import {
+  ABSOLUTE_MS,
+  contarSessoes,
+  createSession,
+  describeToken,
+  destroySession,
+  getSession,
+  IDLE_MS,
+  limparSessoes,
+  sessionPublica,
+} from "./session.js";
 import {
   alterarSituacaoRequestSchema,
   analyzeEnvelope,
@@ -256,6 +267,114 @@ ok(!matchCliente(alvo, "fulano"), "filtro não casa nome alheio");
 const semNumero = normalizeClienteItem({ dsNome: "Sem Numero", nrCpfCnpj: "15032465070" });
 ok(!matchCliente(semNumero, "4154"), "item sem nrCliente não casa por número");
 ok(matchCliente(semNumero, "sem numero"), "item sem nrCliente ainda casa por nome");
+
+/* ------------------------------------------------------------------ */
+/* 10. Sessão e formato do token                                       */
+/* ------------------------------------------------------------------ */
+
+/** Monta um JWT falso (só as claims importam — não validamos assinatura). */
+function fakeJwt(payload: Record<string, unknown>): string {
+  const b64 = (o: unknown) =>
+    Buffer.from(JSON.stringify(o)).toString("base64url");
+  return `${b64({ alg: "HS256", typ: "JWT" })}.${b64(payload)}.assinatura-falsa`;
+}
+
+// 10a. describeToken: JWT com exp/iat → TTL exato.
+const IAT = 1_800_000_000;
+const jwt30min = fakeJwt({ iat: IAT, exp: IAT + 1800, sub: "usuario" });
+const info30 = describeToken(jwt30min);
+ok(info30.formato === "jwt", "describeToken reconhece JWT");
+ok(info30.ttlSegundos === 1800, "describeToken extrai TTL de 1800s");
+ok(info30.exp === (IAT + 1800) * 1000, "describeToken converte exp para ms");
+ok(info30.iat === IAT * 1000, "describeToken converte iat para ms");
+
+// 10b. Casos degenerados — nenhum pode lançar exceção.
+ok(describeToken(fakeJwt({ sub: "x" })).formato === "jwt", "JWT sem exp ainda é JWT");
+ok(describeToken(fakeJwt({ sub: "x" })).ttlSegundos === null, "JWT sem exp → TTL null");
+ok(describeToken("token-opaco-qualquer").formato === "opaco", "token opaco detectado");
+ok(describeToken("a.b.c").formato === "opaco", "3 segmentos não-base64 → opaco");
+ok(describeToken("").formato === "opaco", "token vazio → opaco");
+ok(describeToken("aa.bb").formato === "opaco", "2 segmentos → opaco");
+ok(
+  describeToken(fakeJwt({ exp: "não-numérico" })).ttlSegundos === null,
+  "exp não numérico → TTL null",
+);
+// Aceita o prefixo "Bearer " por robustez.
+ok(describeToken(`Bearer ${jwt30min}`).ttlSegundos === 1800, "prefixo Bearer é tolerado");
+
+// 10c. Ciclo de vida da sessão (tempo injetado — sem esperar 30 min de verdade).
+limparSessoes();
+const T0 = 1_000_000_000_000;
+const s1 = createSession("cassio", "token-opaco", T0);
+ok(contarSessoes() === 1, "createSession registra a sessão");
+ok(s1.id.length === 64, "id da sessão tem 32 bytes em hex (credencial, não UUID)");
+ok(s1.tokenExp === null, "token opaco → tokenExp null");
+
+// Acesso dentro da janela renova a inatividade.
+const r1 = getSession(s1.id, T0 + 20 * 60_000);
+ok(r1.ok, "sessão válida 20 min depois");
+const r2 = getSession(s1.id, T0 + 45 * 60_000);
+ok(r2.ok, "acesso anterior renovou a janela (45 min do início, 25 do último acesso)");
+
+// Inatividade estoura.
+ok(
+  getSession(s1.id, T0 + 45 * 60_000 + IDLE_MS + 1).ok === false,
+  "sessão expira após 30 min sem acesso",
+);
+ok(contarSessoes() === 0, "sessão expirada é removida do store");
+
+// Motivo correto por inatividade.
+limparSessoes();
+const s2 = createSession("cassio", "opaco", T0);
+const exp2 = getSession(s2.id, T0 + IDLE_MS + 1);
+ok(!exp2.ok && exp2.motivo === "inatividade", 'motivo "inatividade"');
+
+// Teto absoluto: mesmo com acesso contínuo, 8 h encerram.
+// 30 acessos de 20 em 20 min = 10 h, o suficiente para cruzar o teto de 8 h.
+limparSessoes();
+const s3 = createSession("cassio", "opaco", T0);
+let motivoLimite: string | null = null;
+let horasAteEncerrar = 0;
+for (let i = 1; i <= 30; i++) {
+  const t = T0 + i * 20 * 60_000; // nunca cai por inatividade (janela de 30 min)
+  const r = getSession(s3.id, t);
+  if (!r.ok) {
+    motivoLimite = r.motivo;
+    horasAteEncerrar = (t - T0) / 3_600_000;
+    break;
+  }
+}
+ok(motivoLimite === "limite", `motivo "limite" ao cruzar as 8 h (em ${horasAteEncerrar} h)`);
+ok(horasAteEncerrar > 8, "encerrou depois das 8 h, não antes");
+ok(contarSessoes() === 0, "sessão encerrada pelo teto absoluto é removida");
+
+// tokenExp manda quando é menor que os limites locais.
+limparSessoes();
+const jwtCurto = fakeJwt({ iat: Math.floor(T0 / 1000), exp: Math.floor(T0 / 1000) + 60 });
+const s4 = createSession("cassio", jwtCurto, T0);
+ok(s4.tokenExp === (Math.floor(T0 / 1000) + 60) * 1000, "tokenExp lido do JWT");
+ok(getSession(s4.id, T0 + 30_000).ok, "sessão viva antes do exp do token");
+const exp4 = getSession(s4.id, T0 + 61_000);
+ok(!exp4.ok && exp4.motivo === "token", 'motivo "token" quando o JWT expira antes');
+
+// destroySession e ids desconhecidos.
+limparSessoes();
+const s5 = createSession("cassio", "opaco", T0);
+destroySession(s5.id);
+ok(getSession(s5.id, T0).ok === false, "destroySession invalida imediatamente");
+ok(getSession(undefined, T0).ok === false, "cookie ausente → inválido");
+const semId = getSession("id-que-nao-existe", T0);
+ok(!semId.ok && semId.motivo === "inexistente", 'id desconhecido → "inexistente"');
+
+// 10d. sessionPublica não vaza o token e expõe o menor prazo.
+limparSessoes();
+const s6 = createSession("cassio", jwt30min, T0);
+const pub = sessionPublica(s6, T0) as Record<string, unknown>;
+ok(!("token" in pub), "sessionPublica NÃO expõe o token");
+ok(pub.username === "cassio", "sessionPublica traz o usuário");
+ok(pub.tokenFormato === "jwt", "sessionPublica informa o formato do token");
+// jwt30min tem exp em 2027 (IAT fixo), então quem manda aqui é a inatividade.
+ok(pub.expiraEm === T0 + IDLE_MS, "expiraEm usa o menor prazo (inatividade)");
 
 console.log(fail === 0 ? "\n🎉 Todos os testes passaram." : `\n💥 ${fail} falha(s).`);
 process.exit(fail === 0 ? 0 : 1);

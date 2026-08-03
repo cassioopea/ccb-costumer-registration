@@ -1,8 +1,11 @@
 import { useState } from "react";
-import { ListChecks, Upload } from "lucide-react";
+import { ListChecks, Loader2, Upload } from "lucide-react";
 import { Topbar } from "@/components/Topbar";
+import { SessionExpiredDialog } from "@/components/SessionExpiredDialog";
 import { CadastroLote } from "@/pages/CadastroLote";
 import { SituacaoClientes } from "@/pages/SituacaoClientes";
+import { Login } from "@/pages/Login";
+import { SessionProvider, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 type Tela = "cadastro" | "situacao";
@@ -13,7 +16,27 @@ const TELAS = [
 ];
 
 export default function App() {
+  return (
+    <SessionProvider>
+      <Shell />
+    </SessionProvider>
+  );
+}
+
+function Shell() {
+  const { session, carregando } = useSession();
   const [tela, setTela] = useState<Tela>("cadastro");
+
+  // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
+  if (carregando) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="h-6 w-6 animate-spin text-[var(--primary)]" />
+      </div>
+    );
+  }
+
+  if (!session) return <Login />;
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -43,8 +66,8 @@ export default function App() {
       </nav>
 
       <main className="mx-auto w-full max-w-[1440px] flex-1 px-8 py-10">
-        {/* Mantém as duas montadas: trocar de aba não perde credenciais,
-            arquivo selecionado nem resultado de lote em andamento. */}
+        {/* Mantém as duas montadas: trocar de aba não perde arquivo
+            selecionado, base carregada nem resultado de lote em andamento. */}
         <div className={tela === "cadastro" ? undefined : "hidden"}>
           <CadastroLote />
         </div>
@@ -59,6 +82,9 @@ export default function App() {
           <span className="text-muted-foreground/80">Opea SCD · Cadastro em Lote · Sinqia</span>
         </div>
       </footer>
+
+      {/* Reautenticação: aparece sobre a tela sem destruir o estado dela. */}
+      <SessionExpiredDialog />
     </div>
   );
 }

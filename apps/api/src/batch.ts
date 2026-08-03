@@ -2,25 +2,37 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { BatchControl, Cliente } from "@cadastro-lote/shared";
 import { buildRequest } from "./parse-input.js";
-import { cadastrarCliente, login } from "./sinqia-client.js";
+import { cadastrarCliente } from "./sinqia-client.js";
+import { destroySession } from "./session.js";
 import { env } from "./env.js";
 
 /**
  * Orquestração do lote:
- *  - login uma vez, reusa o token;
+ *  - usa o token da sessão (o login acontece uma vez, na tela de login);
  *  - processa sequencialmente (1 por vez), continua em caso de erro;
- *  - HTTP 401 no meio → relogin automático + reenvio da linha 1x;
  *  - retry leve (RETRY_COUNT) para erros transitórios (timeout/5xx);
  *  - OK/ERRO decidido pela análise do envelope, não só pelo HTTP.
+ *
+ * HTTP 401 no meio do lote ABORTA o job. Não há relogin automático: o backend
+ * não guarda a senha, e a Sinqia não tem refresh token. As linhas ainda não
+ * tentadas ficam como NAO_ENVIADO — marcá-las ERRO seria mentira, elas não
+ * foram recusadas por ninguém.
  */
+
+/** Mensagem única para as linhas que o aborto de sessão deixou para trás. */
+const DETALHE_SESSAO_EXPIRADA =
+  "Sessão expirou antes desta linha — entre novamente e reexecute as pendentes.";
 
 export interface RowResult {
   index: number;
   nome: string;
   documento: string;
   tipo: "PF" | "PJ" | "?";
-  /** OK = cadastrado; ERRO = recusado pela Sinqia; PULADO = reprovado na validação, não enviado. */
-  status: "OK" | "ERRO" | "PULADO";
+  /**
+   * OK = cadastrado; ERRO = recusado pela Sinqia; PULADO = reprovado na
+   * validação, não enviado; NAO_ENVIADO = sessão expirou antes de tentar.
+   */
+  status: "OK" | "ERRO" | "PULADO" | "NAO_ENVIADO";
   httpStatus: number | null;
   envelopeStatus?: string;
   globalMessage?: string;
@@ -30,11 +42,15 @@ export interface RowResult {
 
 export interface JobState {
   id: string;
+  /** Sessão dona do job — o SSE recusa quem não é o dono. */
+  sessionId: string;
   total: number;
   processed: number;
   success: number;
   error: number;
   skipped: number;
+  /** Linhas não tentadas por expiração de sessão. */
+  naoEnviado: number;
   done: boolean;
   results: RowResult[];
   startedAt: number;
@@ -53,8 +69,9 @@ export interface JobItem {
 interface JobInput {
   items: JobItem[];
   control: BatchControl;
-  username: string;
-  password: string;
+  /** Token da sessão. O job não conhece usuário nem senha. */
+  token: string;
+  sessionId: string;
 }
 
 const jobs = new Map<string, JobState>();
@@ -98,11 +115,13 @@ export function startJob(input: JobInput): string {
   const id = randomUUID();
   const state: JobState = {
     id,
+    sessionId: input.sessionId,
     total: input.items.length,
     processed: 0,
     success: 0,
     error: 0,
     skipped: 0,
+    naoEnviado: 0,
     done: false,
     results: [],
     startedAt: Date.now(),
@@ -111,16 +130,23 @@ export function startJob(input: JobInput): string {
   emitters.set(id, new EventEmitter());
   pruneOldJobs();
 
-  // Não await — roda em background. As credenciais vivem apenas no closure
-  // de `input` durante o processamento (nunca em store nem em log).
+  // Não await — roda em background. O token vive apenas no closure de `input`.
   void processJob(id, input);
 
   return id;
 }
 
+/** Sinaliza 401 da Sinqia: a sessão morreu e o lote não pode continuar. */
+class SessaoExpiradaError extends Error {
+  constructor() {
+    super(DETALHE_SESSAO_EXPIRADA);
+    this.name = "SessaoExpiradaError";
+  }
+}
+
 async function processJob(id: string, input: JobInput) {
   const state = jobs.get(id)!;
-  const { items, control } = input;
+  const { items, control, token } = input;
 
   const emitProgress = () =>
     emit(id, "progress", {
@@ -129,25 +155,11 @@ async function processJob(id: string, input: JobInput) {
       success: state.success,
       error: state.error,
       skipped: state.skipped,
+      naoEnviado: state.naoEnviado,
     });
 
-  const validCount = items.filter((it) => it.errors.length === 0).length;
-
-  // Só faz login se houver ao menos uma linha válida para enviar.
-  let token = "";
-  if (validCount > 0) {
-    try {
-      token = await login(input.username, input.password);
-    } catch (e) {
-      // Falha de login aborta o lote inteiro.
-      state.done = true;
-      emit(id, "fatal", { message: (e as Error).message });
-      emit(id, "done", snapshot(state));
-      return;
-    }
-  }
-
-  for (const item of items) {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
     const meta = {
       index: item.index,
       nome: item.nome,
@@ -170,8 +182,34 @@ async function processJob(id: string, input: JobInput) {
     } else {
       try {
         const body = buildRequest(item.cliente, control);
-        result = await sendWithPolicies(id, () => token, (t) => (token = t), input, body, meta);
+        result = await sendWithPolicies(token, body, meta);
       } catch (e) {
+        if (e instanceof SessaoExpiradaError) {
+          // Sessão morta: invalida no store e encerra marcando o restante como
+          // não tentado (desta linha, inclusive, até o fim).
+          destroySession(input.sessionId);
+          for (const pendente of items.slice(i)) {
+            const naoEnviada: RowResult = {
+              index: pendente.index,
+              nome: pendente.nome,
+              documento: pendente.documento,
+              tipo: pendente.tipo,
+              status: "NAO_ENVIADO",
+              httpStatus: null,
+              messages: "",
+              detail: DETALHE_SESSAO_EXPIRADA,
+            };
+            state.results.push(naoEnviada);
+            state.naoEnviado++;
+            state.processed++;
+            emit(id, "row", naoEnviada);
+          }
+          emitProgress();
+          state.done = true;
+          emit(id, "sessao-expirada", { message: DETALHE_SESSAO_EXPIRADA });
+          emit(id, "done", snapshot(state));
+          return;
+        }
         result = {
           ...meta,
           status: "ERRO",
@@ -197,41 +235,24 @@ async function processJob(id: string, input: JobInput) {
 type Meta = Pick<RowResult, "index" | "nome" | "documento" | "tipo">;
 
 /**
- * Envia uma linha aplicando: retry leve (5xx/timeout) + relogin em 401.
+ * Envia uma linha aplicando retry leve (5xx/timeout).
+ *
+ * 401 lança `SessaoExpiradaError` — sem a senha não há como relogar, então quem
+ * decide o que fazer é o laço do job (abortar e marcar o resto NAO_ENVIADO).
  */
 async function sendWithPolicies(
-  id: string,
-  getToken: () => string,
-  setToken: (t: string) => void,
-  input: JobInput,
+  token: string,
   body: ReturnType<typeof buildRequest>,
   meta: Meta,
 ): Promise<RowResult> {
   const maxAttempts = env.RETRY_COUNT + 1;
-  let reloggedOnce = false;
   let lastError: string | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const { httpStatus, analysis } = await cadastrarCliente(getToken(), body);
+      const { httpStatus, analysis } = await cadastrarCliente(token, body);
 
-      // 401 → token pode ter expirado no meio do lote: relogar 1x e reenviar.
-      if (httpStatus === 401 && !reloggedOnce) {
-        reloggedOnce = true;
-        try {
-          setToken(await login(input.username, input.password));
-          emit(id, "relogin", { index: meta.index });
-          continue; // reenvia com token novo (não conta como retry de 5xx)
-        } catch (e) {
-          return {
-            ...meta,
-            status: "ERRO",
-            httpStatus,
-            messages: "",
-            detail: `Falha ao relogar: ${(e as Error).message}`,
-          };
-        }
-      }
+      if (httpStatus === 401) throw new SessaoExpiradaError();
 
       // 5xx → retry leve.
       if (httpStatus >= 500 && attempt < maxAttempts) {
@@ -250,6 +271,8 @@ async function sendWithPolicies(
         detail: analysis.ok ? undefined : analysis.reason,
       };
     } catch (e) {
+      // Sessão expirada não é erro transitório — não faz sentido repetir.
+      if (e instanceof SessaoExpiradaError) throw e;
       // Erro de rede/timeout → retry leve.
       lastError = (e as Error).message;
       if (attempt < maxAttempts) {
@@ -276,6 +299,7 @@ function snapshot(state: JobState) {
     success: state.success,
     error: state.error,
     skipped: state.skipped,
+    naoEnviado: state.naoEnviado,
     done: state.done,
   };
 }

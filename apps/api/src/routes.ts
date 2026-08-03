@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   batchControlSchema,
@@ -15,23 +15,39 @@ import {
   getSituacaoEmitter,
   getSituacaoJob,
   startSituacaoJob,
-  type SituacaoJobState,
 } from "./situacao-job.js";
+import {
+  createSession,
+  describeToken,
+  destroySession,
+  getSession,
+  motivoTexto,
+  sessionPublica,
+  type Session,
+} from "./session.js";
+
+/** Nome do cookie de sessão. httpOnly — o JS da página nunca lê. */
+const COOKIE_SID = "sid";
+
+/**
+ * Código que o front usa para abrir o modal de reautenticação em vez de
+ * derrubar a tela (preserva arquivo selecionado, base carregada e seleção).
+ */
+const CODE_SESSAO_EXPIRADA = "SESSAO_EXPIRADA";
 
 interface UploadPayload {
   filename: string;
   content: string;
-  username: string;
-  password: string;
   control: BatchControl;
 }
 
-/** Lê o multipart: 1 arquivo + campos username/password/control(JSON). */
+/**
+ * Lê o multipart: 1 arquivo + campo control(JSON).
+ * Credenciais não vêm mais aqui — a autenticação é a sessão (cookie).
+ */
 async function readUpload(req: any): Promise<UploadPayload> {
   let filename = "";
   let content = "";
-  let username = "";
-  let password = "";
   let controlRaw = "{}";
 
   const parts = req.parts();
@@ -42,28 +58,54 @@ async function readUpload(req: any): Promise<UploadPayload> {
       content = buf.toString("utf8");
     } else {
       const value = part.value as string;
-      if (part.fieldname === "username") username = value;
-      else if (part.fieldname === "password") password = value;
-      else if (part.fieldname === "control") controlRaw = value || "{}";
+      if (part.fieldname === "control") controlRaw = value || "{}";
     }
   }
 
   if (!filename || !content) throw new Error("Arquivo não enviado.");
-  if (!username || !password) throw new Error("Usuário e senha são obrigatórios.");
 
   const control = batchControlSchema.parse(JSON.parse(controlRaw));
-  return { filename, content, username, password, control };
+  return { filename, content, control };
+}
+
+/**
+ * Resolve a sessão do cookie. Em falha, responde 401 e devolve null — quem
+ * chamou deve retornar imediatamente.
+ */
+function exigirSessao(req: FastifyRequest, reply: FastifyReply): Session | null {
+  const sid = (req.cookies as Record<string, string | undefined>)?.[COOKIE_SID];
+  const res = getSession(sid);
+  if (!res.ok) {
+    // Cookie inútil: limpa para não ficar mandando um id morto.
+    reply.clearCookie(COOKIE_SID, { path: "/" });
+    reply.code(401).send({
+      error: motivoTexto(res.motivo),
+      code: CODE_SESSAO_EXPIRADA,
+      motivo: res.motivo,
+    });
+    return null;
+  }
+  return res.session;
 }
 
 export async function registerRoutes(app: FastifyInstance) {
-  // Health + info de ambiente (sem segredos).
+  /* ---------------------------------------------------------------- */
+  /* Público (a tela de login precisa antes de qualquer sessão)        */
+  /* ---------------------------------------------------------------- */
+
   app.get("/api/health", async () => ({
     ok: true,
     env: env.SINQIA_ENV,
     baseUrl: env.SINQIA_BASE_URL,
   }));
 
-  // Template CSV para download.
+  // Aviso de produção — a tela de login mostra o ambiente ANTES de digitar senha.
+  app.get("/api/env", async () => ({
+    env: env.SINQIA_ENV,
+    isProd: isProd(),
+    baseUrl: env.SINQIA_BASE_URL,
+  }));
+
   app.get("/api/template.csv", async (_req, reply) => {
     const csv = buildTemplateCsv();
     reply
@@ -72,24 +114,87 @@ export async function registerRoutes(app: FastifyInstance) {
       .send("﻿" + csv); // BOM para Excel abrir acentos corretamente
   });
 
-  // Dry-run: login (confirma credencial+VPN) + parse + validação. NÃO cadastra.
+  /* ---------------------------------------------------------------- */
+  /* Sessão                                                            */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Login único. A senha é usada aqui e descartada — só o token fica na sessão.
+   * Serve tanto para o primeiro login quanto para a reautenticação.
+   */
+  app.post("/api/login", async (req, reply) => {
+    const parsed = loginBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
+    }
+    const { username, password } = parsed.data;
+
+    let token: string;
+    try {
+      token = await login(username, password);
+    } catch (e) {
+      const status = e instanceof SinqiaAuthError ? e.httpStatus : 502;
+      return reply
+        .code(status === 401 || status === 403 ? 401 : 502)
+        .send({ error: (e as Error).message, stage: "login" });
+    }
+
+    // Sessão anterior (se houver) é substituída.
+    const sidAntigo = (req.cookies as Record<string, string | undefined>)?.[COOKIE_SID];
+    destroySession(sidAntigo);
+
+    const session = createSession(username, token);
+    const info = describeToken(token);
+
+    // Diagnóstico do formato/TTL do token — responde "quanto tempo o token
+    // fica ativo". NUNCA loga o token em si.
+    app.log.info(
+      `Login OK (${username}) — token ${info.formato}` +
+        (info.ttlSegundos !== null
+          ? `, TTL ${info.ttlSegundos}s (~${Math.round(info.ttlSegundos / 60)} min)`
+          : ", validade não informada pelo token"),
+    );
+
+    reply.setCookie(COOKIE_SID, session.id, {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      secure: false, // ferramenta local em http://127.0.0.1
+    });
+
+    return reply.send({ env: env.SINQIA_ENV, ...sessionPublica(session) });
+  });
+
+  app.post("/api/logout", async (req, reply) => {
+    const sid = (req.cookies as Record<string, string | undefined>)?.[COOKIE_SID];
+    destroySession(sid);
+    reply.clearCookie(COOKIE_SID, { path: "/" });
+    return reply.send({ ok: true });
+  });
+
+  /** Rehidrata a sessão após reload da página. */
+  app.get("/api/session", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    return reply.send({ env: env.SINQIA_ENV, ...sessionPublica(session) });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* Cadastro em lote                                                  */
+  /* ---------------------------------------------------------------- */
+
+  // Dry-run: parse + validação. NÃO cadastra.
   app.post("/api/validate", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
     let payload: UploadPayload;
     try {
       payload = await readUpload(req);
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
-    }
-
-    // Confirma credencial + acesso (VPN) fazendo login de verdade.
-    try {
-      await login(payload.username, payload.password);
-    } catch (e) {
-      const status = e instanceof SinqiaAuthError ? e.httpStatus : 502;
-      return reply.code(status === 401 || status === 403 ? 401 : 502).send({
-        error: (e as Error).message,
-        stage: "login",
-      });
     }
 
     let clientes: Cliente[];
@@ -128,6 +233,9 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // Executa o lote. Retorna jobId imediatamente; progresso via SSE.
   app.post("/api/import", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
     let payload: UploadPayload;
     try {
       payload = await readUpload(req);
@@ -164,8 +272,8 @@ export async function registerRoutes(app: FastifyInstance) {
         errors: r.errors,
       })),
       control: payload.control,
-      username: payload.username,
-      password: payload.password,
+      token: session.token,
+      sessionId: session.id,
     });
 
     return reply.send({
@@ -177,52 +285,18 @@ export async function registerRoutes(app: FastifyInstance) {
     });
   });
 
-  // SSE de progresso do job.
+  // SSE de progresso do lote de cadastro.
   app.get("/api/import/stream/:jobId", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
     const { jobId } = req.params as { jobId: string };
     const job = getJob(jobId);
     if (!job) return reply.code(404).send({ error: "Job não encontrado." });
-
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "Access-Control-Allow-Origin": env.WEB_ORIGIN,
-    });
-
-    const send = (event: string, data: unknown) => {
-      reply.raw.write(`event: ${event}\n`);
-      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    // Reenvia resultados já processados (se o cliente conectou tarde).
-    send("snapshot", {
-      total: job.total,
-      processed: job.processed,
-      success: job.success,
-      error: job.error,
-      results: job.results,
-      done: job.done,
-    });
-
-    if (job.done) {
-      send("done", { total: job.total, success: job.success, error: job.error });
-      reply.raw.end();
-      return;
+    if (job.sessionId !== session.id) {
+      return reply.code(403).send({ error: "Este lote pertence a outra sessão." });
     }
-
-    const emitter = getEmitter(jobId);
-    const listener = (payload: { event: string; data: unknown }) => {
-      send(payload.event, payload.data);
-      if (payload.event === "done") {
-        reply.raw.end();
-      }
-    };
-    emitter?.on("progress", listener);
-
-    req.raw.on("close", () => {
-      emitter?.off("progress", listener);
-    });
+    streamJob(req, reply, job, getEmitter(jobId));
   });
 
   /* ---------------------------------------------------------------- */
@@ -230,84 +304,99 @@ export async function registerRoutes(app: FastifyInstance) {
   /* ---------------------------------------------------------------- */
 
   /**
-   * Carrega TODOS os clientes (varre as páginas com um login só).
+   * Carrega TODOS os clientes (varre as páginas com o token da sessão).
    *
    * A tela filtra localmente por número/nome/documento — filtrar só a página
    * corrente não acharia ninguém numa base grande.
    */
   app.post("/api/clientes", async (req, reply) => {
-    const parsed = listarClientesBodySchema.safeParse(req.body);
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = listarClientesBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
-    }
-    const { username, password, tipoPessoa } = parsed.data;
-
-    let token: string;
-    try {
-      token = await login(username, password);
-    } catch (e) {
-      const status = e instanceof SinqiaAuthError ? e.httpStatus : 502;
       return reply
-        .code(status === 401 || status === 403 ? 401 : 502)
-        .send({ error: (e as Error).message, stage: "login" });
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
     }
 
     try {
-      const res = await listarTodosClientes(token, tipoPessoa);
+      const res = await listarTodosClientes(session.token, parsed.data.tipoPessoa);
       return reply.send({ env: env.SINQIA_ENV, ...res });
     } catch (e) {
+      // 401 no meio do varrimento = sessão morta.
+      if (e instanceof Error && /HTTP 401/.test(e.message)) {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({
+          error: "O token da Sinqia expirou. Entre novamente.",
+          code: CODE_SESSAO_EXPIRADA,
+          motivo: "token",
+        });
+      }
       return reply.code(502).send({ error: (e as Error).message, stage: "listar" });
     }
   });
 
   // Inicia a alteração de situação em lote. Progresso via SSE.
   app.post("/api/situacao", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
     const parsed = alterarSituacaoBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
     }
-    const { username, password, cdSituacao, alvos } = parsed.data;
+    const { cdSituacao, alvos } = parsed.data;
 
-    const jobId = startSituacaoJob({ alvos, cdSituacao, username, password });
+    const jobId = startSituacaoJob({
+      alvos,
+      cdSituacao,
+      token: session.token,
+      sessionId: session.id,
+    });
     return reply.send({ jobId, total: alvos.length, env: env.SINQIA_ENV });
   });
 
   // SSE de progresso da alteração de situação.
   app.get("/api/situacao/stream/:jobId", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
     const { jobId } = req.params as { jobId: string };
     const job = getSituacaoJob(jobId);
     if (!job) return reply.code(404).send({ error: "Job não encontrado." });
+    if (job.sessionId !== session.id) {
+      return reply.code(403).send({ error: "Esta alteração pertence a outra sessão." });
+    }
     streamJob(req, reply, job, getSituacaoEmitter(jobId));
   });
-
-  // Aviso de produção (a UI usa para exigir confirmação extra).
-  app.get("/api/env", async () => ({
-    env: env.SINQIA_ENV,
-    isProd: isProd(),
-    baseUrl: env.SINQIA_BASE_URL,
-  }));
 }
 
 /* ------------------------------------------------------------------ */
-/* Schemas dos corpos JSON das rotas de situação                       */
+/* Schemas dos corpos JSON                                             */
 /* ------------------------------------------------------------------ */
 
-const credenciaisSchema = {
-  username: z.string().min(1, "Usuário é obrigatório."),
-  password: z.string().min(1, "Senha é obrigatória."),
-};
+const loginBodySchema = z.object({
+  username: z
+    .string({ required_error: "Usuário é obrigatório." })
+    .min(1, "Usuário é obrigatório."),
+  password: z
+    .string({ required_error: "Senha é obrigatória." })
+    .min(1, "Senha é obrigatória."),
+});
 
 /**
- * Só credenciais + tipoPessoa: paginação e busca não vêm mais da tela — o
- * backend varre todas as páginas e o filtro acontece no front.
+ * Só tipoPessoa: paginação e busca não vêm da tela — o backend varre todas as
+ * páginas e o filtro acontece no front.
  */
 const listarClientesBodySchema = z.object({
-  ...credenciaisSchema,
   tipoPessoa: z.string().optional(),
 });
 
 const alterarSituacaoBodySchema = z.object({
-  ...credenciaisSchema,
   cdSituacao: cdSituacaoSchema,
   alvos: z
     .array(
@@ -321,11 +410,24 @@ const alterarSituacaoBodySchema = z.object({
     .min(1, "Selecione ao menos um cliente."),
 });
 
-/** Handler SSE compartilhado pelos jobs de cadastro e de situação. */
+/* ------------------------------------------------------------------ */
+/* SSE compartilhado pelos jobs de cadastro e de situação              */
+/* ------------------------------------------------------------------ */
+
+/** Campos comuns aos dois JobState que o stream precisa conhecer. */
+interface StreamableJob {
+  total: number;
+  processed: number;
+  success: number;
+  error: number;
+  done: boolean;
+  results: unknown[];
+}
+
 function streamJob(
   req: any,
   reply: any,
-  job: SituacaoJobState,
+  job: StreamableJob,
   emitter: { on: Function; off: Function } | undefined,
 ) {
   reply.raw.writeHead(200, {

@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import { env } from "./env.js";
@@ -26,7 +27,13 @@ async function main() {
   await app.register(cors, {
     origin: env.WEB_ORIGIN,
     methods: ["GET", "POST"],
+    // O cookie de sessão precisa atravessar as requisições do front.
+    credentials: true,
   });
+
+  // Cookie de sessão (httpOnly). Escolhido em vez de header porque EventSource
+  // não permite headers customizados e há dois streams SSE autenticados.
+  await app.register(cookie);
 
   await app.register(multipart, {
     limits: {

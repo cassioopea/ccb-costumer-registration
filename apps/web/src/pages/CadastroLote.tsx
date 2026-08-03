@@ -55,6 +55,13 @@ import {
   type ValidateResponse,
 } from "@/lib/api";
 import { exportResultsCsv } from "@/lib/export-csv";
+import {
+  MARGEM_CURTA_MS,
+  SessaoExpiradaError,
+  formatarRestante,
+  useRestante,
+  useSession,
+} from "@/lib/session";
 
 type Phase = "idle" | "validating" | "validated" | "importing" | "done";
 
@@ -70,8 +77,6 @@ const ACAO_VERBO: Record<IdAcao | "", string> = {
 const ENV_LABEL = IS_PROD ? "PRODUÇÃO" : "HML";
 
 export function CadastroLote() {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -94,9 +99,10 @@ export function CadastroLote() {
     success: 0,
     error: 0,
     skipped: 0,
+    naoEnviado: 0,
   });
   const [results, setResults] = useState<RowResult[]>([]);
-  const [filter, setFilter] = useState<"all" | "OK" | "ERRO" | "PULADO">("all");
+  const [filter, setFilter] = useState<"all" | "OK" | "ERRO" | "PULADO" | "NAO_ENVIADO">("all");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
   /** Texto digitado para liberar a exclusão em lote (exige "EXCLUIR"). */
@@ -104,7 +110,15 @@ export function CadastroLote() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const canValidate = !!file && !!username && !!password && phase !== "validating" && phase !== "importing";
+  /**
+   * Sessão perto de expirar. Importa porque não há renovação automática: um
+   * lote longo iniciado agora pode ser interrompido no meio.
+   */
+  const { session } = useSession();
+  const restanteSessao = useRestante(session);
+  const sessaoCurta = restanteSessao > 0 && restanteSessao < MARGEM_CURTA_MS;
+
+  const canValidate = !!file && phase !== "validating" && phase !== "importing";
   const validCount = validation ? validation.total - validation.totalErros : 0;
   const skipCount = validation?.totalErros ?? 0;
   // Executa se houver ao menos uma linha válida (as inválidas são puladas).
@@ -116,7 +130,7 @@ export function CadastroLote() {
       setPhase("idle");
       setValidation(null);
       setResults([]);
-      setProgress({ processed: 0, total: 0, success: 0, error: 0, skipped: 0 });
+      setProgress({ processed: 0, total: 0, success: 0, error: 0, skipped: 0, naoEnviado: 0 });
     }
   }, [phase]);
 
@@ -138,11 +152,12 @@ export function CadastroLote() {
     setError(null);
     setPhase("validating");
     try {
-      const res = await validate(file, username, password, sanitizeControl(control));
+      const res = await validate(file, sanitizeControl(control));
       setValidation(res);
       setPhase("validated");
     } catch (e) {
-      setError((e as Error).message);
+      // Sessão expirada já abre o modal de reautenticação — não vira erro na tela.
+      if (!(e instanceof SessaoExpiradaError)) setError((e as Error).message);
       setPhase("idle");
     }
   }
@@ -164,14 +179,22 @@ export function CadastroLote() {
     setConfirmOpen(false);
     setError(null);
     setResults([]);
-    setProgress({ processed: 0, total: validation?.total ?? 0, success: 0, error: 0, skipped: 0 });
+    setProgress({ processed: 0, total: validation?.total ?? 0, success: 0, error: 0, skipped: 0, naoEnviado: 0 });
     setPhase("importing");
     try {
-      const { jobId, total } = await startImport(file, username, password, sanitizeControl(control));
+      const { jobId, total } = await startImport(file, sanitizeControl(control));
       setProgress((p) => ({ ...p, total }));
       streamImport(jobId, {
         onRow: (row) => setResults((prev) => [...prev, row]),
-        onProgress: (p) => setProgress(p),
+        onProgress: (p) => setProgress({ ...p, naoEnviado: p.naoEnviado ?? 0 }),
+        onSessaoExpirada: (d) => {
+          // O job já marcou as linhas restantes como NAO_ENVIADO; aqui só
+          // explicamos o que aconteceu. O modal de senha abre pela próxima
+          // chamada autenticada.
+          setError(
+            `${d.message} As linhas concluídas estão no relatório; reexecute apenas as marcadas como NÃO ENVIADO.`,
+          );
+        },
         onFatal: (d) => {
           setError(`Erro no lote: ${d.message}`);
           setPhase("done");
@@ -182,7 +205,7 @@ export function CadastroLote() {
         },
       });
     } catch (e) {
-      setError((e as Error).message);
+      if (!(e instanceof SessaoExpiradaError)) setError((e as Error).message);
       setPhase("idle");
     }
   }
@@ -220,6 +243,18 @@ export function CadastroLote() {
         </div>
       )}
 
+      {sessaoCurta && (
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)] bg-[var(--warning)]/15 px-4 py-3 text-sm">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            A sessão expira em <strong>{formatarRestante(restanteSessao)}</strong> e não há
+            renovação automática. Um lote longo iniciado agora pode ser interrompido — as linhas
+            restantes ficariam como <strong>NÃO ENVIADO</strong>. Saia e entre novamente antes de
+            executar.
+          </span>
+        </div>
+      )}
+
       {error && (
         <div className="flex items-start gap-2 rounded-lg border border-[var(--destructive)] bg-[var(--destructive)]/10 px-4 py-3 text-sm text-[var(--destructive)]">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -227,50 +262,8 @@ export function CadastroLote() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Credenciais */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-[var(--primary)]" />
-              Credenciais Sinqia
-            </CardTitle>
-            <CardDescription>
-              Usadas apenas para o login. Trafegam somente nesta sessão — não são gravadas em
-              disco, log ou código.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="username">Usuário</Label>
-              <Input
-                id="username"
-                autoComplete="off"
-                value={username}
-                onChange={(e) => {
-                  setUsername(e.target.value);
-                  resetValidation();
-                }}
-                placeholder="usuário da Sinqia"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="password">Senha</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="off"
-                value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value);
-                  resetValidation();
-                }}
-                placeholder="••••••••"
-              />
-            </div>
-          </CardContent>
-        </Card>
-
+      {/* Sem card de credenciais: a autenticação virou a sessão do login. */}
+      <div className="grid gap-6">
         {/* Upload */}
         <Card>
           <CardHeader>
@@ -555,14 +548,14 @@ export function CadastroLote() {
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex gap-2">
-              {(["all", "OK", "ERRO", "PULADO"] as const).map((f) => (
+              {(["all", "OK", "ERRO", "PULADO", "NAO_ENVIADO"] as const).map((f) => (
                 <Button
                   key={f}
                   variant={filter === f ? "default" : "outline"}
                   size="sm"
                   onClick={() => setFilter(f)}
                 >
-                  {f === "all" ? "Todos" : f}
+                  {f === "all" ? "Todos" : f === "NAO_ENVIADO" ? "NÃO ENVIADO" : f}
                 </Button>
               ))}
             </div>
@@ -598,12 +591,12 @@ export function CadastroLote() {
                             variant={
                               r.status === "OK"
                                 ? "success"
-                                : r.status === "PULADO"
+                                : r.status === "PULADO" || r.status === "NAO_ENVIADO"
                                   ? "secondary"
                                   : "destructive"
                             }
                           >
-                            {r.status}
+                            {r.status === "NAO_ENVIADO" ? "NÃO ENVIADO" : r.status}
                           </Badge>
                         </TableCell>
                         <TableCell>{r.httpStatus ?? "—"}</TableCell>
@@ -693,6 +686,16 @@ export function CadastroLote() {
                 </>
               )}
             </DialogDescription>
+            {sessaoCurta && (
+              <div className="mt-2 flex items-start gap-2 rounded-md border border-[var(--warning)] bg-[var(--warning)]/15 px-3 py-2 text-xs">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  A sessão expira em menos de 5 minutos e não há renovação automática. Um lote
+                  longo pode ser interrompido no meio — as linhas restantes ficariam como{" "}
+                  <strong>NÃO ENVIADO</strong>. Considere sair e entrar novamente antes.
+                </span>
+              </div>
+            )}
           </DialogHeader>
           {control.idAcao === "EX" && (
             <Input

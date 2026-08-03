@@ -148,9 +148,66 @@ Em produção, executar o lote exige **confirmação extra** num diálogo.
 
 ---
 
+## Login e sessão
+
+A aplicação abre numa **tela de login**. Você entra **uma vez** com usuário e
+senha da Sinqia; a partir daí as duas telas usam a mesma sessão — a senha não é
+pedida de novo.
+
+### Como funciona
+
+- O backend faz o login na Sinqia, guarda o **token** em memória e devolve um
+  cookie `sid` **httpOnly** (invisível ao JavaScript da página).
+- **A senha nunca é guardada** — é usada para obter o token e descartada. Nem em
+  memória, nem em disco, nem em log.
+- O cookie sobrevive ao **F5**: recarregar a página não pede login de novo.
+- Reiniciar o backend apaga todas as sessões.
+
+Cookie e não header porque `EventSource` não permite headers customizados, e as
+duas telas usam SSE para o progresso dos lotes.
+
+### Validade
+
+O header do sistema mostra o usuário e quanto tempo resta. A sessão morre no
+**primeiro** destes prazos:
+
+| Prazo | Valor |
+|---|---|
+| Inatividade | 30 min (qualquer requisição renova) |
+| Teto absoluto | 8 h |
+| Expiração do token da Sinqia | depende do token — ver abaixo |
+
+### Quanto tempo o token da Sinqia fica ativo?
+
+Depende do formato, e o sistema detecta qual é:
+
+- **JWT** — dá para saber exatamente: o backend decodifica a claim `exp` (ler
+  claims não exige o segredo; só validar a assinatura exigiria). O TTL aparece no
+  log do backend no login (`token jwt, TTL 1800s (~30 min)`) e no tooltip do
+  contador no header.
+- **Opaco** — não há como deduzir. O log diz `validade não informada pelo token`
+  e a UI diz o mesmo em vez de fingir precisão. Para saber o valor real, perguntar
+  à Sinqia/BRQ.
+
+Em nenhum caso o token vai para o log — só o formato e o TTL.
+
+### Quando a sessão expira
+
+**Não há renovação automática**: a API Sinqia não tem refresh token, e como não
+guardamos a senha, não é possível relogar sozinho. Em vez de derrubar a tela, o
+sistema abre um **modal pedindo só a senha** (o usuário já é conhecido) e você
+continua de onde parou — arquivo selecionado, base de clientes carregada e
+seleção acumulada permanecem intactos.
+
+Se a sessão expirar **no meio de um lote**, o job para e as linhas ainda não
+tentadas ficam com status **`NÃO ENVIADO`** — não `ERRO`, porque não foram
+recusadas por ninguém. O relatório mostra exatamente o que refazer. Quando restam
+menos de 5 minutos de sessão, as duas telas avisam antes de você iniciar um lote
+longo.
+
 ## Telas
 
-A aplicação tem duas telas, alternadas pelas abas abaixo do header:
+Depois do login, duas telas alternadas pelas abas abaixo do header:
 
 1. **Cadastro em Lote** — importa tomadores a partir de CSV/JSON (fluxo abaixo).
 2. **Situação de Clientes** — lista os clientes já cadastrados e altera a
@@ -158,13 +215,12 @@ A aplicação tem duas telas, alternadas pelas abas abaixo do header:
 
 ## Fluxo de uso (Cadastro em Lote)
 
-1. **Credenciais** — usuário e senha da Sinqia (trafegam só na sessão).
-2. **Arquivo** — arraste um `.csv` ou `.json` (ou baixe o `template.csv`).
-3. **Validar (dry-run)** — faz login (confirma credencial+VPN), parseia, valida
-   os campos e monta os payloads **sem cadastrar**. Mostra erros por linha.
-4. **Executar lote** — só habilita após validar sem erros. Roda o lote com barra
+1. **Arquivo** — arraste um `.csv` ou `.json` (ou baixe o `template.csv`).
+2. **Validar (dry-run)** — parseia, valida os campos e monta os payloads **sem
+   cadastrar**. Mostra erros por linha.
+3. **Executar lote** — só habilita após validar sem erros. Roda o lote com barra
    de progresso em tempo real (SSE) e tabela de resultados.
-5. **Exportar CSV** — relatório com status, HTTP, status do envelope e mensagens
+4. **Exportar CSV** — relatório com status, HTTP, status do envelope e mensagens
    de consistência de cada linha.
 
 ### Controles do lote (tela)
@@ -232,16 +288,15 @@ um ou em lote.
 
 ### Fluxo
 
-1. **Credenciais** — mesmas da outra tela (login a cada carga; nada é retido).
-2. **Carregar clientes** — o backend varre **todas** as páginas de
-   `GET /v1/cliente` com um único login e devolve a base inteira.
-3. **Filtrar** — busca **local** por número do cliente, nome ou CPF/CNPJ.
-4. **Selecionar** — checkbox por linha, ou "Selecionar os N filtrados".
-5. **Nova situação** — escolha o `cdSituacao` alvo.
-6. **Alterar** — `POST /situacao/alterar-situacao-cliente` por cliente, sequencial,
-   com barra de progresso (SSE), relogin em 401 e retry leve em 5xx. Em produção
-   pede confirmação extra.
-7. **Exportar CSV** — relatório com situação anterior, nova, status e mensagens.
+1. **Carregar clientes** — o backend varre **todas** as páginas de
+   `GET /v1/cliente` com o token da sessão e devolve a base inteira.
+2. **Filtrar** — busca **local** por número do cliente, nome ou CPF/CNPJ.
+3. **Selecionar** — checkbox por linha, ou "Selecionar os N filtrados".
+4. **Nova situação** — escolha o `cdSituacao` alvo.
+5. **Alterar** — `POST /situacao/alterar-situacao-cliente` por cliente, sequencial,
+   com barra de progresso (SSE) e retry leve em 5xx. Em produção pede confirmação
+   extra.
+6. **Exportar CSV** — relatório com situação anterior, nova, status e mensagens.
 
 ### Por que carregar tudo em vez de buscar no servidor
 
@@ -354,9 +409,17 @@ montagem do request e `analyzeEnvelope` — tudo sem chamar a API real.
 
 ## Segurança
 
-- Senha digitada na tela, mantida só em memória durante o processamento, descartada
-  ao fim do lote. Nunca vai para código, `.env`, log ou disco.
+- Senha digitada na tela de login, usada só para obter o token da Sinqia e
+  **descartada em seguida**. Não é guardada nem em memória — é por isso que não
+  existe renovação automática de token. Nunca vai para código, `.env`, log ou disco.
+- A sessão guarda em memória apenas `{ id, usuário, token }`. O **token nunca vai
+  para o browser**: o front recebe um cookie `sid` httpOnly, que o JavaScript da
+  página não consegue ler.
+- Sessão expira por inatividade (30 min), teto absoluto (8 h) ou expiração do
+  token — o que vier primeiro. Reiniciar o backend apaga todas.
+- Um job de lote só pode ser acompanhado pela sessão que o iniciou.
 - Logs do backend redigem `Authorization` e não registram corpos de requisição.
+  No login registram só o **formato** e o **TTL** do token, nunca o token.
 - `.env`, `.env.hml`, `.env.prod` estão no `.gitignore`; só os `.env.example` são versionados.
 - O backend escuta **somente em `127.0.0.1`** e não tem autenticação própria — ele
   repassa credenciais à Sinqia. **Nunca** exponha em `0.0.0.0`, rede ou deploy
