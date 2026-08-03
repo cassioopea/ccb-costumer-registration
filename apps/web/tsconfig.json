@@ -16,8 +16,8 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "baseUrl": ".",
-    "ignoreDeprecations": "6.0",
+    // Sem `baseUrl`: com moduleResolution "Bundler" o `paths` já resolve
+    // relativo a este arquivo, e `baseUrl` está a caminho da remoção no TS.
     "paths": {
       "@/*": ["./src/*"]
     }
