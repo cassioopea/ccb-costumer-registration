@@ -128,6 +128,60 @@ export interface StreamHandlers {
 }
 
 /* ------------------------------------------------------------------ */
+/* Cadastro individual                                                 */
+/* ------------------------------------------------------------------ */
+
+export interface CamposObrigatoriosResponse {
+  httpStatus: number;
+  /** Caminhos achatados exigidos pela Sinqia. */
+  paths: string[];
+  formato: "lista-strings" | "lista-objetos" | "modelo-cliente" | "desconhecido" | "sem-registro";
+  /** Corpo cru — exibido na tela enquanto o formato real não está confirmado. */
+  bruto?: unknown;
+  rawBody?: string;
+}
+
+/** Consulta os campos obrigatórios do cadastro (GET, somente leitura). */
+export async function getCamposObrigatorios(): Promise<CamposObrigatoriosResponse> {
+  const res = await fetch("/api/campos-obrigatorios");
+  return lerResposta<CamposObrigatoriosResponse>(res, "Falha ao consultar campos obrigatórios");
+}
+
+export interface CadastrarUmResponse {
+  env: string;
+  /** false = reprovou na validação local; `errors` traz os motivos por campo. */
+  valido: boolean;
+  errors?: string[];
+  tipo: "PF" | "PJ" | "?";
+  dryRun?: boolean;
+  /** Payload montado — só no dry-run. */
+  payload?: unknown;
+  status?: "OK" | "ERRO";
+  httpStatus?: number;
+  envelopeStatus?: string;
+  globalMessage?: string;
+  messages?: string;
+  detail?: string;
+}
+
+/**
+ * Valida (e opcionalmente cadastra) UM cliente a partir do formulário.
+ * `campos` é o mapa achatado, igual a uma linha de CSV.
+ */
+export async function cadastrarUm(
+  campos: Record<string, string>,
+  control: BatchControlPayload,
+  dryRun: boolean,
+): Promise<CadastrarUmResponse> {
+  const res = await fetch("/api/cadastrar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ campos, control, dryRun }),
+  });
+  return lerResposta<CadastrarUmResponse>(res, "Falha no cadastro");
+}
+
+/* ------------------------------------------------------------------ */
 /* Situação de cliente                                                 */
 /* ------------------------------------------------------------------ */
 

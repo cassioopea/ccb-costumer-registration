@@ -73,11 +73,18 @@ export const bemMovelSchema = z
   })
   .passthrough();
 
+/**
+ * Cartão de crédito. Nomes conforme o modelo `CartaoCredito` do Swagger —
+ * atenção a `dsBandei` (não "dsBandeira") e à ausência de `nrBanco`.
+ */
 export const cartaoCreditoSchema = z
   .object({
     idAcao: idAcaoEnum.optional(),
-    nrBanco: num.optional(),
-    dsBandeira: str.optional(),
+    amValid: num.optional(),
+    dsBandei: str.optional(),
+    dsEmisso: str.optional(),
+    dtAquis: dateInt.optional(),
+    nrSeq: num.optional(),
     vlLimite: decimal.optional(),
   })
   .passthrough();
@@ -89,7 +96,7 @@ export const dadosBancariosSchema = z
     nrAgencia: num.optional(),
     nrConta: str.optional(), // string
     dvConta: str.optional(), // string
-    tpConta: str.optional(),
+    tpConta: num.optional(), // integer no modelo Swagger
     dtAbert: dateInt.optional(),
     idPrincipal: str.optional(), // "S"/"N"
   })
@@ -145,13 +152,24 @@ export const refPessoalSchema = z
   })
   .passthrough();
 
+/**
+ * Sócio. Nomes conforme o modelo `Socio` do Swagger — o nome do sócio é
+ * `nmNome` (não "dsNome") e o percentual é `pcPart` (não "vlPart").
+ */
 export const socioSchema = z
   .object({
     idAcao: idAcaoEnum.optional(),
     tpSocio: tpSocioEnum.optional(),
-    dsNome: str.optional(),
+    nmNome: str.optional(),
     nrCpfCnpj: str.optional(),
-    vlPart: decimal.optional(),
+    pcPart: decimal.optional(),
+    nrDoc: str.optional(),
+    cdDoc: num.optional(),
+    cdProf: num.optional(),
+    dsCargo: str.optional(),
+    dtNascimento: dateInt.optional(),
+    sgEmissor: str.optional(),
+    nacionalidade: num.optional(),
   })
   .passthrough();
 
@@ -250,11 +268,17 @@ export const clienteSchema = z
     vlAluguel: decimal.optional(),
     vlImovel: decimal.optional(),
     vlPrestacaoFinanciada: decimal.optional(),
+    // Identificadores atribuídos pela Sinqia
+    nrClient: num.optional(), // "Código do Cliente" — sem "e" no fim, é assim no modelo
+    nrProsp: num.optional(),
     // LGPD / consistências / ações
     idLgpd: str.optional(),
-    inconsistenciasCadastrais: z.array(z.unknown()).optional(),
+    /** "S"/"N" — é STRING no modelo, não lista. */
+    inconsistenciasCadastrais: str.optional(),
     idAcaoCliente: idAcaoEnum.optional(),
     idAcaoEndereco: idAcaoEnum.optional(),
+    idAcaoEqualizacaoSocio: idAcaoEnum.optional(),
+    idGeraClienteSocios: str.optional(), // "S"/"N"
 
     // Objetos aninhados
     dadosPf: dadosPfSchema.optional(),

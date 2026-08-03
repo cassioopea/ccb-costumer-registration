@@ -78,7 +78,7 @@ export function Login() {
           </span>
 
           <h1 className="text-display font-bold tracking-tight">
-            Cadastro de clientes CCB, em lote.
+            Portal de cadastro de clientes CCB
           </h1>
           <p className="text-body text-[var(--sidebar-foreground)]/75">
             Importe tomadores para a API Sinqia e gerencie a situação dos cadastros — em uma

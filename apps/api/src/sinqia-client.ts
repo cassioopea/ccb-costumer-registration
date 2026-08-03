@@ -11,7 +11,14 @@ import {
   type ListarClientesQuery,
   type SinqiaEnvelope,
 } from "@cadastro-lote/shared";
-import { env, loginUrl, cadastroUrl, clientesUrl, situacaoUrl } from "./env.js";
+import {
+  env,
+  loginUrl,
+  cadastroUrl,
+  camposObrigatoriosUrl,
+  clientesUrl,
+  situacaoUrl,
+} from "./env.js";
 
 /**
  * Cliente HTTP da API Sinqia (BJ21M05).
@@ -198,6 +205,36 @@ export async function listarClientes(
         : emptyPage,
     rawBody,
   };
+}
+
+export interface CamposObrigatoriosResult {
+  httpStatus: number;
+  /** Corpo cru — a tela exibe para descobrirmos o formato real da resposta. */
+  body: unknown;
+  rawBody?: string;
+}
+
+/**
+ * GET consultarCamposObrigatorios — sem parâmetros, somente leitura.
+ *
+ * HTTP 204 ("Nenhum registro foi encontrado") significa que não há campos
+ * obrigatórios parametrizados; devolvemos body null, não erro.
+ */
+export async function consultarCamposObrigatorios(
+  token: string,
+): Promise<CamposObrigatoriosResult> {
+  const res = await request(camposObrigatoriosUrl(), {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    headersTimeout: env.REQUEST_TIMEOUT_MS,
+    bodyTimeout: env.REQUEST_TIMEOUT_MS,
+  });
+
+  const { json, rawBody } = await readJson(res);
+  return { httpStatus: res.statusCode, body: json, rawBody };
 }
 
 export interface TodosClientesResult {

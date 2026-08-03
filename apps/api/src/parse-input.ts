@@ -42,7 +42,8 @@ const STRING_LEAVES = new Set<string>([
   "step", "idIntegracaoCadastro", "idRetConsistencias", "idBiometria",
   "idOrigemRequest",
   // siglas / tipos textuais
-  "sgEstado", "sgEmissor", "sgEstadoNat", "tpSexo", "tpConta",
+  // tpConta NÃO entra aqui: o modelo Swagger declara integer($int64).
+  "sgEstado", "sgEmissor", "sgEstadoNat", "tpSexo",
   "tpRelacaoTrab", "tpSocio",
   // textos livres
   "dsNome", "dsEnd", "dsBairro", "dsCidade", "dsCompl", "dsEmail",
@@ -154,6 +155,23 @@ function compactArrays(node: any): any {
 /* Entrada CSV                                                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Converte UMA linha achatada (`{ "dadosPf.dtNasc": "19800120" }`) em `Cliente`.
+ *
+ * É o núcleo compartilhado entre o CSV e o cadastro individual da tela: os dois
+ * chegam como mapa achatado de strings, então passam pela mesma coerção de tipos
+ * e pelo mesmo `unflatten`. Sem isso, a tela e o lote poderiam divergir na
+ * conversão (ex.: `nrConta` virar número num caminho e string no outro).
+ */
+export function parseFlatRow(flat: Record<string, string>): Cliente {
+  const coagido: Record<string, unknown> = {};
+  for (const [col, raw] of Object.entries(flat)) {
+    const v = coerceValue(col, raw ?? "");
+    if (v !== undefined) coagido[col] = v;
+  }
+  return unflatten(coagido) as Cliente;
+}
+
 /** Converte CSV achatado em lista de objetos `cliente`. */
 export function parseCsv(content: string): Cliente[] {
   const result = Papa.parse<Record<string, string>>(content, {
@@ -166,14 +184,7 @@ export function parseCsv(content: string): Cliente[] {
     throw new Error(`Erro ao ler CSV (linha ${first.row}): ${first.message}`);
   }
 
-  return result.data.map((row) => {
-    const flat: Record<string, unknown> = {};
-    for (const [col, raw] of Object.entries(row)) {
-      const coerced = coerceValue(col, raw ?? "");
-      if (coerced !== undefined) flat[col] = coerced;
-    }
-    return unflatten(flat) as Cliente;
-  });
+  return result.data.map((row) => parseFlatRow(row));
 }
 
 /* ------------------------------------------------------------------ */

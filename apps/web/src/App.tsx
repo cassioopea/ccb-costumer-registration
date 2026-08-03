@@ -1,16 +1,18 @@
 import { useState } from "react";
-import { ListChecks, Loader2, Upload } from "lucide-react";
+import { ListChecks, Loader2, Upload, UserPlus } from "lucide-react";
 import { Topbar } from "@/components/Topbar";
 import { SessionExpiredDialog } from "@/components/SessionExpiredDialog";
+import { CadastroIndividual } from "@/pages/CadastroIndividual";
 import { CadastroLote } from "@/pages/CadastroLote";
 import { SituacaoClientes } from "@/pages/SituacaoClientes";
 import { Login } from "@/pages/Login";
 import { SessionProvider, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
-type Tela = "cadastro" | "situacao";
+type Tela = "individual" | "cadastro" | "situacao";
 
 const TELAS = [
+  { id: "individual" as const, label: "Cadastro Individual", icon: UserPlus },
   { id: "cadastro" as const, label: "Cadastro em Lote", icon: Upload },
   { id: "situacao" as const, label: "Situação de Clientes", icon: ListChecks },
 ];
@@ -25,7 +27,7 @@ export default function App() {
 
 function Shell() {
   const { session, carregando } = useSession();
-  const [tela, setTela] = useState<Tela>("cadastro");
+  const [tela, setTela] = useState<Tela>("individual");
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -68,6 +70,9 @@ function Shell() {
       <main className="mx-auto w-full max-w-[1440px] flex-1 px-8 py-10">
         {/* Mantém as duas montadas: trocar de aba não perde arquivo
             selecionado, base carregada nem resultado de lote em andamento. */}
+        <div className={tela === "individual" ? undefined : "hidden"}>
+          <CadastroIndividual />
+        </div>
         <div className={tela === "cadastro" ? undefined : "hidden"}>
           <CadastroLote />
         </div>

@@ -3,13 +3,20 @@ import { z } from "zod";
 import {
   batchControlSchema,
   cdSituacaoSchema,
+  normalizeCamposObrigatorios,
   type BatchControl,
   type Cliente,
 } from "@cadastro-lote/shared";
 import { env, isProd } from "./env.js";
 import { buildTemplateCsv } from "./template.js";
-import { parseByFilename, validateRows, buildRequest } from "./parse-input.js";
-import { listarTodosClientes, login, SinqiaAuthError } from "./sinqia-client.js";
+import { parseByFilename, parseFlatRow, validateRows, buildRequest } from "./parse-input.js";
+import {
+  cadastrarCliente,
+  consultarCamposObrigatorios,
+  listarTodosClientes,
+  login,
+  SinqiaAuthError,
+} from "./sinqia-client.js";
 import { getEmitter, getJob, startJob } from "./batch.js";
 import {
   getSituacaoEmitter,
@@ -300,6 +307,151 @@ export async function registerRoutes(app: FastifyInstance) {
   });
 
   /* ---------------------------------------------------------------- */
+  /* Cadastro individual (1 cliente, pela tela)                        */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Campos obrigatórios do cadastro, direto da Sinqia.
+   *
+   * Devolve o resultado normalizado E o corpo cru: o Swagger declara como
+   * resposta o modelo completo do cliente, o que não diz a semântica em runtime.
+   * Com o cru na tela, descobrimos o formato real sem chutar.
+   */
+  app.get("/api/campos-obrigatorios", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    try {
+      const res = await consultarCamposObrigatorios(session.token);
+
+      if (res.httpStatus === 401) {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({
+          error: "O token da Sinqia expirou. Entre novamente.",
+          code: CODE_SESSAO_EXPIRADA,
+          motivo: "token",
+        });
+      }
+      // 204 = não há campos obrigatórios parametrizados.
+      if (res.httpStatus === 204) {
+        return reply.send({
+          httpStatus: 204,
+          paths: [],
+          formato: "sem-registro",
+          bruto: null,
+        });
+      }
+      if (res.httpStatus < 200 || res.httpStatus >= 300) {
+        return reply.code(502).send({
+          error: `A Sinqia respondeu HTTP ${res.httpStatus} ao consultar campos obrigatórios.`,
+          httpStatus: res.httpStatus,
+          rawBody: res.rawBody,
+        });
+      }
+
+      const norm = normalizeCamposObrigatorios(res.body);
+      return reply.send({
+        httpStatus: res.httpStatus,
+        ...norm,
+        bruto: res.body,
+        rawBody: res.rawBody,
+      });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message, stage: "campos-obrigatorios" });
+    }
+  });
+
+  /**
+   * Valida e (se não for dry-run) cadastra UM cliente.
+   *
+   * Recebe o mapa achatado do formulário — o mesmo formato de uma linha de CSV —
+   * e passa pelo mesmo `parseFlatRow` → `clienteSchema` → `buildRequest` do
+   * lote. Síncrono: um cliente não precisa de job nem SSE.
+   */
+  app.post("/api/cadastrar", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = cadastrarUmBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
+    }
+    const { campos, control, dryRun } = parsed.data;
+
+    let cliente: Cliente;
+    try {
+      cliente = parseFlatRow(campos);
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message, stage: "parse" });
+    }
+
+    // Mesma validação do lote — erros por caminho de campo.
+    const [row] = validateRows([cliente]);
+    if (row.errors.length > 0) {
+      return reply.send({
+        valido: false,
+        errors: row.errors,
+        tipo: row.tipo,
+        env: env.SINQIA_ENV,
+      });
+    }
+
+    let payload;
+    try {
+      payload = buildRequest(row.cliente, control);
+    } catch (e) {
+      return reply.send({
+        valido: false,
+        errors: [(e as Error).message],
+        tipo: row.tipo,
+        env: env.SINQIA_ENV,
+      });
+    }
+
+    // Dry-run: devolve o payload montado sem tocar na Sinqia.
+    if (dryRun) {
+      return reply.send({
+        valido: true,
+        dryRun: true,
+        tipo: row.tipo,
+        payload,
+        env: env.SINQIA_ENV,
+      });
+    }
+
+    try {
+      const { httpStatus, analysis } = await cadastrarCliente(session.token, payload);
+      if (httpStatus === 401) {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({
+          error: "O token da Sinqia expirou. Entre novamente.",
+          code: CODE_SESSAO_EXPIRADA,
+          motivo: "token",
+        });
+      }
+      return reply.send({
+        valido: true,
+        dryRun: false,
+        tipo: row.tipo,
+        // OK/ERRO vem da análise do envelope, não do HTTP 200.
+        status: analysis.ok ? "OK" : "ERRO",
+        httpStatus,
+        envelopeStatus: analysis.envelopeStatus,
+        globalMessage: analysis.globalMessage,
+        messages: analysis.messagesText,
+        detail: analysis.ok ? undefined : analysis.reason,
+        env: env.SINQIA_ENV,
+      });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message, stage: "cadastrar" });
+    }
+  });
+
+  /* ---------------------------------------------------------------- */
   /* Situação de cliente                                               */
   /* ---------------------------------------------------------------- */
 
@@ -394,6 +546,14 @@ const loginBodySchema = z.object({
  */
 const listarClientesBodySchema = z.object({
   tipoPessoa: z.string().optional(),
+});
+
+const cadastrarUmBodySchema = z.object({
+  /** Mapa achatado do formulário: { "dadosPf.dtNasc": "19800120" }. */
+  campos: z.record(z.string(), z.string()),
+  control: batchControlSchema,
+  /** true = só valida e devolve o payload montado, sem enviar à Sinqia. */
+  dryRun: z.boolean().default(false),
 });
 
 const alterarSituacaoBodySchema = z.object({

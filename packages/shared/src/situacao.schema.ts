@@ -164,8 +164,19 @@ function toStr(v: unknown): string {
 export function normalizeClienteItem(raw: unknown): ClienteResumo {
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 
+  // `nrClient` (sem "e") vem PRIMEIRO: é o nome real no modelo Cliente do
+  // Swagger ("Código do Cliente"). Os demais ficam como tolerância.
   const nrCliente = toInt(
-    pick(o, ["nrCliente", "numeroCliente", "nrCadastro", "cdCliente", "codigoCliente", "id"]),
+    pick(o, [
+      "nrClient",
+      "nrCliente",
+      "numeroCliente",
+      "nrCadastro",
+      "cdCliente",
+      "codigoCliente",
+      "nrClinst",
+      "id",
+    ]),
   );
   const documento = toStr(
     pick(o, ["nrCpfCnpj", "cpfCnpj", "nrCpf", "nrCnpj", "documento", "cpf", "cnpj"]),

@@ -23,6 +23,15 @@ const envSchema = z.object({
   SINQIA_SITUACAO_PATH: z
     .string()
     .default("/BJ21M05/situacao/alterar-situacao-cliente"),
+  /**
+   * Campos obrigatórios do cadastro. O Swagger exibe
+   * `/BJ21M05/BJ21SS0501F/consultarCamposObrigatorios`; somando o context root
+   * `/BJ21M05` (mesmo padrão do login `/user` → `/BJ21M05/user` e do
+   * cadastrarCliente) chega-se ao path abaixo.
+   */
+  SINQIA_CAMPOS_OBRIG_PATH: z
+    .string()
+    .default("/BJ21M05/BJ21M05/BJ21SS0501F/consultarCamposObrigatorios"),
   PORT: z.coerce.number().int().positive().default(3333),
   WEB_ORIGIN: z.string().default("http://localhost:5173"),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
@@ -55,5 +64,6 @@ export const loginUrl = () => sinqiaUrl(env.SINQIA_LOGIN_PATH);
 export const cadastroUrl = () => sinqiaUrl(env.SINQIA_CADASTRO_PATH);
 export const clientesUrl = () => sinqiaUrl(env.SINQIA_CLIENTES_PATH);
 export const situacaoUrl = () => sinqiaUrl(env.SINQIA_SITUACAO_PATH);
+export const camposObrigatoriosUrl = () => sinqiaUrl(env.SINQIA_CAMPOS_OBRIG_PATH);
 
 export const isProd = () => env.SINQIA_ENV === "prod";
