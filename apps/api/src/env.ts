@@ -13,6 +13,16 @@ const envSchema = z.object({
   SINQIA_CADASTRO_PATH: z
     .string()
     .default("/BJ21M05/BJ21M05/BJ21SS0501F/cadastrarCliente"),
+  /**
+   * Rotas de situação de cliente. O Swagger mostra os paths como `/v1/cliente` e
+   * `/situacao/alterar-situacao-cliente`; o prefixo do módulo segue o padrão do
+   * login (`/BJ21M05/user`) mas NÃO foi confirmado contra a API real — por isso
+   * ficam sobrescrevíveis por env.
+   */
+  SINQIA_CLIENTES_PATH: z.string().default("/BJ21M05/v1/cliente"),
+  SINQIA_SITUACAO_PATH: z
+    .string()
+    .default("/BJ21M05/situacao/alterar-situacao-cliente"),
   PORT: z.coerce.number().int().positive().default(3333),
   WEB_ORIGIN: z.string().default("http://localhost:5173"),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
@@ -43,5 +53,7 @@ export function sinqiaUrl(path: string): string {
 
 export const loginUrl = () => sinqiaUrl(env.SINQIA_LOGIN_PATH);
 export const cadastroUrl = () => sinqiaUrl(env.SINQIA_CADASTRO_PATH);
+export const clientesUrl = () => sinqiaUrl(env.SINQIA_CLIENTES_PATH);
+export const situacaoUrl = () => sinqiaUrl(env.SINQIA_SITUACAO_PATH);
 
 export const isProd = () => env.SINQIA_ENV === "prod";

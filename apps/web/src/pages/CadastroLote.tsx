@@ -22,6 +22,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -48,12 +49,25 @@ import {
   TEMPLATE_URL,
   validate,
   type BatchControlInput,
+  type BatchControlPayload,
+  type IdAcao,
   type RowResult,
   type ValidateResponse,
 } from "@/lib/api";
 import { exportResultsCsv } from "@/lib/export-csv";
 
 type Phase = "idle" | "validating" | "validated" | "importing" | "done";
+
+/** Verbo da ação escolhida, usado nos textos de confirmação. "" = inclusão. */
+const ACAO_VERBO: Record<IdAcao | "", string> = {
+  "": "cadastrar",
+  IN: "cadastrar",
+  AL: "alterar",
+  EX: "EXCLUIR",
+  CO: "consultar",
+};
+
+const ENV_LABEL = IS_PROD ? "PRODUÇÃO" : "HML";
 
 export function CadastroLote() {
   const [username, setUsername] = useState("");
@@ -63,7 +77,10 @@ export function CadastroLote() {
 
   const [control, setControl] = useState<BatchControlInput>({
     finalizar: false,
-    idIntegracaoCadastro: "",
+    // Default "S": integra automaticamente com o módulo de cadastro.
+    idIntegracaoCadastro: "S",
+    // "" = usa a ação que vier do arquivo (comportamento histórico, = inclusão).
+    idAcao: "",
     idRetConsistencias: "",
   });
 
@@ -82,6 +99,8 @@ export function CadastroLote() {
   const [filter, setFilter] = useState<"all" | "OK" | "ERRO" | "PULADO">("all");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
+  /** Texto digitado para liberar a exclusão em lote (exige "EXCLUIR"). */
+  const [confirmText, setConfirmText] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -130,8 +149,14 @@ export function CadastroLote() {
 
   function handleExecuteClick() {
     if (!canExecute) return;
-    if (IS_PROD) setConfirmOpen(true);
-    else void runImport();
+    // Exclusão confirma em qualquer ambiente — apagar cadastro não tem desfazer
+    // nem em HML. Nos demais casos, só produção pede confirmação.
+    if (IS_PROD || control.idAcao === "EX") {
+      setConfirmText("");
+      setConfirmOpen(true);
+    } else {
+      void runImport();
+    }
   }
 
   async function runImport() {
@@ -318,20 +343,69 @@ export function CadastroLote() {
                   Finalizar e enviar ao Motor de Crédito (<code>step="FI"</code>)
                 </span>
               </label>
+              <div className="space-y-1">
+                <Label htmlFor="idAcao" className="text-xs">
+                  Ação do lote (<code>idAcao</code>)
+                </Label>
+                <Select
+                  id="idAcao"
+                  value={control.idAcao}
+                  onChange={(e) => {
+                    setControl((c) => ({ ...c, idAcao: e.target.value as IdAcao | "" }));
+                    resetValidation();
+                  }}
+                  className={cn(
+                    control.idAcao === "EX" &&
+                      "border-[var(--destructive)] font-medium text-[var(--destructive)]",
+                  )}
+                >
+                  <option value="">Do arquivo (padrão — inclusão)</option>
+                  <option value="IN">IN — Incluir (cadastro novo)</option>
+                  <option value="AL">AL — Alterar (atualizar cadastro existente)</option>
+                  <option value="EX">EX — Excluir (remover cadastro)</option>
+                  <option value="CO">CO — Consultar (somente leitura)</option>
+                </Select>
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {control.idAcao === "" ? (
+                    <>Cada linha usa o <code>idAcao</code> que vier do arquivo.</>
+                  ) : (
+                    <>
+                      Aplica <code>{control.idAcao}</code> a <strong>todas</strong> as linhas
+                      (sobrescreve o que estiver no arquivo).
+                    </>
+                  )}
+                </p>
+              </div>
+
+              {control.idAcao === "EX" && (
+                <div className="flex items-start gap-2 rounded-md border border-[var(--destructive)] bg-[var(--destructive)]/10 px-3 py-2 text-xs text-[var(--destructive)]">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    <strong>Exclusão.</strong> O lote vai remover os cadastros das linhas válidas.
+                    Não há desfazer pela ferramenta — teste em HML antes.
+                  </span>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label htmlFor="idInt" className="text-xs">
                     idIntegracaoCadastro
                   </Label>
-                  <Input
+                  <Select
                     id="idInt"
-                    placeholder='ex.: "N" (opcional)'
                     value={control.idIntegracaoCadastro}
                     onChange={(e) => {
-                      setControl((c) => ({ ...c, idIntegracaoCadastro: e.target.value }));
+                      setControl((c) => ({
+                        ...c,
+                        idIntegracaoCadastro: e.target.value as "S" | "N",
+                      }));
                       resetValidation();
                     }}
-                  />
+                  >
+                    <option value="S">S — integrar com o módulo de cadastro (padrão)</option>
+                    <option value="N">N — não integrar</option>
+                  </Select>
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="idRet" className="text-xs">
@@ -363,13 +437,19 @@ export function CadastroLote() {
           )}
           Validar (dry-run)
         </Button>
-        <Button onClick={handleExecuteClick} disabled={!canExecute}>
+        <Button
+          onClick={handleExecuteClick}
+          disabled={!canExecute}
+          variant={control.idAcao === "EX" ? "destructive" : "default"}
+        >
           {phase === "importing" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <Play className="h-4 w-4" />
           )}
-          Executar lote
+          {control.idAcao && control.idAcao !== "IN"
+            ? `Executar lote (${control.idAcao} — ${ACAO_VERBO[control.idAcao]})`
+            : "Executar lote"}
         </Button>
 
         {validation && (
@@ -599,21 +679,40 @@ export function CadastroLote() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-[var(--destructive)]">
               <AlertTriangle className="h-5 w-5" />
-              Confirmar cadastro em PRODUÇÃO
+              Confirmar {ACAO_VERBO[control.idAcao]} em {ENV_LABEL}
             </DialogTitle>
             <DialogDescription>
-              Você está prestes a cadastrar <strong>{validCount}</strong> cliente(s) em{" "}
-              <strong>PRODUÇÃO</strong>
+              Você está prestes a <strong>{ACAO_VERBO[control.idAcao]}</strong>{" "}
+              <strong>{validCount}</strong> cliente(s) em <strong>{ENV_LABEL}</strong>
               {skipCount > 0 ? ` (${skipCount} inválida(s) serão puladas)` : ""}. Esta ação é real e
-              não pode ser desfeita pela ferramenta. Confirma?
+              não pode ser desfeita pela ferramenta.
+              {control.idAcao === "EX" && (
+                <>
+                  {" "}
+                  Para confirmar a <strong>exclusão</strong>, digite <code>EXCLUIR</code> abaixo.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
+          {control.idAcao === "EX" && (
+            <Input
+              autoFocus
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="EXCLUIR"
+              className="border-[var(--destructive)]"
+            />
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
               Cancelar
             </Button>
-            <Button variant="destructive" onClick={() => void runImport()}>
-              Confirmar e cadastrar
+            <Button
+              variant="destructive"
+              disabled={control.idAcao === "EX" && confirmText.trim() !== "EXCLUIR"}
+              onClick={() => void runImport()}
+            >
+              Confirmar e {ACAO_VERBO[control.idAcao]}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -622,11 +721,15 @@ export function CadastroLote() {
   );
 }
 
-/** Remove strings vazias dos campos de controle opcionais. */
-function sanitizeControl(c: BatchControlInput): BatchControlInput {
+/**
+ * Prepara o controle para envio: `idAcao` vazio vira ausente (o backend então
+ * não injeta ação nenhuma) e strings vazias opcionais são removidas.
+ */
+function sanitizeControl(c: BatchControlInput): BatchControlPayload {
   return {
     finalizar: c.finalizar,
-    ...(c.idIntegracaoCadastro ? { idIntegracaoCadastro: c.idIntegracaoCadastro } : {}),
+    idIntegracaoCadastro: c.idIntegracaoCadastro,
+    ...(c.idAcao ? { idAcao: c.idAcao } : {}),
     ...(c.idRetConsistencias ? { idRetConsistencias: c.idRetConsistencias } : {}),
   };
 }

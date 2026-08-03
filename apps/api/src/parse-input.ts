@@ -6,6 +6,7 @@ import {
   type BatchControl,
   type CadastrarClienteRequest,
   type Cliente,
+  type IdAcao,
 } from "@cadastro-lote/shared";
 
 /**
@@ -236,11 +237,61 @@ export function validateRows(clientes: Cliente[]): ParsedRow[] {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* Ação do lote (idAcao)                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Arrays do cliente cujos itens aceitam `idAcao` no schema Sinqia.
+ *
+ * `dadosPf` e `dadosProfissionais` ficam de fora DE PROPÓSITO: o payload PF
+ * validado em HML não envia `idAcao` neles (ver nota em cliente.schema.ts).
+ */
+const ACAO_ARRAYS = [
+  "bensImoveis",
+  "bensMoveis",
+  "cartoesCredito",
+  "dadosBancarios",
+  "enderecos",
+  "socios",
+] as const;
+
+/**
+ * Aplica a ação escolhida para o lote em todo o cliente: `idAcaoCliente` e
+ * `idAcaoEndereco` no nível raiz e `idAcao` em cada bloco que o aceita.
+ *
+ * A ação do lote é AUTORITATIVA — sobrescreve o que vier do arquivo, para que
+ * um lote de exclusão não fique com blocos marcados como inclusão. Quem quiser
+ * ação por linha deixa a ação do lote em branco (nada é injetado).
+ *
+ * Não muta a entrada.
+ */
+export function applyIdAcao(cliente: Cliente, acao: IdAcao): Cliente {
+  const out: any = { ...cliente, idAcaoCliente: acao, idAcaoEndereco: acao };
+
+  for (const key of ACAO_ARRAYS) {
+    const arr = out[key];
+    if (Array.isArray(arr)) {
+      out[key] = arr.map((item) =>
+        item && typeof item === "object" ? { ...item, idAcao: acao } : item,
+      );
+    }
+  }
+  if (out.dadosPj && typeof out.dadosPj === "object") {
+    out.dadosPj = { ...out.dadosPj, idAcao: acao };
+  }
+
+  return out as Cliente;
+}
+
 /** Monta o request final por linha, injetando os campos de controle do lote. */
 export function buildRequest(cliente: Cliente, control: BatchControl): CadastrarClienteRequest {
-  const req: CadastrarClienteRequest = { cliente };
+  const req: CadastrarClienteRequest = {
+    cliente: control.idAcao ? applyIdAcao(cliente, control.idAcao) : cliente,
+  };
   if (control.finalizar) req.step = "FI";
-  if (control.idIntegracaoCadastro) req.idIntegracaoCadastro = control.idIntegracaoCadastro;
+  // Sempre enviado — default "S" (integra automaticamente com o módulo de cadastro).
+  req.idIntegracaoCadastro = control.idIntegracaoCadastro;
   if (control.idRetConsistencias) req.idRetConsistencias = control.idRetConsistencias;
   if (control.idBiometria) req.idBiometria = control.idBiometria;
   if (control.idOrigemRequest) req.idOrigemRequest = control.idOrigemRequest;

@@ -1,7 +1,16 @@
 // Smoke test offline (sem VPN): valida parsing/validação/template.
 import { buildTemplateCsv } from "./template.js";
 import { parseCsv, parseJson, validateRows, buildRequest } from "./parse-input.js";
-import { analyzeEnvelope } from "@cadastro-lote/shared";
+import {
+  alterarSituacaoRequestSchema,
+  analyzeEnvelope,
+  batchControlSchema,
+  cdSituacaoSchema,
+  matchCliente,
+  normalizeClienteItem,
+  normalizeClientesResponse,
+  situacaoLabel,
+} from "@cadastro-lote/shared";
 
 let fail = 0;
 const ok = (c: boolean, msg: string) => {
@@ -77,10 +86,73 @@ const okUniao = validateRows([{ nrCpfCnpj: "15032465070", dadosPf: { idUniao: "2
 ok(okUniao[0].errors.length === 0, "idUniao='2' aceito");
 
 // 6. buildRequest injeta step=FI quando finalizar.
-const req = buildRequest(fromCsv[0], { finalizar: true });
+const ctl = { finalizar: false, idIntegracaoCadastro: "S" } as const;
+const req = buildRequest(fromCsv[0], { ...ctl, finalizar: true });
 ok(req.step === "FI", "buildRequest finalizar → step=FI");
-const req2 = buildRequest(fromCsv[0], { finalizar: false });
+const req2 = buildRequest(fromCsv[0], ctl);
 ok(req2.step === undefined, "buildRequest sem finalizar → sem step");
+
+// 6a. idIntegracaoCadastro default "S" é sempre enviado.
+ok(req2.idIntegracaoCadastro === "S", 'idIntegracaoCadastro default "S" enviado');
+ok(
+  batchControlSchema.parse({}).idIntegracaoCadastro === "S",
+  'batchControlSchema: control vazio → idIntegracaoCadastro "S"',
+);
+const reqN = buildRequest(fromCsv[0], { ...ctl, idIntegracaoCadastro: "N" });
+ok(reqN.idIntegracaoCadastro === "N", 'idIntegracaoCadastro "N" respeitado');
+ok(
+  batchControlSchema.safeParse({ idIntegracaoCadastro: "X" }).success === false,
+  'idIntegracaoCadastro "X" reprovado (enum S/N)',
+);
+
+// 6b. Ação do lote (idAcao): ausente = nada injetado (comportamento histórico).
+ok(
+  req2.cliente.idAcaoCliente === undefined && req2.cliente.idAcaoEndereco === undefined,
+  "sem idAcao no controle → cliente sem idAcaoCliente/idAcaoEndereco",
+);
+ok(
+  req2.cliente.bensImoveis?.[0]?.idAcao === "IN",
+  "sem idAcao no controle → bensImoveis mantém o valor do arquivo",
+);
+
+// 6c. Ação do lote aplicada: raiz + arrays, sobrescrevendo o arquivo.
+const reqEx = buildRequest(fromCsv[0], { ...ctl, idAcao: "EX" });
+ok(reqEx.cliente.idAcaoCliente === "EX", "idAcao=EX → idAcaoCliente=EX");
+ok(reqEx.cliente.idAcaoEndereco === "EX", "idAcao=EX → idAcaoEndereco=EX");
+ok(
+  reqEx.cliente.bensImoveis?.[0]?.idAcao === "EX",
+  "idAcao=EX sobrescreve bensImoveis[0].idAcao (era IN no arquivo)",
+);
+ok(
+  reqEx.cliente.dadosBancarios?.[0]?.idAcao === "EX",
+  "idAcao=EX sobrescreve dadosBancarios[0].idAcao",
+);
+// dadosPf/dadosProfissionais NÃO recebem idAcao (o payload validado não envia).
+ok(
+  (reqEx.cliente.dadosPf as any)?.idAcao === undefined,
+  "idAcao NÃO é injetado em dadosPf",
+);
+ok(
+  reqEx.cliente.dadosProfissionais?.idAcao === undefined,
+  "idAcao NÃO é injetado em dadosProfissionais",
+);
+// PJ: dadosPj recebe idAcao.
+const reqAlPj = buildRequest(fromCsv[1], { ...ctl, idAcao: "AL" });
+ok(reqAlPj.cliente.dadosPj?.idAcao === "AL", "idAcao=AL → dadosPj.idAcao=AL");
+ok(reqAlPj.cliente.idAcaoCliente === "AL", "idAcao=AL → idAcaoCliente=AL (PJ)");
+// Não muta a entrada original.
+ok(
+  fromCsv[0].bensImoveis?.[0]?.idAcao === "IN" && fromCsv[0].idAcaoCliente === undefined,
+  "applyIdAcao não muta o cliente original",
+);
+// Enum estrito também no controle do lote.
+ok(
+  batchControlSchema.safeParse({ idAcao: "ZZ" }).success === false,
+  'controle idAcao="ZZ" reprovado (enum IN/AL/EX/CO)',
+);
+for (const a of ["IN", "AL", "EX", "CO"] as const) {
+  ok(batchControlSchema.safeParse({ idAcao: a }).success, `controle idAcao="${a}" aceito`);
+}
 
 // 7. analyzeEnvelope.
 ok(analyzeEnvelope(200, { status: "100", messages: [] }).ok === true, "envelope 200 s/ msgs → OK");
@@ -96,6 +168,94 @@ const real = analyzeEnvelope(200, {
   messages: [{ type: "Sucesso", message: "4154" }],
 });
 ok(real.ok === true && real.envelopeStatus === "OK", 'envelope real status "OK" → OK');
+
+/* ------------------------------------------------------------------ */
+/* 9. Situação de cliente                                              */
+/* ------------------------------------------------------------------ */
+
+// 9a. cdSituacao aceita só os códigos da tabela.
+for (const c of [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15, 98, 99]) {
+  ok(cdSituacaoSchema.safeParse(c).success, `cdSituacao=${c} aceito`);
+}
+for (const c of [0, 6, 7, 16, 100, -1]) {
+  ok(cdSituacaoSchema.safeParse(c).success === false, `cdSituacao=${c} reprovado`);
+}
+ok(
+  alterarSituacaoRequestSchema.safeParse({ cdSituacao: 1, nrCliente: 4154 }).success,
+  "alterarSituacaoRequest válido",
+);
+ok(
+  alterarSituacaoRequestSchema.safeParse({ cdSituacao: 7, nrCliente: 4154 }).success === false,
+  "alterarSituacaoRequest com cdSituacao inválido reprovado",
+);
+ok(situacaoLabel(12) === "12 — APROVADO", "situacaoLabel(12) formata código + rótulo");
+ok(situacaoLabel(777) === "777", "situacaoLabel de código desconhecido devolve o número");
+
+// 9b. Normalização da lista: página Spring (formato mais provável).
+const springPage = {
+  content: [
+    { nrCliente: 4154, dsNome: "Geraldo Luiz", nrCpfCnpj: "15032465070", cdSituac: 1 },
+    { nrCliente: 4155, dsNome: "ACME LTDA", nrCpfCnpj: "10766388000190", cdSituac: 12 },
+  ],
+  totalElements: 2,
+  totalPages: 1,
+  number: 0,
+  size: 20,
+};
+const pg = normalizeClientesResponse(springPage);
+ok(pg.items.length === 2, "página Spring: 2 itens");
+ok(pg.totalElements === 2 && pg.totalPages === 1, "página Spring: totais lidos");
+ok(pg.items[0].nrCliente === 4154, "página Spring: nrCliente extraído");
+ok(pg.items[0].tipoPessoa === "PF", "página Spring: PF deduzido do documento (11 dígitos)");
+ok(pg.items[1].tipoPessoa === "PJ", "página Spring: PJ deduzido do documento (14 dígitos)");
+ok(pg.items[1].dsSituacao === "12 — APROVADO", "página Spring: situação rotulada pelo código");
+
+// 9c. Formatos alternativos (o contrato real ainda não foi confirmado).
+ok(
+  normalizeClientesResponse([{ nrCliente: 1, dsNome: "X" }]).items.length === 1,
+  "array cru normalizado",
+);
+ok(
+  normalizeClientesResponse({ data: { content: [{ nrCliente: 9 }] } }).items[0].nrCliente === 9,
+  "lista dentro de data.content normalizada",
+);
+ok(
+  normalizeClientesResponse({ clientes: [{ numeroCliente: 77, nome: "Y" }] }).items[0].nrCliente === 77,
+  "chaves alternativas (clientes/numeroCliente/nome) normalizadas",
+);
+
+// 9d. Sem chave utilizável → nrCliente null (a UI bloqueia a seleção desses).
+const semChave = normalizeClientesResponse({ content: [{ dsNome: "Sem número" }] });
+ok(semChave.items[0].nrCliente === null, "item sem nrCliente → null (não selecionável)");
+ok(semChave.items[0].raw !== undefined, "item preserva o objeto bruto");
+
+// 9e. Respostas vazias/inesperadas não explodem.
+ok(normalizeClientesResponse(null).items.length === 0, "body null → página vazia");
+ok(normalizeClientesResponse({}).items.length === 0, "body sem lista → página vazia");
+ok(normalizeClientesResponse("texto").items.length === 0, "body string → página vazia");
+
+// 9f. Filtro local (número exato, nome/documento por substring).
+const alvo = normalizeClienteItem({
+  nrCliente: 4154,
+  dsNome: "Geraldo Luiz Bruno Aragão",
+  nrCpfCnpj: "15032465070",
+  cdSituac: 1,
+});
+ok(matchCliente(alvo, ""), "filtro vazio casa tudo");
+ok(matchCliente(alvo, "geraldo"), "filtro casa nome (case-insensitive)");
+ok(matchCliente(alvo, "ARAGÃO"), "filtro casa parte do nome com acento");
+ok(matchCliente(alvo, "4154"), "filtro casa nrCliente exato");
+ok(!matchCliente(alvo, "415"), "filtro NÃO casa nrCliente parcial (415 ≠ 4154)");
+ok(!matchCliente(alvo, "41540"), "filtro NÃO casa nrCliente mais longo");
+ok(matchCliente(alvo, "15032465070"), "filtro casa CPF sem máscara");
+ok(matchCliente(alvo, "150.324.650-70"), "filtro casa CPF COM máscara");
+ok(matchCliente(alvo, "324650"), "filtro casa parte do documento");
+ok(!matchCliente(alvo, "99999999999"), "filtro não casa documento alheio");
+ok(!matchCliente(alvo, "fulano"), "filtro não casa nome alheio");
+// Item sem nrCliente não pode casar por número.
+const semNumero = normalizeClienteItem({ dsNome: "Sem Numero", nrCpfCnpj: "15032465070" });
+ok(!matchCliente(semNumero, "4154"), "item sem nrCliente não casa por número");
+ok(matchCliente(semNumero, "sem numero"), "item sem nrCliente ainda casa por nome");
 
 console.log(fail === 0 ? "\n🎉 Todos os testes passaram." : `\n💥 ${fail} falha(s).`);
 process.exit(fail === 0 ? 0 : 1);

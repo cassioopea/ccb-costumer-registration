@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { clienteSchema } from "./cliente.schema.js";
-import { stepEnum } from "./enums.js";
+import { idAcaoEnum, idIntegracaoCadastroEnum, stepEnum } from "./enums.js";
 
 /**
  * Request completo do endpoint `cadastrarCliente`.
@@ -32,7 +32,19 @@ export type CadastrarClienteRequest = z.infer<typeof cadastrarClienteRequestSche
 export const batchControlSchema = z.object({
   /** Enviar "FI" para finalizar e mandar ao Motor de Crédito. Default: não finalizar. */
   finalizar: z.boolean().default(false),
-  idIntegracaoCadastro: z.string().optional(),
+  /**
+   * Integração automática com o módulo de cadastro. Default "S" — o lote integra
+   * sem depender de ação manual no Sinqia. Use "N" só para gravar sem integrar.
+   */
+  idIntegracaoCadastro: idIntegracaoCadastroEnum.default("S"),
+  /**
+   * Ação aplicada a TODAS as linhas do lote (`idAcaoCliente`/`idAcaoEndereco` no
+   * cliente e `idAcao` nos blocos que o aceitam).
+   *
+   * Ausente = não injeta nada: cada linha usa o que vier do arquivo e a Sinqia
+   * assume inclusão. Esse é o comportamento histórico, mantido como default.
+   */
+  idAcao: idAcaoEnum.optional(),
   idRetConsistencias: z.string().optional(),
   idBiometria: z.string().optional(),
   idOrigemRequest: z.string().optional(),

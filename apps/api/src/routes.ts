@@ -1,10 +1,22 @@
 import type { FastifyInstance } from "fastify";
-import { batchControlSchema, type BatchControl, type Cliente } from "@cadastro-lote/shared";
+import { z } from "zod";
+import {
+  batchControlSchema,
+  cdSituacaoSchema,
+  type BatchControl,
+  type Cliente,
+} from "@cadastro-lote/shared";
 import { env, isProd } from "./env.js";
 import { buildTemplateCsv } from "./template.js";
 import { parseByFilename, validateRows, buildRequest } from "./parse-input.js";
-import { login, SinqiaAuthError } from "./sinqia-client.js";
+import { listarTodosClientes, login, SinqiaAuthError } from "./sinqia-client.js";
 import { getEmitter, getJob, startJob } from "./batch.js";
+import {
+  getSituacaoEmitter,
+  getSituacaoJob,
+  startSituacaoJob,
+  type SituacaoJobState,
+} from "./situacao-job.js";
 
 interface UploadPayload {
   filename: string;
@@ -213,10 +225,144 @@ export async function registerRoutes(app: FastifyInstance) {
     });
   });
 
+  /* ---------------------------------------------------------------- */
+  /* Situação de cliente                                               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Carrega TODOS os clientes (varre as páginas com um login só).
+   *
+   * A tela filtra localmente por número/nome/documento — filtrar só a página
+   * corrente não acharia ninguém numa base grande.
+   */
+  app.post("/api/clientes", async (req, reply) => {
+    const parsed = listarClientesBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
+    }
+    const { username, password, tipoPessoa } = parsed.data;
+
+    let token: string;
+    try {
+      token = await login(username, password);
+    } catch (e) {
+      const status = e instanceof SinqiaAuthError ? e.httpStatus : 502;
+      return reply
+        .code(status === 401 || status === 403 ? 401 : 502)
+        .send({ error: (e as Error).message, stage: "login" });
+    }
+
+    try {
+      const res = await listarTodosClientes(token, tipoPessoa);
+      return reply.send({ env: env.SINQIA_ENV, ...res });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message, stage: "listar" });
+    }
+  });
+
+  // Inicia a alteração de situação em lote. Progresso via SSE.
+  app.post("/api/situacao", async (req, reply) => {
+    const parsed = alterarSituacaoBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
+    }
+    const { username, password, cdSituacao, alvos } = parsed.data;
+
+    const jobId = startSituacaoJob({ alvos, cdSituacao, username, password });
+    return reply.send({ jobId, total: alvos.length, env: env.SINQIA_ENV });
+  });
+
+  // SSE de progresso da alteração de situação.
+  app.get("/api/situacao/stream/:jobId", async (req, reply) => {
+    const { jobId } = req.params as { jobId: string };
+    const job = getSituacaoJob(jobId);
+    if (!job) return reply.code(404).send({ error: "Job não encontrado." });
+    streamJob(req, reply, job, getSituacaoEmitter(jobId));
+  });
+
   // Aviso de produção (a UI usa para exigir confirmação extra).
   app.get("/api/env", async () => ({
     env: env.SINQIA_ENV,
     isProd: isProd(),
     baseUrl: env.SINQIA_BASE_URL,
   }));
+}
+
+/* ------------------------------------------------------------------ */
+/* Schemas dos corpos JSON das rotas de situação                       */
+/* ------------------------------------------------------------------ */
+
+const credenciaisSchema = {
+  username: z.string().min(1, "Usuário é obrigatório."),
+  password: z.string().min(1, "Senha é obrigatória."),
+};
+
+/**
+ * Só credenciais + tipoPessoa: paginação e busca não vêm mais da tela — o
+ * backend varre todas as páginas e o filtro acontece no front.
+ */
+const listarClientesBodySchema = z.object({
+  ...credenciaisSchema,
+  tipoPessoa: z.string().optional(),
+});
+
+const alterarSituacaoBodySchema = z.object({
+  ...credenciaisSchema,
+  cdSituacao: cdSituacaoSchema,
+  alvos: z
+    .array(
+      z.object({
+        nrCliente: z.number().int(),
+        nome: z.string().default(""),
+        documento: z.string().default(""),
+        situacaoAnterior: z.string().default(""),
+      }),
+    )
+    .min(1, "Selecione ao menos um cliente."),
+});
+
+/** Handler SSE compartilhado pelos jobs de cadastro e de situação. */
+function streamJob(
+  req: any,
+  reply: any,
+  job: SituacaoJobState,
+  emitter: { on: Function; off: Function } | undefined,
+) {
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": env.WEB_ORIGIN,
+  });
+
+  const send = (event: string, data: unknown) => {
+    reply.raw.write(`event: ${event}\n`);
+    reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Reenvia o que já foi processado (caso o cliente conecte tarde).
+  send("snapshot", {
+    total: job.total,
+    processed: job.processed,
+    success: job.success,
+    error: job.error,
+    results: job.results,
+    done: job.done,
+  });
+
+  if (job.done) {
+    send("done", { total: job.total, success: job.success, error: job.error });
+    reply.raw.end();
+    return;
+  }
+
+  const listener = (payload: { event: string; data: unknown }) => {
+    send(payload.event, payload.data);
+    if (payload.event === "done") reply.raw.end();
+  };
+  emitter?.on("progress", listener);
+
+  req.raw.on("close", () => {
+    emitter?.off("progress", listener);
+  });
 }

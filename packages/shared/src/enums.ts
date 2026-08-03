@@ -13,6 +13,21 @@ import { z } from "zod";
 export const idAcaoEnum = z.enum(["IN", "AL", "EX", "CO"]);
 export type IdAcao = z.infer<typeof idAcaoEnum>;
 
+/** Rótulos das ações para a UI (mesma ordem do enum). */
+export const IDACAO_LABELS: Record<IdAcao, string> = {
+  IN: "Incluir (cadastro novo)",
+  AL: "Alterar (atualizar cadastro existente)",
+  EX: "Excluir (remover cadastro)",
+  CO: "Consultar (somente leitura)",
+};
+
+/**
+ * idIntegracaoCadastro: "S" integra automaticamente com o módulo de cadastro,
+ * "N" não integra. Trafega como STRING no nível raiz do request.
+ */
+export const idIntegracaoCadastroEnum = z.enum(["S", "N"]);
+export type IdIntegracaoCadastro = z.infer<typeof idIntegracaoCadastroEnum>;
+
 /** Tipo de relação de trabalho (dadosProfissionais). */
 export const tpRelacaoTrabEnum = z.enum(["C", "T", "E", "S", "A", "O"]);
 

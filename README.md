@@ -119,6 +119,8 @@ Variáveis (ver `apps/api/.env.example`):
 | `SINQIA_BASE_URL` | URL base da Sinqia (troca de ambiente aqui). |
 | `SINQIA_LOGIN_PATH` | `/BJ21M05/user` |
 | `SINQIA_CADASTRO_PATH` | `/BJ21M05/BJ21M05/BJ21SS0501F/cadastrarCliente` |
+| `SINQIA_CLIENTES_PATH` | Listagem de clientes. Default `/BJ21M05/v1/cliente` — **prefixo não confirmado**. |
+| `SINQIA_SITUACAO_PATH` | Alteração de situação. Default `/BJ21M05/situacao/alterar-situacao-cliente` — **prefixo não confirmado**. |
 | `PORT` | Porta do backend (3333). |
 | `WEB_ORIGIN` | Origem do front no CORS. |
 | `REQUEST_TIMEOUT_MS` / `RETRY_COUNT` | Timeout e retry por chamada. |
@@ -146,7 +148,15 @@ Em produção, executar o lote exige **confirmação extra** num diálogo.
 
 ---
 
-## Fluxo de uso
+## Telas
+
+A aplicação tem duas telas, alternadas pelas abas abaixo do header:
+
+1. **Cadastro em Lote** — importa tomadores a partir de CSV/JSON (fluxo abaixo).
+2. **Situação de Clientes** — lista os clientes já cadastrados e altera a
+   situação de um ou vários (ver seção própria).
+
+## Fluxo de uso (Cadastro em Lote)
 
 1. **Credenciais** — usuário e senha da Sinqia (trafegam só na sessão).
 2. **Arquivo** — arraste um `.csv` ou `.json` (ou baixe o `template.csv`).
@@ -156,6 +166,36 @@ Em produção, executar o lote exige **confirmação extra** num diálogo.
    de progresso em tempo real (SSE) e tabela de resultados.
 5. **Exportar CSV** — relatório com status, HTTP, status do envelope e mensagens
    de consistência de cada linha.
+
+### Controles do lote (tela)
+
+Ficam no card **Arquivo do lote** e valem para **todas** as linhas:
+
+| Controle | Default | O que faz |
+|---|---|---|
+| **Ação do lote** (`idAcao`) | *Do arquivo* | Força `IN`/`AL`/`EX`/`CO` em todas as linhas. |
+| `idIntegracaoCadastro` | **`S`** | `S` integra automaticamente com o módulo de cadastro; `N` não integra. |
+| `idRetConsistencias` | vazio | Flag de retorno das mensagens de consistência. |
+| Finalizar (`step="FI"`) | desmarcado | Finaliza e envia ao Motor de Crédito. |
+
+#### Ação do lote (`idAcao`)
+
+- **Do arquivo (padrão)** — nada é injetado: cada linha usa o `idAcao` que vier
+  do CSV/JSON e a Sinqia assume inclusão. É o comportamento validado em HML.
+- **`IN` / `AL` / `EX` / `CO`** — a ação é **autoritativa**: sobrescreve o que
+  estiver no arquivo e é aplicada em `idAcaoCliente`, `idAcaoEndereco` e no
+  `idAcao` de `bensImoveis`, `bensMoveis`, `cartoesCredito`, `dadosBancarios`,
+  `enderecos`, `socios` e `dadosPj`.
+- `dadosPf` e `dadosProfissionais` **não** recebem `idAcao` de propósito — o
+  payload PF validado em HML não envia esse campo neles.
+
+> ⚠️ **`EX` exclui cadastros.** A tela pede confirmação digitada (`EXCLUIR`) em
+> **qualquer** ambiente, não só em produção, e não há desfazer pela ferramenta.
+
+> ⚠️ Só `IN` foi exercitado ponta a ponta contra a API real (HML). `AL`, `EX` e
+> `CO` seguem o enum do modelo Sinqia, mas o comportamento do endpoint
+> `cadastrarCliente` para essas ações **ainda não foi confirmado** — teste em
+> HML, com poucas linhas, antes de usar em produção.
 
 ### O que acontece no lote
 - Login **uma vez**; o token (header `Auth`) é reusado no lote inteiro.
@@ -185,6 +225,77 @@ errado, enums fora do domínio). No dry-run, as 12 são reprovadas e 58 seguem v
 
 ---
 
+## Situação de Clientes
+
+Segunda tela. Busca os clientes já cadastrados e altera a situação — de um em
+um ou em lote.
+
+### Fluxo
+
+1. **Credenciais** — mesmas da outra tela (login a cada carga; nada é retido).
+2. **Carregar clientes** — o backend varre **todas** as páginas de
+   `GET /v1/cliente` com um único login e devolve a base inteira.
+3. **Filtrar** — busca **local** por número do cliente, nome ou CPF/CNPJ.
+4. **Selecionar** — checkbox por linha, ou "Selecionar os N filtrados".
+5. **Nova situação** — escolha o `cdSituacao` alvo.
+6. **Alterar** — `POST /situacao/alterar-situacao-cliente` por cliente, sequencial,
+   com barra de progresso (SSE), relogin em 401 e retry leve em 5xx. Em produção
+   pede confirmação extra.
+7. **Exportar CSV** — relatório com situação anterior, nova, status e mensagens.
+
+### Por que carregar tudo em vez de buscar no servidor
+
+A busca é local de propósito. A base tem muito mais clientes do que cabe numa
+página (o `size` da API vai até 200), então filtrar só o que está carregado não
+encontraria quem está na página 30. Carregar tudo uma vez e filtrar em memória
+acha qualquer cliente, e o filtro fica instantâneo.
+
+O parâmetro `search` da API **não é usado** — o campo saiu da tela e o valor fica
+no default. A paginação também não aparece mais: o backend percorre as páginas
+sozinho.
+
+Limites da carga (em `apps/api/src/sinqia-client.ts`): 200 registros por
+requisição, teto de 20.000 registros e 200 páginas. Se bater no teto, a tela
+avisa que a lista **pode estar incompleta** — nesse caso use o filtro de tipo de
+pessoa, que é aplicado no servidor, para reduzir o conjunto.
+
+### Seleção acumulativa
+
+A seleção vive fora da lista exibida: **filtrar, recarregar ou trocar o tipo de
+pessoa não desmarca nada**. Dá para buscar "Silva", marcar alguns, buscar um CPF,
+marcar mais, e alterar todos de uma vez. O painel "N selecionado(s)" lista tudo
+que está marcado e permite remover item a item.
+
+O botão "Selecionar os N filtrados" marca **todos** os resultados do filtro,
+inclusive os que não estão sendo exibidos — a tabela renderiza no máximo 200
+linhas por vez para não travar o navegador.
+
+### Códigos de situação (`cdSituacao`)
+
+`1` ATIVO · `2` INATIVO · `3` BLOQUEADO JUDICIALMENTE · `4` BLOQUEADO INSTITUIÇÃO ·
+`5` PROVISÓRIO · `10` EM PREENCHIMENTO · `11` EM ANÁLISE · `12` APROVADO ·
+`13` CANCELADO · `14` DEVOLVIDO PARA REGULARIZAÇÃO · `15` AGUARDANDO DOCUMENTAÇÃO ·
+`98` INATIVO · `99` CANCELADO
+
+A tabela tem rótulos repetidos (2/98 INATIVO, 13/99 CANCELADO) — por isso a UI
+sempre mostra o código junto do rótulo. Códigos fora da tabela são reprovados
+antes de sair da ferramenta.
+
+### `nrCliente`, não CPF
+
+O `POST` usa `nrCliente` (número de cadastro na Sinqia), **não** o CPF/CNPJ. Ele
+vem da listagem; linhas que não trouxerem esse campo aparecem com a seleção
+desabilitada e um aviso.
+
+> ⚠️ **Contrato ainda não confirmado.** Os nomes de campo da resposta de
+> `GET /v1/cliente` e o prefixo das duas rotas não foram exercitados contra a API
+> real. O backend normaliza as formas plausíveis (página Spring `content`,
+> array cru, wrappers `data`/`clientes`) e cada linha da tabela pode ser expandida
+> para ver o **JSON bruto** que a Sinqia devolveu. Se a listagem vier vazia ou sem
+> `nrCliente`, use o JSON bruto para ajustar `normalizeClienteItem`
+> (`packages/shared/src/situacao.schema.ts`); se der 404, ajuste
+> `SINQIA_CLIENTES_PATH`/`SINQIA_SITUACAO_PATH` no `.env`.
+
 ## Formatos de arquivo
 
 ### JSON
@@ -213,7 +324,8 @@ Baixe o **template.csv** pela UI (traz 1 linha PF + 1 PJ de exemplo) ou em
 - Datas são inteiros `AAAAMMDD` (ex.: `20090416`). Documento sem máscara.
 - Alguns "códigos numéricos" trafegam como **string** e não são convertidos:
   `nrCpfCnpj`, `nrCep`, `nrConta`, `dvConta`, `nrDoc`, `nrEnd`, `idUniao`, `tpImovel`.
-- `idAcao` (`IN`/`AL`/`EX`/`CO`) nos arrays; para cadastro novo use `IN`.
+- `idAcao` (`IN`/`AL`/`EX`/`CO`) nos arrays; para cadastro novo use `IN`. Dá para
+  forçar uma ação para o lote inteiro pela tela — ver **Ação do lote** abaixo.
 
 ---
 
@@ -221,9 +333,9 @@ Baixe o **template.csv** pela UI (traz 1 linha PF + 1 PJ de exemplo) ou em
 
 ```
 cadastroClientes/
-├── packages/shared/     # schemas zod (cliente, request, envelope) + analyzeEnvelope
-├── apps/api/            # Fastify + TS (login, lote, SSE, template, relatório)
-├── apps/web/            # Vite + React 19 + Tailwind v4 + shadcn (new-york)
+├── packages/shared/     # schemas zod (cliente, request, envelope, situação) + analyzeEnvelope
+├── apps/api/            # Fastify + TS (login, lote, situação, SSE, template, relatório)
+├── apps/web/            # Vite + React 19 + Tailwind v4 + shadcn (new-york) — 2 telas
 └── scripts/use-env.mjs  # troca .env.hml/.env.prod → .env
 ```
 
