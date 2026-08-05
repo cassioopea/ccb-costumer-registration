@@ -278,10 +278,10 @@
   .focus-ring {
     outline: none;
   }
+  /* O outline acompanha o raio do PRÓPRIO elemento (chip redondo fica redondo). */
   .focus-ring:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
-    border-radius: var(--radius-sm);
   }
 
   /*

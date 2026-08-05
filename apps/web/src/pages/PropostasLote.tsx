@@ -766,7 +766,7 @@ export function PropostasLote() {
           <div className="mb-3 text-caption text-muted-foreground">
             Esteira de Originação › Propostas › Lote de propostas
           </div>
-          <h1 className="text-display text-foreground">Lote de Propostas</h1>
+          <h1 className="text-display text-foreground">Lote de propostas</h1>
           <p className="mt-1 text-body text-muted-foreground">
             Carregue o Emissoes.xlsx, selecione as linhas, calcule e confira antes de
             criar. O cálculo (calcProsp) não grava nada na Sinqia.
@@ -776,7 +776,7 @@ export function PropostasLote() {
       </div>
 
       {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-destructive bg-destructive/10 px-4 py-3 text-body text-destructive">
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-body text-destructive">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -947,6 +947,7 @@ export function PropostasLote() {
                 options={lookups?.filiais ?? []}
                 permitirManual
                 permitirVazio
+                rotuloVazio="Sem loja"
                 carregando={carregandoLookups}
               />
               <ParamInput
@@ -1469,10 +1470,7 @@ export function PropostasLote() {
                         </TableCell>
                         <TableCell>
                           {r.status === "JA_EXISTE" ? (
-                            <Badge
-                              className="border-transparent bg-warning text-warning-foreground"
-                              title={r.detail}
-                            >
+                            <Badge variant="warning" title={r.detail}>
                               Já existia
                             </Badge>
                           ) : (
@@ -1638,11 +1636,7 @@ function StatusCalcBadge({ status }: { status: CalculoRowResult["status"] }) {
     case "OK":
       return <Badge variant="success">OK</Badge>;
     case "DIVERGENCIA":
-      return (
-        <Badge className="border-transparent bg-warning text-warning-foreground">
-          Divergência
-        </Badge>
-      );
+      return <Badge variant="warning">Divergência</Badge>;
     case "NAO_ENVIADO":
       return <Badge variant="secondary">Não enviado</Badge>;
     default:
@@ -1864,6 +1858,7 @@ function ParamSelect({
   aviso,
   permitirManual = false,
   permitirVazio = false,
+  rotuloVazio = "Nenhuma",
   carregando = false,
 }: {
   campo: keyof ParamsLote;
@@ -1876,8 +1871,10 @@ function ParamSelect({
   aviso?: string;
   /** Permite alternar para digitação manual (lookup pode não trazer o código). */
   permitirManual?: boolean;
-  /** Inclui a opção "(vazia)" — o parâmetro é opcional. */
+  /** Inclui a opção vazia — o parâmetro é opcional. */
   permitirVazio?: boolean;
+  /** Nome da opção vazia no vocabulário do operador (ex.: "Sem loja"). */
+  rotuloVazio?: string;
   /** true enquanto as listas da Sinqia carregam — mostra skeleton, não input. */
   carregando?: boolean;
 }) {
@@ -1931,7 +1928,7 @@ function ParamSelect({
         }}
         className={cn("tabular-nums", aviso && "border-warning")}
       >
-        {permitirVazio && <option value="">— (vazia) —</option>}
+        {permitirVazio && <option value="">{rotuloVazio}</option>}
         {!atualNaLista && (
           <option value={atual}>{atual} — (valor atual, fora da lista)</option>
         )}
@@ -1997,11 +1994,8 @@ function ClienteSinqiaBadge({
     case "DIVERGE":
       return (
         <span className="flex flex-wrap items-center gap-1">
-          <Badge
-            className="border-transparent bg-warning text-warning-foreground"
-            title={verif.detail}
-          >
-            difere: {verif.nrClientSinqia}
+          <Badge variant="warning" title={verif.detail}>
+            difere: <span className="tabular-nums">{verif.nrClientSinqia}</span>
           </Badge>
           <button
             type="button"
