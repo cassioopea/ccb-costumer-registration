@@ -1,10 +1,63 @@
-# Cadastro em Lote de Clientes — API Sinqia (BJ21M05)
+# Esteira de Originação — API Sinqia (BJ21M05)
 
-Aplicação web **local** (roda na sua máquina, atrás da VPN da Opea) para cadastrar
-tomadores de CCB em lote na API da Sinqia. Front separado do back-office, mesmo
-design system (tema azul), monorepo com backend + frontend.
+Aplicação web **local** (roda na sua máquina, atrás da VPN da Opea) para originar
+CCBs na Sinqia, em dois módulos:
+
+- **Clientes** — cadastro individual e em lote, consulta e alteração de situação;
+- **Propostas** — criação de propostas de crédito em lote a partir do
+  `Emissoes.xlsx` (Fase 1: leitura/seleção; cálculo e criação nas Fases 2–3).
+
+Front separado do back-office, mesmo design system (tema azul), monorepo com
+backend + frontend.
 
 > ⚠️ **Requer a VPN da Opea ativa.** Sem VPN, o login na Sinqia falha.
+
+## Módulo Propostas (Esteira) — estado atual
+
+Fluxo da API (gravado do Portal de Crédito): `calcProsp` → `primeiro-vencimento`
+→ `cadastrarProposta`.
+
+**Fase 1 entregue:** upload do `Emissoes.xlsx`, normalização (CPF com zeros à
+esquerda, datas → AAAAMMDD, `ID_Sinqia "333-6"` → `nrClient` 3336 — dígitos
+concatenados; quantidade de parcelas ausente = 1 com aviso), grade com seleção
+por linha, filtro por Situação (canceladas desmarcadas por padrão) e parâmetros
+do lote (`txJuros`, `cdProd`, `idCarCtr`, `cdConven`, `cdLoja`, data do contrato).
+
+**Fase 2 entregue e validada em HML (linhas reais fechando no centavo):** botão
+*Calcular selecionadas* roda o `calcProsp` linha a linha (sequencial, SSE, retry
+leve, 401 aborta) e **confere** o calculado contra o Excel — parcela, financiado
+e líquido, tolerância de R$ 0,01 (comparação em centavos inteiros). Resultado por
+linha: OK / Divergência / Erro / Não enviado, com revisão expandível
+(divergências campo a campo + o request exato enviado) e export CSV. **Nada é
+criado na Sinqia** — o cálculo é só cálculo; a criação é a Fase 3. O bloco
+`calculo` completo (com as prestações) fica retido no backend por linha, pronto
+para montar o `cadastrarProposta` sem recalcular.
+
+Semântica financeira (confirmada empiricamente): o request leva
+`vlContra` = **Líquido** do Excel; a Sinqia financia TAC/Seguro/Outros
+(`tpPg*="F"`) por cima e devolve `vlContra` = Financiado. A **data do contrato**
+que reproduz a planilha é 1 mês antes do 1º vencimento — a UI sugere esse valor
+automaticamente ao carregar o arquivo (editável).
+
+**Verificação de clientes + relatório de pendências:** o botão *Verificar
+clientes* consulta a Sinqia (somente leitura, `buscarCliente` por CPF — o
+parâmetro chama `nrClient` mas recebe o CPF; resposta em XML) e marca cada
+linha: ✓ encontrado (nrClient bate), *difere* (existe com outro nrClient — o
+autoritativo é o da Sinqia) ou *não cadastrado* (bloqueia a criação). O botão
+*Exportar pendências* gera um CSV consolidado com tudo que impede linhas de
+virarem proposta — problemas de planilha, cliente não encontrado/divergente e
+divergências/erros de cálculo — para quem corrige a planilha. A criação
+(Fase 3) usará **apenas as linhas OK**; divergentes ficam de fora.
+
+> ℹ️ A HML da Sinqia é **desligada fora do horário comercial** — um 502 à noite
+> não é defeito da ferramenta.
+
+> Quirk mapeado: a resposta do calcProsp usa `txAm`/`txCetAm`/`vlIof`/`prestacoes`
+> (e `dtVctPre` com P maiúsculo); o cadastrarProposta usa `txFinmes`/`txCetMes`/
+> `vlIofCob`/`parcelas` (`dtVctpre` minúsculo). O mapeamento é feito na Fase 3.
+
+> 🔒 **LGPD:** `exemplos/Emissoes.xlsx` e `exemplos/payloads_proposta_referencia.json`
+> contêm **dados reais** e são gitignored — ficam só na máquina do operador.
 
 ---
 

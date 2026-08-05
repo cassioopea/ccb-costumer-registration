@@ -4,6 +4,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import { env } from "./env.js";
 import { registerRoutes } from "./routes.js";
+import { registerPropostasRoutes } from "./routes-propostas.js";
 
 async function main() {
   const app = Fastify({
@@ -43,6 +44,7 @@ async function main() {
   });
 
   await registerRoutes(app);
+  await registerPropostasRoutes(app);
 
   try {
     await app.listen({ port: env.PORT, host: "127.0.0.1" });

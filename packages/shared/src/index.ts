@@ -5,3 +5,5 @@ export * from "./response.schema.js";
 export * from "./situacao.schema.js";
 export * from "./form-campos.js";
 export * from "./exemplos.js";
+export * from "./proposta.schema.js";
+export * from "./emissoes.schema.js";

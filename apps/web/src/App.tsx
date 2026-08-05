@@ -1,20 +1,33 @@
 import { useState } from "react";
-import { ListChecks, Loader2, Upload, UserPlus } from "lucide-react";
-import { Topbar } from "@/components/Topbar";
+import { FileSpreadsheet, ListChecks, Loader2, Upload, UserPlus } from "lucide-react";
+import { Topbar, type Modulo } from "@/components/Topbar";
 import { SessionExpiredDialog } from "@/components/SessionExpiredDialog";
 import { CadastroIndividual } from "@/pages/CadastroIndividual";
 import { CadastroLote } from "@/pages/CadastroLote";
 import { SituacaoClientes } from "@/pages/SituacaoClientes";
+import { PropostasLote } from "@/pages/PropostasLote";
 import { Login } from "@/pages/Login";
 import { SessionProvider, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
-type Tela = "individual" | "cadastro" | "situacao";
+/**
+ * Esteira de Originação — dois módulos:
+ *  - Clientes: cadastro individual, em lote e situação (já existiam);
+ *  - Propostas: lote de propostas a partir do Emissoes.xlsx (Fase 1).
+ * Módulo na topbar; telas do módulo nas abas abaixo dela.
+ */
 
-const TELAS = [
+type TelaClientes = "individual" | "cadastro" | "situacao";
+type TelaPropostas = "lote-propostas";
+
+const TELAS_CLIENTES = [
   { id: "individual" as const, label: "Cadastro Individual", icon: UserPlus },
   { id: "cadastro" as const, label: "Cadastro em Lote", icon: Upload },
-  { id: "situacao" as const, label: "Situação de Clientes", icon: ListChecks },
+  { id: "situacao" as const, label: "Base de Clientes", icon: ListChecks },
+];
+
+const TELAS_PROPOSTAS = [
+  { id: "lote-propostas" as const, label: "Lote de Propostas", icon: FileSpreadsheet },
 ];
 
 export default function App() {
@@ -27,7 +40,9 @@ export default function App() {
 
 function Shell() {
   const { session, carregando } = useSession();
-  const [tela, setTela] = useState<Tela>("individual");
+  const [modulo, setModulo] = useState<Modulo>("clientes");
+  const [telaClientes, setTelaClientes] = useState<TelaClientes>("individual");
+  const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("lote-propostas");
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -40,22 +55,29 @@ function Shell() {
 
   if (!session) return <Login />;
 
+  const telas = modulo === "clientes" ? TELAS_CLIENTES : TELAS_PROPOSTAS;
+  const telaAtiva = modulo === "clientes" ? telaClientes : telaPropostas;
+
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <Topbar />
+      <Topbar modulo={modulo} onModuloChange={setModulo} />
 
-      {/* Navegação entre as telas. Duas telas só — abas bastam, sem router. */}
-      <nav className="border-b border-border bg-card">
+      {/* Telas do módulo ativo. Trocar de módulo/aba não perde estado. */}
+      <nav className="border-b border-border bg-card" aria-label="Telas do módulo">
         <div className="mx-auto flex max-w-[1440px] gap-1 px-8">
-          {TELAS.map(({ id, label, icon: Icon }) => (
+          {telas.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
-              onClick={() => setTela(id)}
-              aria-current={tela === id ? "page" : undefined}
+              onClick={() =>
+                modulo === "clientes"
+                  ? setTelaClientes(id as TelaClientes)
+                  : setTelaPropostas(id as TelaPropostas)
+              }
+              aria-current={telaAtiva === id ? "page" : undefined}
               className={cn(
                 "-mb-px flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors",
-                tela === id
+                telaAtiva === id
                   ? "border-[var(--primary)] text-[var(--primary)]"
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
@@ -68,23 +90,28 @@ function Shell() {
       </nav>
 
       <main className="mx-auto w-full max-w-[1440px] flex-1 px-8 py-10">
-        {/* Mantém as duas montadas: trocar de aba não perde arquivo
-            selecionado, base carregada nem resultado de lote em andamento. */}
-        <div className={tela === "individual" ? undefined : "hidden"}>
+        {/* Mantém todas montadas: trocar de módulo/aba não perde arquivo
+            selecionado, base carregada, seleção nem lote em andamento. */}
+        <div className={modulo === "clientes" && telaClientes === "individual" ? undefined : "hidden"}>
           <CadastroIndividual />
         </div>
-        <div className={tela === "cadastro" ? undefined : "hidden"}>
+        <div className={modulo === "clientes" && telaClientes === "cadastro" ? undefined : "hidden"}>
           <CadastroLote />
         </div>
-        <div className={tela === "situacao" ? undefined : "hidden"}>
-          <SituacaoClientes />
+        <div className={modulo === "clientes" && telaClientes === "situacao" ? undefined : "hidden"}>
+          <SituacaoClientes ativa={modulo === "clientes" && telaClientes === "situacao"} />
+        </div>
+        <div className={modulo === "propostas" ? undefined : "hidden"}>
+          <PropostasLote />
         </div>
       </main>
 
       <footer className="border-t border-border bg-card px-8 py-4 text-caption text-muted-foreground">
         <div className="mx-auto flex max-w-[1440px] items-center justify-between">
           <span>© Opea Solutions — Ferramenta interna</span>
-          <span className="text-muted-foreground/80">Opea SCD · Cadastro em Lote · Sinqia</span>
+          <span className="text-muted-foreground/80">
+            Opea SCD · Esteira de Originação · Sinqia
+          </span>
         </div>
       </footer>
 

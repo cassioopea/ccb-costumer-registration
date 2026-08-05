@@ -33,6 +33,13 @@ npm-debug.log*
 # Cada dev copia os TTFs localmente (ver README); sem eles a UI cai no fallback Inter/system-ui.
 apps/web/public/fonts/*.ttf
 
+# Dados REAIS de tomadores/propostas (LGPD) — ficam só na máquina, nunca no repo.
+# O Emissoes.xlsx tem 70 tomadores reais; o payloads_proposta_referencia.json tem
+# dados pessoais reais gravados do Portal de Crédito.
+exemplos/Emissoes.xlsx
+exemplos/payloads_proposta_referencia.json
+exemplos/calcprosp_response_referencia.json
+
 # uploads temporários do backend
 apps/api/uploads/
 apps/api/tmp/

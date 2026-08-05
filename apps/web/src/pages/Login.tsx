@@ -54,7 +54,7 @@ export function Login() {
         className="relative hidden flex-col justify-between p-10 lg:flex"
         style={{
           background:
-            "linear-gradient(145deg, var(--blue-900) 0%, var(--blue-700) 55%, var(--blue-600) 100%)",
+            "linear-gradient(145deg, var(--wine-900) 0%, var(--wine-700) 55%, var(--wine-600) 100%)",
         }}
       >
         <OpeaLogo className="h-7 w-auto text-[var(--sidebar-foreground)]" />

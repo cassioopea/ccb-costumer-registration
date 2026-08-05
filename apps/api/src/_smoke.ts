@@ -1,5 +1,22 @@
-// Smoke test offline (sem VPN): valida parsing/validação/template/sessão.
+// Smoke test offline (sem VPN): valida parsing/validação/template/sessão/propostas.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import * as XLSX from "xlsx";
+import {
+  calcProspRequestSchema,
+  calcProspResponseSchema,
+  cadastrarPropostaRequestSchema,
+  conferirCalculo,
+  emissaoRowSchema,
+  isSituacaoCancelada,
+  primeiroVencimentoRequestSchema,
+} from "@cadastro-lote/shared";
 import { buildTemplateCsv } from "./template.js";
+import { buildCalcRequest } from "./calculo-job.js";
+import { buildPropostaPayload } from "./proposta-builder.js";
+import { propostaIdentica } from "./criacao-job.js";
+import { extrairNrProsp, parseBuscarClienteXml } from "./sinqia-client.js";
+import { parseEmissoesXlsx } from "./emissoes.js";
 import { parseCsv, parseJson, validateRows, buildRequest } from "./parse-input.js";
 import {
   ABSOLUTE_MS,
@@ -375,6 +392,253 @@ ok(pub.username === "cassio", "sessionPublica traz o usuário");
 ok(pub.tokenFormato === "jwt", "sessionPublica informa o formato do token");
 // jwt30min tem exp em 2027 (IAT fixo), então quem manda aqui é a inatividade.
 ok(pub.expiraEm === T0 + IDLE_MS, "expiraEm usa o menor prazo (inatividade)");
+
+/* ------------------------------------------------------------------ */
+/* 11. Propostas — parser do Emissoes.xlsx (workbook sintético)         */
+/* ------------------------------------------------------------------ */
+
+{
+  // Planilha sintética com os MESMOS cabeçalhos do arquivo real, cobrindo:
+  // CPF numérico com zero à esquerda perdido, data como Date, valores como
+  // string "R$", qtParcelas nula e situação cancelada.
+  const headers = [
+    "Nome", "CPF", "ID_Sinqia", "N_CCB", "Valor da parcela inicial", "N_Contrato",
+    "Liquido", "Financiado", "Quantidade Parcelas", "TAC", "Seguro", "Out. vlr",
+    "1º vcto. De juros", "Situação",
+  ];
+  const aoa = [
+    headers,
+    ["Fulana Teste", 4369832985, "333-6", 202698, 684.1, null, 29250, 31186.69, 60, 210.6, 1063.22, 662.87, new Date(2026, 8, 8), "Compliance"],
+    ["Beltrano Teste", 98765432100, "12-4", 202699, "R$ 416,78", null, 19000, 19000, null, 0, 0, 0, new Date(2026, 8, 8), "Pendência Compliance"],
+    ["Cancelado Teste", 11122233344, "99-1", 202700, 100, null, 5000, 5000, 12, 0, 0, 0, new Date(2026, 8, 8), "Cancelado Pela Creditú"],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Planilha1");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+  const { rows, porSituacao } = parseEmissoesXlsx(buf);
+  ok(rows.length === 3, `emissoes: 3 linhas (${rows.length})`);
+  ok(rows[0].cpf === "04369832985", "emissoes: CPF numérico ganha zero à esquerda (11 díg)");
+  ok(rows[0].nrClient === 3336, 'emissoes: ID_Sinqia "333-6" → nrClient 3336 (concatenado)');
+  ok(rows[1].nrClient === 124, 'emissoes: ID_Sinqia "12-4" → nrClient 124');
+  ok(rows[0].dtVct1Ap === 20260908, "emissoes: Date → 20260908");
+  ok(rows[1].vlParcelaInicial === 416.78, 'emissoes: "R$ 416,78" → 416.78');
+  // Regra de negócio: qtParcelas ausente vira 1 com AVISO (não bloqueia).
+  ok(rows[1].qtParcelas === 1, "emissoes: qtParcelas nula → assume 1");
+  ok(rows[1].avisos.some((a) => /assumida 1/.test(a)), "emissoes: aviso de parcela única");
+  ok(!rows[1].erros.some((e) => /Quantidade/.test(e)), "emissoes: qtParcelas nula NÃO é erro");
+  ok(rows[0].erros.length === 0, `emissoes: linha completa sem erros (${rows[0].erros.join("|")})`);
+  ok(isSituacaoCancelada(rows[2].situacao), "emissoes: 'Cancelado Pela Creditú' é cancelada");
+  ok(porSituacao.length === 3, "emissoes: contagem por situação");
+  ok(rows.every((r) => emissaoRowSchema.safeParse(r).success), "emissoes: contrato zod ok");
+}
+
+/* ------------------------------------------------------------------ */
+/* 12. Propostas — schemas contra o payload de referência               */
+/* ------------------------------------------------------------------ */
+
+{
+  // Fixture sintética mínima com a MESMA estrutura/tipos do payload real
+  // (o arquivo real é gitignored por conter dados pessoais).
+  const calcReq = {
+    nrCPF: "04369832985", qtPrest: 60, vlSldRefin: null, txJuros: 12, vlContra: 19000,
+    cdProd: 1015, idCarCtr: 31, idRefin: "N", dtContra: 20260808, dtVct1Ap: 20260908,
+    nmLogin: null, vlOutvlr: null, tpPgOutros: "F", vlSeguro: null, tpPgSeguro: "F",
+    vlTac: null, tpPgTac: "F", idPrestResponse: "S",
+  };
+  ok(calcProspRequestSchema.safeParse(calcReq).success, "proposta: calcProsp request válido");
+
+  const proposta = {
+    step: "GA",
+    principal: {
+      idSimul: "S", nrProsp: "2569", idCarctr: 31, nrClient: 6874, nrCpfCnpj: "04369832985",
+      cdConven: "111", cdLoja: 111, qtPresta: 60, dtVct1Ap: 20260908, dtContra: 20260808,
+      vlFinan: 19000, vlPresta: 416.78, cdProdut: 1015, idTipIof: "I", idFamort: 2,
+      dsFamort: "Ano final", dtVct1ap: 20260908, dtVctult: 20310808, vlContra: 19000,
+      vlLiquid: 19000, vlTotal: 25006.8, txFinmes: 12, nrMatric: "203", idAcao: "AL",
+      nrBanco: 1, nrAgenc: "1", nrConta: "11", dtAbert: 20260401, idLojist: "N",
+    },
+    fichaCadastralCliente: {
+      step: "GA", idRetConsistencias: "S", idOrigemRequest: "SQ",
+      // Tipos DIVERGEM do cadastrarCliente: nrDDD string, idUniao number.
+      cliente: { nrClient: 6874, nrCpfCnpj: "04369832985", dsNome: "Fulana Teste",
+        nrDDD: "99", nrTel: "99999999", dadosPf: { idUniao: 2, idGrinst: "1" } },
+    },
+    parcelas: [
+      { tpParc: 0, nrPresta: 1, vlPrinc: 236.49, vlJuros: 180.29, vlPresta: 416.78, vlTotal: 25006.8, dtVctpre: 20260908 },
+    ],
+  };
+  const parsed = cadastrarPropostaRequestSchema.safeParse(proposta);
+  ok(parsed.success, `proposta: cadastrarProposta request válido${parsed.success ? "" : " — " + parsed.error.issues[0]?.path.join(".")}`);
+
+  // Fase 2 — montagem do request de cálculo + conferência.
+  const rowBase = {
+    linha: 1, nome: "Fulana Teste", cpf: "04369832985", idSinqia: "333-6", nrClient: 3336,
+    nrCcb: "202698", vlParcelaInicial: 416.78, vlLiquido: 19000, vlFinanciado: 19000,
+    qtParcelas: 60, vlTac: 0, vlSeguro: 0, vlOutros: 0, dtVct1Ap: 20260908,
+    situacao: "Compliance", erros: [], avisos: [],
+  };
+  const calcReq2 = buildCalcRequest(rowBase, { txJuros: 12, cdProd: 1015, idCarCtr: 31, dtContra: 20260808 });
+  ok(calcReq2.nrCPF === "04369832985" && calcReq2.qtPrest === 60,
+    "fase2: buildCalcRequest mapeia CPF/parcelas");
+  // Semântica confirmada em HML: vlContra = LÍQUIDO (a Sinqia financia os encargos por cima).
+  ok(calcReq2.vlContra === rowBase.vlLiquido, "fase2: vlContra = Líquido do Excel");
+  ok(calcReq2.vlTac === null && calcReq2.vlSeguro === null && calcReq2.vlOutvlr === null,
+    "fase2: encargos 0 no Excel viram null (como na referência)");
+  ok(calcProspRequestSchema.safeParse(calcReq2).success, "fase2: request montado passa no schema");
+
+  // Caso REAL da linha 1 do Emissoes (validado em HML em 2026-08-05).
+  const excelL1 = { vlParcelaInicial: 684.1, vlLiquido: 29250, vlFinanciado: 31186.69 };
+  ok(conferirCalculo(excelL1, { vlPresta: 684.1, vlLiquid: 29250, vlContra: 31186.69 }).length === 0,
+    "fase2: linha 1 real fecha nos 3 campos → sem divergência");
+  ok(conferirCalculo(excelL1, { vlPresta: 684.11, vlLiquid: 29250, vlContra: 31186.69 }).length === 0,
+    "fase2: diferença de R$0,01 é tolerada");
+  const div = conferirCalculo(excelL1, { vlPresta: 727.5, vlLiquid: 29250, vlContra: 33123.38 });
+  ok(div.length === 2 && div[0].campo === "Parcela" && div[1].campo === "Financiado",
+    "fase2: divergência de parcela E financiado detectadas");
+  ok(
+    conferirCalculo(
+      { vlParcelaInicial: null, vlLiquido: null, vlFinanciado: null },
+      { vlPresta: 1, vlLiquid: 1, vlContra: 1 },
+    ).length === 0,
+    "fase2: sem baseline no Excel não é divergência",
+  );
+
+  // Guarda de duplicidade: assinatura = produto + parcelas + financiado +
+  // parcela + 1º vcto (valores da proposta REAL 2585 em HML).
+  const calculoDup = {
+    vlContra: 31186.69, vlPresta: 684.1, qtPrest: 60, dtVct1ap: 20260908,
+    vlLiquid: 29250, vlIof: 0, dtVctult: 20310808, txAm: 12, txCetAm: 1.168461,
+    vlTotal: 41046, prestacoes: [],
+  } as any;
+  const existente = {
+    nrProp: 2585, nrClient: 5398, dtProp: 20260808, cdProd: 1015,
+    vlFinan: 31186.69, vlPrest: 684.1, vlTotal: 41046, vlLiquid: 29460.6,
+    qtPrest: 60, dtVct1ap: 20260908,
+  };
+  ok(propostaIdentica(existente, calculoDup, 1015), "dup: assinatura idêntica detectada");
+  ok(!propostaIdentica({ ...existente, vlPrest: 700 }, calculoDup, 1015),
+    "dup: parcela diferente NÃO é duplicada");
+  ok(!propostaIdentica(existente, calculoDup, 1023), "dup: produto diferente NÃO é duplicada");
+  ok(!propostaIdentica({ ...existente, qtPrest: 36 }, calculoDup, 1015),
+    "dup: qtd. de parcelas diferente NÃO é duplicada");
+  ok(propostaIdentica({ ...existente, dtProp: 20260901 }, calculoDup, 1015),
+    "dup: data de contratação diferente ainda É duplicada (mesma assinatura)");
+
+  // Extração do nº da proposta — réplica do envelope REAL da criação em HML:
+  // id=3 NÃO é o nrProsp; o número vem na message type "Sucesso".
+  const envCriacao = {
+    status: "OK",
+    globalMessage: "Proposta salva com sucesso",
+    id: 3,
+    messages: [
+      { type: "Consistência", message: "DDD do telefone de contato é obrigatório" },
+      { type: "Consistência", message: "Nome da mãe do cliente é obrigatório" },
+      { type: "Sucesso", message: "2585" },
+    ],
+  };
+  ok(extrairNrProsp(envCriacao as any, "") === "2585",
+    "fase3: nrProsp vem da message Sucesso (não do id do envelope)");
+  ok(extrairNrProsp({ status: "OK", id: 3, messages: [] } as any, '{"nrProsp":"777"}') === "777",
+    "fase3: fallback nrProsp no corpo");
+  ok(extrairNrProsp({ status: "OK", id: 3, messages: [] } as any, "") === null,
+    "fase3: sem Sucesso numérico nem nrProsp → null (id ignorado)");
+
+  const xml =
+    "<fichaCadastralCliente><cliente><nrClient>6874</nrClient><dsNome>Fulana Teste</dsNome><nrCpfCnpj>04369832985</nrCpfCnpj></cliente></fichaCadastralCliente>";
+  const ext = parseBuscarClienteXml(xml);
+  ok(ext.nrClient === 6874 && ext.dsNome === "Fulana Teste", "fase2: XML do buscarCliente extraído");
+  ok(parseBuscarClienteXml("corpo qualquer").nrClient === null, "fase2: XML sem nrClient → null");
+
+  // Resposta REAL do calcProsp capturada em HML (gitignored) valida no schema
+  // e alimenta o builder da CRIAÇÃO (Fase 3).
+  try {
+    const capturada = JSON.parse(
+      readFileSync(resolve(process.cwd(), "../../exemplos/calcprosp_response_referencia.json"), "utf8"),
+    );
+    const parsedResp = calcProspResponseSchema.safeParse(capturada);
+    ok(parsedResp.success, "fase2: resposta REAL do calcProsp passa no schema");
+    if (parsedResp.success) {
+      const calculo = parsedResp.data.calculo;
+      ok(calculo.vlPresta === 416.78, "fase2: vlPresta da captura = 416.78");
+      ok(calculo.prestacoes.length === 60, "fase2: 60 prestações na captura");
+
+      // Fase 3 — builder do cadastrarProposta a partir do cálculo real.
+      const proposta = buildPropostaPayload(
+        { nrClient: 6874, nrCpfCnpj: "04369832985", dsNome: "Fulana Teste" },
+        calculo,
+        { txJuros: 12, cdProd: 1015, idCarCtr: 31, cdConven: "111", cdLoja: 111, dtContra: 20260808 },
+      );
+      ok(proposta.parcelas!.length === 60, "fase3: 60 parcelas no payload");
+      ok(
+        (proposta.parcelas![0] as any).dtVctpre === 20260908 &&
+          (proposta.parcelas![0] as any).dtVctPre === undefined,
+        "fase3: dtVctPre (cálculo) → dtVctpre (proposta)",
+      );
+      ok(proposta.principal.nrClient === 6874, "fase3: nrClient autoritativo no principal");
+      ok(proposta.principal.txFinmes === 12 && proposta.principal.txCetMes === calculo.txCetAm,
+        "fase3: txAm→txFinmes e txCetAm→txCetMes mapeados");
+      ok(proposta.principal.vlIofCob === calculo.vlIof, "fase3: vlIof→vlIofCob");
+      // TAC (Custos de Bancarização) vai em vlConces — a integração p/ contrato lê este campo.
+      ok(
+        proposta.principal.vlConces === (calculo.vlTac ?? 0),
+        `fase3: TAC→vlConces (${proposta.principal.vlConces})`,
+      );
+      ok((proposta.principal as any).vlTac === undefined, "fase3: sem vlTac solto (campo não existe no modelo)");
+
+      // Com TAC de verdade (caso da linha 1 do Emissoes): 210.60 → vlConces.
+      const comTac = buildPropostaPayload(
+        { nrClient: 5398, nrCpfCnpj: "04369832985", dsNome: "Fulana Teste" },
+        { ...calculo, vlTac: 210.6 },
+        { txJuros: 12, cdProd: 1015, idCarCtr: 31, cdConven: "111", cdLoja: 111, dtContra: 20260808 },
+      );
+      ok(comTac.principal.vlConces === 210.6, "fase3: TAC 210.60 → vlConces 210.60");
+
+      // Loja opcional: sem cdLoja nos params → principal sem a chave.
+      const semLoja = buildPropostaPayload(
+        { nrClient: 5398, nrCpfCnpj: "04369832985", dsNome: "Fulana Teste" },
+        calculo,
+        { txJuros: 12, cdProd: 78, idCarCtr: 31, cdConven: "111", dtContra: 20260808 },
+      );
+      ok(!("cdLoja" in semLoja.principal), "fase3: sem cdLoja → chave ausente do principal");
+      ok(semLoja.principal.cdProdut === 78, "fase3: produto manual 78 no principal");
+      ok(proposta.principal.qtPresta === 60 && proposta.principal.vlPresta === 416.78,
+        "fase3: qtPresta/vlPresta do cálculo");
+      ok((proposta.principal as any).idAcao === undefined, "fase3: SEM idAcao (criação, não alteração)");
+      ok((proposta.principal as any).nrProsp === undefined, "fase3: SEM nrProsp (a Sinqia gera)");
+      ok(proposta.fichaCadastralCliente?.cliente.nrClient === 6874, "fase3: ficha mínima com nrClient");
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      console.log("ℹ️  calcprosp_response_referencia.json ausente — validação real pulada (ok em clone).");
+    } else {
+      ok(false, `fase3: builder falhou — ${(e as Error).message}`);
+    }
+  }
+
+  // Se o payload REAL existir na máquina (gitignored), valida contra ele também.
+  try {
+    const raw = JSON.parse(
+      readFileSync(resolve(process.cwd(), "../../exemplos/payloads_proposta_referencia.json"), "utf8"),
+    );
+    ok(calcProspRequestSchema.safeParse(raw.calcProsp).success, "proposta: calcProsp REAL válido");
+    ok(
+      cadastrarPropostaRequestSchema.safeParse(raw.cadastrarProposta_completo).success,
+      "proposta: cadastrarProposta REAL (completo) válido",
+    );
+    ok(
+      cadastrarPropostaRequestSchema.safeParse(raw.cadastrarProposta_menor).success,
+      "proposta: cadastrarProposta REAL (menor) válido",
+    );
+    ok(
+      primeiroVencimentoRequestSchema.safeParse(raw.primeiroVencimento).success,
+      "proposta: primeiroVencimento REAL válido",
+    );
+  } catch {
+    console.log("ℹ️  payloads_proposta_referencia.json ausente — validação real pulada (ok em clone).");
+  }
+}
 
 console.log(fail === 0 ? "\n🎉 Todos os testes passaram." : `\n💥 ${fail} falha(s).`);
 process.exit(fail === 0 ? 0 : 1);

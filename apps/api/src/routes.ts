@@ -13,6 +13,8 @@ import { parseByFilename, parseFlatRow, validateRows, buildRequest } from "./par
 import {
   cadastrarCliente,
   consultarCamposObrigatorios,
+  consultarDadosProposta,
+  listarPropostasPorCpf,
   listarTodosClientes,
   login,
   SinqiaAuthError,
@@ -490,6 +492,76 @@ export async function registerRoutes(app: FastifyInstance) {
     }
   });
 
+  /**
+   * Propostas de UM cliente (consultarPropostasPorCpfcnpj — somente leitura).
+   * 204 na Sinqia = cliente sem propostas → lista vazia.
+   */
+  app.get("/api/clientes/:cpf/propostas", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const cpf = String((req.params as { cpf: string }).cpf ?? "").replace(/\D/g, "");
+    if (cpf.length !== 11 && cpf.length !== 14) {
+      return reply.code(400).send({ error: "CPF/CNPJ inválido." });
+    }
+
+    try {
+      const res = await listarPropostasPorCpf(session.token, cpf);
+      if (res.httpStatus === 401) {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({
+          error: "O token da Sinqia expirou. Entre novamente.",
+          code: CODE_SESSAO_EXPIRADA,
+          motivo: "token",
+        });
+      }
+      if (res.httpStatus >= 400) {
+        return reply.code(502).send({
+          error: `A Sinqia respondeu HTTP ${res.httpStatus} ao consultar as propostas.`,
+        });
+      }
+      return reply.send({ env: env.SINQIA_ENV, propostas: res.propostas });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message, stage: "propostas-cliente" });
+    }
+  });
+
+  /** Detalhe completo de uma proposta (principal + parcelas — somente leitura). */
+  app.get("/api/propostas-dados/:nrProsp", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const nrProsp = Number((req.params as { nrProsp: string }).nrProsp);
+    if (!Number.isSafeInteger(nrProsp) || nrProsp <= 0) {
+      return reply.code(400).send({ error: "Número de proposta inválido." });
+    }
+
+    try {
+      const res = await consultarDadosProposta(session.token, nrProsp);
+      if (res.httpStatus === 401) {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({
+          error: "O token da Sinqia expirou. Entre novamente.",
+          code: CODE_SESSAO_EXPIRADA,
+          motivo: "token",
+        });
+      }
+      if (res.httpStatus === 204 || res.dados === null) {
+        return reply.code(404).send({ error: `Proposta ${nrProsp} não encontrada.` });
+      }
+      if (res.httpStatus >= 400) {
+        return reply.code(502).send({
+          error: `A Sinqia respondeu HTTP ${res.httpStatus} ao consultar a proposta.`,
+        });
+      }
+      return reply.send({ env: env.SINQIA_ENV, nrProsp, dados: res.dados });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message, stage: "dados-proposta" });
+    }
+  });
+
   // Inicia a alteração de situação em lote. Progresso via SSE.
   app.post("/api/situacao", async (req, reply) => {
     const session = exigirSessao(req, reply);
@@ -574,7 +646,7 @@ const alterarSituacaoBodySchema = z.object({
 /* SSE compartilhado pelos jobs de cadastro e de situação              */
 /* ------------------------------------------------------------------ */
 
-/** Campos comuns aos dois JobState que o stream precisa conhecer. */
+/** Campos comuns aos JobState que o stream precisa conhecer. */
 interface StreamableJob {
   total: number;
   processed: number;
@@ -582,9 +654,15 @@ interface StreamableJob {
   error: number;
   done: boolean;
   results: unknown[];
+  /** Contadores extras de jobs específicos (divergência, não-enviado...). */
+  divergencia?: number;
+  naoEnviado?: number;
+  diverge?: number;
+  naoEncontrado?: number;
+  jaExiste?: number;
 }
 
-function streamJob(
+export function streamJob(
   req: any,
   reply: any,
   job: StreamableJob,
@@ -603,11 +681,17 @@ function streamJob(
   };
 
   // Reenvia o que já foi processado (caso o cliente conecte tarde).
+  // Campos undefined somem no JSON.stringify — jobs sem eles não mudam.
   send("snapshot", {
     total: job.total,
     processed: job.processed,
     success: job.success,
     error: job.error,
+    divergencia: job.divergencia,
+    naoEnviado: job.naoEnviado,
+    diverge: job.diverge,
+    naoEncontrado: job.naoEncontrado,
+    jaExiste: job.jaExiste,
     results: job.results,
     done: job.done,
   });

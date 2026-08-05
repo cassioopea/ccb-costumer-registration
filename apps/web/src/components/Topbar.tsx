@@ -69,7 +69,20 @@ function SessionChip() {
   );
 }
 
-export function Topbar() {
+/** Módulos da esteira — a topbar navega entre eles (estilo AppShell do backoffice). */
+export type Modulo = "clientes" | "propostas";
+
+const MODULOS: Array<{ id: Modulo; label: string }> = [
+  { id: "clientes", label: "Clientes" },
+  { id: "propostas", label: "Propostas" },
+];
+
+interface TopbarProps {
+  modulo: Modulo;
+  onModuloChange: (m: Modulo) => void;
+}
+
+export function Topbar({ modulo, onModuloChange }: TopbarProps) {
   return (
     <header className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground shadow-elevated">
       {/* Faixa contextual */}
@@ -78,7 +91,7 @@ export function Topbar() {
           <div className="flex items-center gap-3">
             <EnvironmentChip />
             <span className="hidden text-sidebar-foreground/55 sm:inline">
-              Cadastro em Lote · Sinqia BJ21M05
+              Originação CCB · Sinqia BJ21M05
             </span>
           </div>
           <span className="hidden tabular-nums text-sidebar-foreground/55 lg:inline">
@@ -91,17 +104,44 @@ export function Topbar() {
         </div>
       </div>
 
-      {/* Faixa principal */}
-      <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-8 px-8">
+      {/* Faixa principal: logo + produto + módulos + sessão */}
+      <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-8 px-8">
         <div className="flex items-center gap-3 text-sidebar-foreground">
           <OpeaLogo className="h-6 w-auto text-sidebar-foreground" />
           <span aria-hidden className="h-5 w-px bg-sidebar-foreground/25" />
           <span className="text-caption font-medium uppercase tracking-[0.2em] text-sidebar-foreground/70">
-            Cadastro de Clientes CCB
+            Esteira de Originação
           </span>
         </div>
 
-        <SessionChip />
+        <nav className="flex items-center gap-0.5" aria-label="Módulos">
+          {MODULOS.map(({ id, label }) => {
+            const ativo = modulo === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onModuloChange(id)}
+                aria-current={ativo ? "page" : undefined}
+                className={cn(
+                  "relative inline-flex items-center px-3 py-5 text-subheading font-normal transition-colors",
+                  ativo
+                    ? "text-sidebar-foreground"
+                    : "text-sidebar-foreground/65 hover:text-sidebar-foreground",
+                )}
+              >
+                {label}
+                {ativo && (
+                  <span className="absolute inset-x-3 -bottom-px h-[2px] rounded-full bg-sidebar-foreground" />
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="ml-auto">
+          <SessionChip />
+        </div>
       </div>
     </header>
   );

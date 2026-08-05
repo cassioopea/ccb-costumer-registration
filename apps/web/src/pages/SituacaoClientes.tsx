@@ -1,10 +1,12 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowLeft,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
+  FileSearch,
   ListChecks,
   Loader2,
   RefreshCw,
@@ -45,13 +47,18 @@ import {
 import { IS_PROD } from "@/components/Topbar";
 import { cn } from "@/lib/utils";
 import {
+  getDadosProposta,
+  listarPropostasCliente,
   listarTodosClientes,
   startAlterarSituacao,
   streamSituacao,
   type ClienteResumo,
+  type DadosProposta,
+  type PropostaResumo,
   type SituacaoRowResult,
   type TodosClientesResponse,
 } from "@/lib/api";
+import { formatBRL, formatDataAAAAMMDD } from "@/lib/format";
 import { exportSituacaoCsv } from "@/lib/export-csv";
 import {
   MARGEM_CURTA_MS,
@@ -66,9 +73,22 @@ type Phase = "idle" | "carregando" | "carregado" | "alterando" | "done";
 /** Teto de linhas renderizadas. Filtrar é barato; desenhar 20 mil <tr> não é. */
 const MAX_LINHAS_VISIVEIS = 200;
 
-export function SituacaoClientes() {
+export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
   const [tipoPessoa, setTipoPessoa] = useState("");
   const [filtro, setFiltro] = useState("");
+
+  /* ---------------------------------------------------------------- */
+  /* Propostas do cliente (consulta por linha)                          */
+  /* ---------------------------------------------------------------- */
+
+  /** Cliente cujo diálogo de propostas está aberto. */
+  const [propCliente, setPropCliente] = useState<ClienteResumo | null>(null);
+  const [propostas, setPropostas] = useState<PropostaResumo[]>([]);
+  const [propLoading, setPropLoading] = useState(false);
+  const [propError, setPropError] = useState<string | null>(null);
+  /** Detalhe aberto dentro do diálogo (null = mostrando a lista). */
+  const [propDetalhe, setPropDetalhe] = useState<{ nrProsp: number; dados: DadosProposta } | null>(null);
+  const [propDetalheLoading, setPropDetalheLoading] = useState(false);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -100,6 +120,14 @@ export function SituacaoClientes() {
   const totalSelecionados = selecionados.size;
   const podeAlterar = totalSelecionados > 0 && !busy;
 
+  /** Rola até o progresso assim que a alteração em lote começa. */
+  const progressoRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (phase === "alterando") {
+      progressoRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [phase]);
+
   /** Sem renovação automática, uma alteração em lote pode ser interrompida. */
   const { session } = useSession();
   const restanteSessao = useRestante(session);
@@ -118,6 +146,57 @@ export function SituacaoClientes() {
       setPhase(base ? "carregado" : "idle");
     }
   }, [tipoPessoa, base]);
+
+  /**
+   * A função principal da aba é VER a base — carrega sozinha na primeira vez
+   * que a aba fica ativa (as telas ficam montadas ocultas; sem o gate `ativa`,
+   * a varredura dispararia no login para todo mundo).
+   */
+  useEffect(() => {
+    if (ativa && !base && phase === "idle") void carregar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só na 1ª ativação
+  }, [ativa]);
+
+  /** Abre o diálogo de propostas de um cliente e busca a lista na Sinqia. */
+  async function abrirPropostas(c: ClienteResumo) {
+    setPropCliente(c);
+    setPropostas([]);
+    setPropDetalhe(null);
+    setPropError(null);
+    setPropLoading(true);
+    try {
+      const res = await listarPropostasCliente(c.documento);
+      setPropostas(res.propostas);
+    } catch (e) {
+      if (e instanceof SessaoExpiradaError) setPropCliente(null);
+      else setPropError((e as Error).message);
+    } finally {
+      setPropLoading(false);
+    }
+  }
+
+  /** Carrega o detalhe (principal + parcelas) de uma proposta dentro do diálogo. */
+  async function verDadosProposta(nrProsp: number) {
+    setPropDetalheLoading(true);
+    setPropError(null);
+    try {
+      const res = await getDadosProposta(nrProsp);
+      setPropDetalhe({ nrProsp, dados: res.dados });
+    } catch (e) {
+      if (e instanceof SessaoExpiradaError) setPropCliente(null);
+      else setPropError((e as Error).message);
+    } finally {
+      setPropDetalheLoading(false);
+    }
+  }
+
+  /** Ação por linha: prepara a alteração de situação SÓ deste cliente. */
+  const acaoCardRef = useRef<HTMLDivElement>(null);
+  function alterarSituacaoDe(c: ClienteResumo) {
+    if (c.nrCliente === null) return;
+    setSelecionados(new Map([[c.nrCliente, c]]));
+    acaoCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   /* ---------------------------------------------------------------- */
   /* Filtro local: número do cliente, nome ou CPF/CNPJ                 */
@@ -235,11 +314,12 @@ export function SituacaoClientes() {
     <div className="space-y-8">
       <div>
         <h1 className="text-display font-semibold tracking-tight text-foreground">
-          Situação de Clientes
+          Base de Clientes
         </h1>
         <p className="mt-1 text-label text-muted-foreground">
-          Carregue os clientes cadastrados na Sinqia, filtre por número, nome ou CPF/CNPJ e altere
-          a situação de um ou vários. Requer VPN da Opea ativa.
+          A base carrega automaticamente ao abrir a aba. Em cada cliente: consulte as{" "}
+          propostas criadas (e os dados de cada uma) ou altere a situação — individual
+          ou em lote.
         </p>
       </div>
 
@@ -346,7 +426,7 @@ export function SituacaoClientes() {
 
       {/* Seleção + ação */}
       {base && (
-        <Card>
+        <Card ref={acaoCardRef} className="scroll-mt-40">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <ListChecks className="h-4 w-4 text-[var(--primary)]" />
@@ -441,7 +521,7 @@ export function SituacaoClientes() {
 
       {/* Progresso */}
       {(phase === "alterando" || phase === "done") && progress.total > 0 && (
-        <Card>
+        <Card ref={progressoRef} className="scroll-mt-40">
           <CardHeader>
             <CardTitle>Progresso</CardTitle>
           </CardHeader>
@@ -648,6 +728,7 @@ export function SituacaoClientes() {
                       <TableHead>Documento</TableHead>
                       <TableHead>Tipo</TableHead>
                       <TableHead>Situação atual</TableHead>
+                      <TableHead>Ações</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -690,10 +771,36 @@ export function SituacaoClientes() {
                             <TableCell className="tabular-nums">{c.documento}</TableCell>
                             <TableCell>{c.tipoPessoa}</TableCell>
                             <TableCell>{c.dsSituacao}</TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2 text-caption"
+                                  onClick={() => void abrirPropostas(c)}
+                                  disabled={busy}
+                                  title="Consultar as propostas deste cliente na Sinqia"
+                                >
+                                  <FileSearch className="h-3.5 w-3.5" />
+                                  Propostas
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 px-2 text-caption"
+                                  onClick={() => alterarSituacaoDe(c)}
+                                  disabled={c.nrCliente === null || busy}
+                                  title="Selecionar só este cliente para alterar a situação"
+                                >
+                                  <ListChecks className="h-3.5 w-3.5" />
+                                  Situação
+                                </Button>
+                              </div>
+                            </TableCell>
                           </TableRow>
                           {expanded.has(chave) && (
                             <TableRow>
-                              <TableCell colSpan={7} className="bg-[var(--muted)]/40">
+                              <TableCell colSpan={8} className="bg-[var(--muted)]/40">
                                 <pre className="max-h-64 overflow-auto text-xs">
                                   {JSON.stringify(c.raw, null, 2)}
                                 </pre>
@@ -750,6 +857,202 @@ export function SituacaoClientes() {
           situações atualizadas.
         </div>
       )}
+
+      {/* Propostas do cliente (lista → detalhe) */}
+      <Dialog open={propCliente !== null} onOpenChange={(open) => !open && setPropCliente(null)}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSearch className="h-5 w-5 text-[var(--primary)]" />
+              {propDetalhe
+                ? `Proposta ${propDetalhe.nrProsp}`
+                : `Propostas de ${propCliente?.nome || propCliente?.documento || ""}`}
+            </DialogTitle>
+            <DialogDescription>
+              {propDetalhe
+                ? "Dados completos da proposta na Sinqia (principal + parcelas)."
+                : `Documento ${propCliente?.documento ?? ""} · nrCliente ${propCliente?.nrCliente ?? "—"}. Consulta somente leitura.`}
+            </DialogDescription>
+          </DialogHeader>
+
+          {propError && (
+            <div className="flex items-start gap-2 rounded-lg border border-[var(--destructive)] bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+              <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{propError}</span>
+            </div>
+          )}
+
+          {propDetalhe ? (
+            <DetalhePropostaView
+              dados={propDetalhe.dados}
+              onVoltar={() => setPropDetalhe(null)}
+            />
+          ) : propLoading ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              Consultando as propostas na Sinqia…
+            </div>
+          ) : propostas.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              Este cliente ainda não tem nenhuma proposta na Sinqia.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-right">Nº proposta</TableHead>
+                  <TableHead className="text-right">Data</TableHead>
+                  <TableHead className="text-right">Produto</TableHead>
+                  <TableHead className="text-right">Financiado</TableHead>
+                  <TableHead className="text-right">Parcela</TableHead>
+                  <TableHead className="text-right">Qtd.</TableHead>
+                  <TableHead className="text-right">1º vcto.</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {propostas.map((p) => (
+                  <TableRow key={p.nrProp}>
+                    <TableCell className="text-right font-semibold tabular-nums">
+                      {p.nrProp}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatDataAAAAMMDD(p.dtProp)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{p.cdProd ?? "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatBRL(p.vlFinan)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatBRL(p.vlPrest)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{p.qtPrest ?? "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatDataAAAAMMDD(p.dtVct1ap)}
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-caption"
+                        onClick={() => void verDadosProposta(p.nrProp)}
+                        disabled={propDetalheLoading}
+                      >
+                        {propDetalheLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <FileSearch className="h-3.5 w-3.5" />
+                        )}
+                        Ver dados
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+/** Detalhe da proposta: campos principais formatados + parcelas + JSON cru. */
+function DetalhePropostaView({
+  dados,
+  onVoltar,
+}: {
+  dados: DadosProposta;
+  onVoltar: () => void;
+}) {
+  const p = (dados.principal ?? {}) as Record<string, unknown>;
+  const parcelas = dados.parcelas ?? [];
+  const num = (v: unknown) => (typeof v === "number" ? v : null);
+
+  const campos: Array<[string, string]> = [
+    ["Produto", String(p.cdProdut ?? "—")],
+    ["Contratação", formatDataAAAAMMDD(num(p.dtContra))],
+    ["1º vencimento", formatDataAAAAMMDD(num(p.dtVct1ap))],
+    ["Último vencimento", formatDataAAAAMMDD(num(p.dtVctult))],
+    ["Financiado", formatBRL(num(p.vlContra))],
+    ["Líquido", formatBRL(num(p.vlLiquid))],
+    ["Parcela", formatBRL(num(p.vlPresta))],
+    ["Total", formatBRL(num(p.vlTotal))],
+    ["Juros", formatBRL(num(p.vlJuros))],
+    ["IOF", formatBRL(num(p.vlIofCob))],
+    ["Seguro", formatBRL(num(p.vlSeguro))],
+    ["Outros", formatBRL(num(p.vlOutvlr))],
+    ["Parcelas", String(p.qtPresta ?? parcelas.length ?? "—")],
+  ];
+
+  return (
+    <div className="space-y-4">
+      <Button variant="ghost" size="sm" onClick={onVoltar} className="-ml-2">
+        <ArrowLeft className="h-4 w-4" />
+        Voltar às propostas
+      </Button>
+
+      <div className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
+        {campos.map(([label, valor]) => (
+          <div key={label}>
+            <p className="text-caption text-muted-foreground">{label}</p>
+            <p className="text-body font-medium tabular-nums">{valor}</p>
+          </div>
+        ))}
+      </div>
+
+      {parcelas.length > 0 && (
+        <div>
+          <p className="mb-1 text-caption font-semibold text-muted-foreground">
+            Plano de parcelas ({parcelas.length})
+          </p>
+          <div className="max-h-56 overflow-y-auto rounded-md border border-[var(--border)]">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-right">Nº</TableHead>
+                  <TableHead className="text-right">Vencimento</TableHead>
+                  <TableHead className="text-right">Principal</TableHead>
+                  <TableHead className="text-right">Juros</TableHead>
+                  <TableHead className="text-right">Parcela</TableHead>
+                  <TableHead className="text-right">Saldo devedor</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {parcelas.map((par) => (
+                  <TableRow key={par.nrPresta}>
+                    <TableCell className="text-right tabular-nums">{par.nrPresta}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatDataAAAAMMDD(par.dtVctpre)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatBRL(par.vlPrinc)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatBRL(par.vlJuros)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatBRL(par.vlPresta)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatBRL(par.vlSaldoDevedor ?? null)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+
+      <details>
+        <summary className="cursor-pointer text-caption font-semibold text-[var(--primary)]">
+          Ver resposta completa da Sinqia (JSON)
+        </summary>
+        <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-[var(--border)] bg-[var(--muted)]/40 p-3 text-[11px] leading-4">
+          {JSON.stringify(dados, null, 2)}
+        </pre>
+      </details>
     </div>
   );
 }

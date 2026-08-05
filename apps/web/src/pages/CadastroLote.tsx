@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -99,6 +99,13 @@ export function CadastroLote() {
   const [confirmText, setConfirmText] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /** Rola até a tabela de progresso assim que o lote começa. */
+  const resultadoRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (phase === "importing") {
+      resultadoRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [phase]);
 
   /**
    * Sessão perto de expirar. Importa porque não há renovação automática: um
@@ -420,7 +427,7 @@ export function CadastroLote() {
 
       {/* Progresso + resultados */}
       {(phase === "importing" || phase === "done") && (
-        <Card>
+        <Card ref={resultadoRef} className="scroll-mt-40">
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>

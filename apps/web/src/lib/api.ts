@@ -4,6 +4,7 @@
 // cookie httpOnly que o backend setou no login, enviado automaticamente pelo
 // fetch e pelo EventSource (mesma origem, via proxy do Vite).
 
+import type { EmissaoRow } from "@cadastro-lote/shared";
 import { lerResposta } from "./session";
 
 /** Ações aceitas pela Sinqia: Incluir / Alterar / Excluir / Consultar. */
@@ -221,6 +222,53 @@ export async function listarTodosClientes(
   return lerResposta<TodosClientesResponse>(res, "Falha ao listar clientes");
 }
 
+/* --- Propostas do cliente (consulta, somente leitura) --- */
+
+export interface PropostaResumo {
+  nrProp: number;
+  nrClient: number | null;
+  dtProp: number | null;
+  cdProd: number | null;
+  vlFinan: number | null;
+  vlPrest: number | null;
+  vlTotal: number | null;
+  vlLiquid: number | null;
+  qtPrest: number | null;
+  dtVct1ap: number | null;
+}
+
+/** Lista as propostas de um cliente pelo CPF/CNPJ. */
+export async function listarPropostasCliente(
+  documento: string,
+): Promise<{ env: string; propostas: PropostaResumo[] }> {
+  const res = await fetch(`/api/clientes/${encodeURIComponent(documento)}/propostas`);
+  return lerResposta(res, "Falha ao consultar as propostas do cliente");
+}
+
+export interface ParcelaProposta {
+  nrPresta: number;
+  tpParc: number;
+  dtVctpre: number;
+  vlPrinc: number;
+  vlJuros: number;
+  vlPresta: number;
+  vlSaldoDevedor?: number;
+}
+
+export interface DadosProposta {
+  principal?: Record<string, unknown>;
+  parcelas?: ParcelaProposta[];
+  [k: string]: unknown;
+}
+
+/** Detalhe completo de uma proposta (principal + parcelas). */
+export async function getDadosProposta(
+  nrProsp: number,
+): Promise<{ env: string; nrProsp: number; dados: DadosProposta }> {
+  const res = await fetch(`/api/propostas-dados/${nrProsp}`);
+  return lerResposta(res, "Falha ao consultar os dados da proposta");
+}
+
 export interface SituacaoAlvo {
   nrCliente: number;
   nome: string;
@@ -299,6 +347,336 @@ export function streamSituacao(jobId: string, handlers: SituacaoStreamHandlers):
   on("progress", handlers.onProgress);
   on("fatal", handlers.onFatal);
   on("sessao-expirada", handlers.onSessaoExpirada);
+  on("done", (d) => {
+    handlers.onDone?.(d);
+    es.close();
+  });
+
+  es.onerror = (e) => handlers.onError?.(e);
+
+  return () => es.close();
+}
+
+/* ------------------------------------------------------------------ */
+/* Propostas (Esteira de Originação)                                    */
+/* ------------------------------------------------------------------ */
+
+export interface ParseEmissoesResult {
+  env: string;
+  arquivo: string;
+  total: number;
+  porSituacao: Array<[string, number]>;
+  avisos: string[];
+  rows: EmissaoRow[];
+}
+
+/** Parse + pré-visualização do Emissoes.xlsx (não toca na Sinqia). */
+export async function parseEmissoes(file: File): Promise<ParseEmissoesResult> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch("/api/propostas/parse", { method: "POST", body: fd });
+  return lerResposta<ParseEmissoesResult>(res, "Falha ao ler a planilha");
+}
+
+/** Parâmetros do cálculo já convertidos (a tela guarda como string). */
+export interface CalculoParamsPayload {
+  txJuros: number;
+  cdProd: number;
+  idCarCtr: number;
+  /** AAAAMMDD. */
+  dtContra: number;
+}
+
+export interface Divergencia {
+  campo: string;
+  excel: number;
+  calculado: number;
+}
+
+export interface CalculoRowResult {
+  linha: number;
+  nome: string;
+  cpf: string;
+  nrClient: number | null;
+  status: "OK" | "DIVERGENCIA" | "ERRO" | "NAO_ENVIADO";
+  httpStatus: number | null;
+  vlPrestaExcel: number | null;
+  vlPrestaCalc: number | null;
+  vlFinanciadoExcel: number | null;
+  vlFinanciadoCalc: number | null;
+  vlLiquidoExcel: number | null;
+  vlLiquidCalc: number | null;
+  vlIof: number | null;
+  vlTotal: number | null;
+  txCetAm: number | null;
+  qtPrest: number | null;
+  divergencias: Divergencia[];
+  /** Request exato enviado ao calcProsp — é o que a revisão mostra. */
+  request: Record<string, unknown>;
+  messages: string;
+  detail?: string;
+}
+
+/** Dispara o cálculo em lote (calcProsp por linha — nada é criado). */
+export async function startCalcular(
+  rows: EmissaoRow[],
+  params: CalculoParamsPayload,
+): Promise<{ jobId: string; total: number; ignoradas: number; env: string }> {
+  const res = await fetch("/api/propostas/calcular", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rows, params }),
+  });
+  return lerResposta(res, "Falha ao iniciar o cálculo");
+}
+
+export interface CalculoStreamHandlers {
+  onSnapshot?: (d: {
+    total: number;
+    processed: number;
+    success: number;
+    error: number;
+    divergencia?: number;
+    naoEnviado?: number;
+    results: CalculoRowResult[];
+    done: boolean;
+  }) => void;
+  onRow?: (row: CalculoRowResult) => void;
+  onProgress?: (p: {
+    processed: number;
+    total: number;
+    success: number;
+    error: number;
+    divergencia?: number;
+    naoEnviado?: number;
+  }) => void;
+  onSessaoExpirada?: (d: { message: string }) => void;
+  onFatal?: (d: { message: string }) => void;
+  onDone?: (d: { total: number; success: number; error: number }) => void;
+  onError?: (e: Event) => void;
+}
+
+/* --- Lookups dos parâmetros do lote (produto/convênio/loja) --- */
+
+export interface LookupOption {
+  codigo: number;
+  descricao: string;
+}
+
+export interface LookupsResponse {
+  env: string;
+  produtos: LookupOption[];
+  convenios: LookupOption[];
+  filiais: LookupOption[];
+  avisos: string[];
+}
+
+/** Listas da Sinqia para os selects de parâmetros (somente leitura). */
+export async function getLookups(
+  idCarctr: number,
+  convenio?: number,
+): Promise<LookupsResponse> {
+  const qs = new URLSearchParams({ idCarctr: String(idCarctr) });
+  if (convenio !== undefined && Number.isFinite(convenio)) {
+    qs.set("convenio", String(convenio));
+  }
+  const res = await fetch(`/api/propostas/lookups?${qs}`);
+  return lerResposta<LookupsResponse>(res, "Falha ao carregar as listas da Sinqia");
+}
+
+/* --- Criação das propostas (Fase 3 — irreversível) --- */
+
+export interface CriacaoRowResult {
+  linha: number;
+  nome: string;
+  cpf: string;
+  nrClient: number | null;
+  /** Nº da proposta gerado pela Sinqia (quando identificável). */
+  nrProsp: string | null;
+  /** JA_EXISTE = proposta idêntica encontrada — nada foi criado. */
+  status: "OK" | "JA_EXISTE" | "ERRO" | "NAO_ENVIADO";
+  httpStatus: number | null;
+  envelopeStatus?: string;
+  globalMessage?: string;
+  messages: string;
+  detail?: string;
+}
+
+export async function startCriarPropostas(input: {
+  calcJobId: string;
+  linhas: number[];
+  /** cdLoja ausente = proposta sem loja/filial. */
+  params: CalculoParamsPayload & { cdConven: string; cdLoja?: number };
+  piloto: boolean;
+  /** true = cria mesmo com proposta idêntica existente (reemissão consciente). */
+  forcarDuplicadas: boolean;
+}): Promise<{ jobId: string; total: number; ignoradas: number; piloto: boolean; env: string }> {
+  const res = await fetch("/api/propostas/criar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return lerResposta(res, "Falha ao iniciar a criação");
+}
+
+export interface CriacaoStreamHandlers {
+  onSnapshot?: (d: {
+    total: number;
+    processed: number;
+    success: number;
+    jaExiste?: number;
+    error: number;
+    naoEnviado?: number;
+    results: CriacaoRowResult[];
+    done: boolean;
+  }) => void;
+  onRow?: (row: CriacaoRowResult) => void;
+  onProgress?: (p: {
+    processed: number;
+    total: number;
+    success: number;
+    jaExiste?: number;
+    error: number;
+    naoEnviado?: number;
+  }) => void;
+  onSessaoExpirada?: (d: { message: string }) => void;
+  onDone?: (d: unknown) => void;
+  onError?: (e: Event) => void;
+}
+
+/** Abre o SSE da criação. Retorna função para fechar. */
+export function streamCriacao(jobId: string, handlers: CriacaoStreamHandlers): () => void {
+  const es = new EventSource(`/api/propostas/criar/stream/${jobId}`);
+
+  const on = (name: string, cb?: (d: any) => void) => {
+    if (!cb) return;
+    es.addEventListener(name, (ev) => {
+      try {
+        cb(JSON.parse((ev as MessageEvent).data));
+      } catch {
+        /* ignora payload malformado */
+      }
+    });
+  };
+
+  on("snapshot", handlers.onSnapshot);
+  on("row", handlers.onRow);
+  on("progress", handlers.onProgress);
+  on("sessao-expirada", handlers.onSessaoExpirada);
+  on("done", (d) => {
+    handlers.onDone?.(d);
+    es.close();
+  });
+
+  es.onerror = (e) => handlers.onError?.(e);
+
+  return () => es.close();
+}
+
+/* --- Verificação de clientes na Sinqia (somente leitura) --- */
+
+export interface VerificacaoRowResult {
+  linha: number;
+  nome: string;
+  cpf: string;
+  nrClientPlanilha: number | null;
+  nrClientSinqia: number | null;
+  nomeSinqia: string;
+  status: "ENCONTRADO" | "DIVERGE" | "NAO_ENCONTRADO" | "ERRO" | "NAO_ENVIADO";
+  httpStatus: number | null;
+  detail?: string;
+}
+
+export async function startVerificarClientes(
+  alvos: Array<{ linha: number; nome: string; cpf: string; nrClient: number | null }>,
+): Promise<{ jobId: string; total: number; env: string }> {
+  const res = await fetch("/api/propostas/verificar-clientes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ alvos }),
+  });
+  return lerResposta(res, "Falha ao iniciar a verificação");
+}
+
+export interface VerificacaoStreamHandlers {
+  onSnapshot?: (d: {
+    total: number;
+    processed: number;
+    success: number;
+    diverge?: number;
+    naoEncontrado?: number;
+    error: number;
+    naoEnviado?: number;
+    results: VerificacaoRowResult[];
+    done: boolean;
+  }) => void;
+  onRow?: (row: VerificacaoRowResult) => void;
+  onProgress?: (p: {
+    processed: number;
+    total: number;
+    success: number;
+    diverge?: number;
+    naoEncontrado?: number;
+    error: number;
+    naoEnviado?: number;
+  }) => void;
+  onSessaoExpirada?: (d: { message: string }) => void;
+  onDone?: (d: unknown) => void;
+  onError?: (e: Event) => void;
+}
+
+/** Abre o SSE da verificação de clientes. Retorna função para fechar. */
+export function streamVerificacao(
+  jobId: string,
+  handlers: VerificacaoStreamHandlers,
+): () => void {
+  const es = new EventSource(`/api/propostas/verificar-clientes/stream/${jobId}`);
+
+  const on = (name: string, cb?: (d: any) => void) => {
+    if (!cb) return;
+    es.addEventListener(name, (ev) => {
+      try {
+        cb(JSON.parse((ev as MessageEvent).data));
+      } catch {
+        /* ignora payload malformado */
+      }
+    });
+  };
+
+  on("snapshot", handlers.onSnapshot);
+  on("row", handlers.onRow);
+  on("progress", handlers.onProgress);
+  on("sessao-expirada", handlers.onSessaoExpirada);
+  on("done", (d) => {
+    handlers.onDone?.(d);
+    es.close();
+  });
+
+  es.onerror = (e) => handlers.onError?.(e);
+
+  return () => es.close();
+}
+
+/** Abre o SSE de progresso do cálculo. Retorna função para fechar. */
+export function streamCalculo(jobId: string, handlers: CalculoStreamHandlers): () => void {
+  const es = new EventSource(`/api/propostas/calcular/stream/${jobId}`);
+
+  const on = (name: string, cb?: (d: any) => void) => {
+    if (!cb) return;
+    es.addEventListener(name, (ev) => {
+      try {
+        cb(JSON.parse((ev as MessageEvent).data));
+      } catch {
+        /* ignora payload malformado */
+      }
+    });
+  };
+
+  on("snapshot", handlers.onSnapshot);
+  on("row", handlers.onRow);
+  on("progress", handlers.onProgress);
+  on("sessao-expirada", handlers.onSessaoExpirada);
+  on("fatal", handlers.onFatal);
   on("done", (d) => {
     handlers.onDone?.(d);
     es.close();

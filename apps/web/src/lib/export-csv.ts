@@ -1,4 +1,4 @@
-import type { RowResult, SituacaoRowResult } from "./api";
+import type { CalculoRowResult, CriacaoRowResult, RowResult, SituacaoRowResult } from "./api";
 
 /**
  * Escapa um valor para CSV.
@@ -80,6 +80,113 @@ export function exportSituacaoCsv(results: SituacaoRowResult[]): void {
       r.documento,
       r.situacaoAnterior,
       r.situacaoNova,
+      r.status,
+      r.httpStatus ?? "",
+      r.envelopeStatus ?? "",
+      r.globalMessage ?? "",
+      r.messages ?? "",
+      r.detail ?? "",
+    ]),
+  );
+}
+
+/** Exporta o resultado do cálculo/conferência do lote de propostas. */
+export function exportCalculoCsv(results: CalculoRowResult[]): void {
+  download(
+    "conferencia-calculo-propostas",
+    [
+      "linha",
+      "nome",
+      "cpf",
+      "nrClient",
+      "status",
+      "parcelaExcel",
+      "parcelaCalculada",
+      "financiadoExcel",
+      "financiadoCalculado",
+      "liquidoExcel",
+      "liquidoCalculado",
+      "iof",
+      "vlTotal",
+      "cetMes",
+      "qtParcelas",
+      "divergencias",
+      "mensagens",
+      "detalhe",
+    ],
+    results.map((r) => [
+      r.linha,
+      r.nome,
+      r.cpf,
+      r.nrClient ?? "",
+      r.status,
+      r.vlPrestaExcel ?? "",
+      r.vlPrestaCalc ?? "",
+      r.vlFinanciadoExcel ?? "",
+      r.vlFinanciadoCalc ?? "",
+      r.vlLiquidoExcel ?? "",
+      r.vlLiquidCalc ?? "",
+      r.vlIof ?? "",
+      r.vlTotal ?? "",
+      r.txCetAm ?? "",
+      r.qtPrest ?? "",
+      r.divergencias
+        .map((d) => `${d.campo}: excel ${d.excel} vs calc ${d.calculado}`)
+        .join(" ;; "),
+      r.messages ?? "",
+      r.detail ?? "",
+    ]),
+  );
+}
+
+/** Uma pendência consolidada do lote de propostas (para corrigir a planilha). */
+export interface PendenciaRow {
+  linha: number;
+  nome: string;
+  cpf: string;
+  idSinqia: string;
+  situacao: string;
+  /** De onde veio o problema: Planilha / Cliente Sinqia / Cálculo. */
+  origem: string;
+  problema: string;
+}
+
+/**
+ * Relatório de pendências: tudo que impede a linha de virar proposta —
+ * problemas de planilha, cliente não encontrado/divergente na Sinqia e
+ * erros/divergências de cálculo. Vai para quem gera a planilha corrigida.
+ */
+export function exportPendenciasCsv(rows: PendenciaRow[]): void {
+  download(
+    "pendencias-emissoes",
+    ["linha", "nome", "cpf", "idSinqia", "situacao", "origem", "problema"],
+    rows.map((r) => [r.linha, r.nome, r.cpf, r.idSinqia, r.situacao, r.origem, r.problema]),
+  );
+}
+
+/** Exporta o relatório da CRIAÇÃO das propostas (nº gerado por linha). */
+export function exportCriacaoCsv(results: CriacaoRowResult[]): void {
+  download(
+    "criacao-propostas",
+    [
+      "linha",
+      "nome",
+      "cpf",
+      "nrClient",
+      "nrProposta",
+      "status",
+      "httpStatus",
+      "statusEnvelope",
+      "globalMessage",
+      "mensagens",
+      "detalhe",
+    ],
+    results.map((r) => [
+      r.linha,
+      r.nome,
+      r.cpf,
+      r.nrClient ?? "",
+      r.nrProsp ?? "",
       r.status,
       r.httpStatus ?? "",
       r.envelopeStatus ?? "",
