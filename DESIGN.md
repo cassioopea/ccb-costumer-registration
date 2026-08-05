@@ -27,11 +27,12 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
 - **Semânticas** (`--success`, `--warning`, `--destructive`, `--info`): só para
   ESTADO (criada, divergente, erro, pendente). Nunca decoração. `--warning-foreground`
   é escuro de propósito — textos de divergência assentam sobre fundo claro.
-- **Painel de processo** (`--panel`): o azul-marinho do Backoffice Opea, reservado
-  à superfície que destaca a operação em andamento (ResumoOperacao). Dentro dele
-  aplica-se a classe `.panel-dark`, que re-mapeia os tokens locais (texto branco,
-  CTA primário invertido em branco, cores de estado clareadas para AA) — os
-  componentes filhos não mudam, só o contexto.
+- **Painel de processo** (`--panel`): vinho fechado da marca (wine-900, mesmo tom
+  do header), reservado à superfície que destaca a operação em andamento
+  (ResumoOperacao). Dentro dele aplica-se a classe `.panel-dark`, que re-mapeia os
+  tokens locais (texto branco, CTA primário invertido em branco — padrão "Novo
+  cadastro" do Backoffice —, cores de estado clareadas para AA) — os componentes
+  filhos não mudam, só o contexto.
 - Um único accent por tela. Cores de gráfico só via `--chart-*`.
 
 ### Tipografia
@@ -105,7 +106,7 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
   card, dialog, progress, skeleton.
 - `RateInput` — taxa com sufixo (% a.m.), alinhada à direita, tabular-nums.
 - `PipelineSteps` — indicador passivo de etapas do fluxo (não é wizard).
-- `ResumoOperacao` — painel vivo sticky, na superfície azul do Backoffice
+- `ResumoOperacao` — painel vivo sticky, na superfície escura da marca
   (`bg-panel` + `.panel-dark`), que consolida o que está sendo criado (linhas,
   somas, parâmetros, status) + o CTA da fase atual. Elemento assinatura das
   telas de originação.

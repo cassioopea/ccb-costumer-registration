@@ -11,8 +11,8 @@ export interface ItemResumo {
 
 /**
  * Resumo vivo da operação — elemento assinatura das telas de originação.
- * Barra aderente ao rodapé, na superfície azul do Backoffice Opea
- * (.panel-dark), que consolida o que está sendo criado (linhas, somas,
+ * Barra aderente ao rodapé, na superfície escura da marca (--panel +
+ * .panel-dark), que consolida o que está sendo criado (linhas, somas,
  * parâmetros, status das fases) e carrega o CTA da fase atual. O operador
  * nunca perde de vista o que a ferramenta vai gravar na Sinqia.
  */

@@ -203,12 +203,12 @@
   --sidebar-ring: var(--wine-700);
 
   /*
-   * Painel de destaque do processo — o azul-marinho do Backoffice Opea
-   * (header do backoffice-scd). Superfície escura que destaca o resumo vivo
-   * da operação; o texto interno resolve via .panel-dark.
+   * Painel de destaque do processo — vinho fechado da marca (mesmo tom do
+   * header). Superfície escura que destaca o resumo vivo da operação; o
+   * texto interno resolve via .panel-dark.
    */
-  --panel: oklch(0.245 0.055 258);
-  --panel-foreground: oklch(0.98 0.004 250);
+  --panel: var(--wine-900);
+  --panel-foreground: oklch(0.98 0.005 60);
 }
 
 .dark {
@@ -248,8 +248,8 @@
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: var(--wine-600);
 
-  --panel: oklch(0.245 0.055 258);
-  --panel-foreground: oklch(0.98 0.004 250);
+  --panel: var(--wine-900);
+  --panel-foreground: oklch(0.98 0.005 60);
 }
 
 @layer base {
@@ -286,20 +286,20 @@
 
 @layer components {
   /*
-   * Contexto de superfície ESCURA (painel azul do Backoffice). Re-mapeia os
-   * tokens locais: texto vira branco, o CTA primário inverte para branco
-   * (como o "Novo cadastro" do Backoffice) e as cores de estado clareiam
-   * para manter contraste AA sobre o azul. Os componentes filhos não mudam —
-   * só o contexto muda.
+   * Contexto de superfície ESCURA (painel --panel). Re-mapeia os tokens
+   * locais: texto vira branco, o CTA primário inverte para branco (padrão
+   * "Novo cadastro" do Backoffice) e as cores de estado clareiam para
+   * manter contraste AA sobre o fundo escuro. Os componentes filhos não
+   * mudam — só o contexto muda.
    */
   .panel-dark {
     --foreground: var(--panel-foreground);
-    --muted-foreground: oklch(0.76 0.025 255);
+    --muted-foreground: oklch(0.78 0.02 350);
     --border: oklch(1 0 0 / 18%);
     --background: transparent;
     --primary: oklch(1 0 0);
     --primary-foreground: var(--panel);
-    --primary-hover: oklch(0.92 0.012 255);
+    --primary-hover: oklch(0.92 0.01 350);
     --accent: oklch(1 0 0 / 10%);
     --accent-foreground: var(--panel-foreground);
     --ring: var(--panel-foreground);
