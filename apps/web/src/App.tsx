@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { FileSpreadsheet, ListChecks, Loader2, Upload, UserPlus } from "lucide-react";
+import { FilePlus2, FileSpreadsheet, ListChecks, Loader2, Upload, UserPlus } from "lucide-react";
 import { Topbar, type Modulo } from "@/components/Topbar";
 import { SessionExpiredDialog } from "@/components/SessionExpiredDialog";
 import { CadastroIndividual } from "@/pages/CadastroIndividual";
 import { CadastroLote } from "@/pages/CadastroLote";
 import { SituacaoClientes } from "@/pages/SituacaoClientes";
 import { PropostasLote } from "@/pages/PropostasLote";
+import { PropostaIndividual } from "@/pages/PropostaIndividual";
 import { Login } from "@/pages/Login";
 import { SessionProvider, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -18,7 +19,7 @@ import { cn } from "@/lib/utils";
  */
 
 type TelaClientes = "individual" | "cadastro" | "situacao";
-type TelaPropostas = "lote-propostas";
+type TelaPropostas = "lote-propostas" | "proposta-individual";
 
 const TELAS_CLIENTES = [
   { id: "situacao" as const, label: "Base de clientes", icon: ListChecks },
@@ -27,7 +28,8 @@ const TELAS_CLIENTES = [
 ];
 
 const TELAS_PROPOSTAS = [
-  { id: "lote-propostas" as const, label: "Lote de Propostas", icon: FileSpreadsheet },
+  { id: "lote-propostas" as const, label: "Lote de propostas", icon: FileSpreadsheet },
+  { id: "proposta-individual" as const, label: "Proposta individual", icon: FilePlus2 },
 ];
 
 export default function App() {
@@ -102,8 +104,21 @@ function Shell() {
         <div className={modulo === "clientes" && telaClientes === "situacao" ? undefined : "hidden"}>
           <SituacaoClientes ativa={modulo === "clientes" && telaClientes === "situacao"} />
         </div>
-        <div className={modulo === "propostas" ? undefined : "hidden"}>
+        <div
+          className={
+            modulo === "propostas" && telaPropostas === "lote-propostas" ? undefined : "hidden"
+          }
+        >
           <PropostasLote />
+        </div>
+        <div
+          className={
+            modulo === "propostas" && telaPropostas === "proposta-individual"
+              ? undefined
+              : "hidden"
+          }
+        >
+          <PropostaIndividual />
         </div>
       </main>
 

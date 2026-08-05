@@ -143,35 +143,63 @@ function snapshot(state: CalculoJobState) {
   };
 }
 
+/** Dados mínimos de UMA operação para o calcProsp (lote ou individual). */
+export interface DadosCalculo {
+  cpf: string;
+  qtParcelas: number;
+  /** LÍQUIDO da operação — vira o vlContra do request (ver comentário abaixo). */
+  vlLiquido: number;
+  dtVct1Ap: number;
+  vlTac?: number | null;
+  vlSeguro?: number | null;
+  vlOutros?: number | null;
+}
+
 /**
- * Monta o request do calcProsp para uma linha.
+ * Monta o request do calcProsp a partir dos dados de uma operação.
  *
- * vlContra recebe o LÍQUIDO do Excel (confirmado empiricamente): a Sinqia
- * financia TAC/Seguro/Outros ("F") por cima do vlContra e o total financiado
- * que ela devolve bate com a coluna Financiado da planilha.
+ * vlContra recebe o LÍQUIDO (confirmado empiricamente): a Sinqia financia
+ * TAC/Seguro/Outros ("F") por cima do vlContra e o total financiado que ela
+ * devolve bate com a coluna Financiado da planilha.
  */
-export function buildCalcRequest(row: EmissaoRow, params: CalculoParams): CalcProspRequest {
+export function buildCalcRequestDados(d: DadosCalculo, params: CalculoParams): CalcProspRequest {
   return {
-    nrCPF: row.cpf,
-    qtPrest: row.qtParcelas ?? 1,
+    nrCPF: d.cpf,
+    qtPrest: d.qtParcelas,
     vlSldRefin: null,
     txJuros: params.txJuros,
-    vlContra: row.vlLiquido ?? 0,
+    vlContra: d.vlLiquido,
     cdProd: params.cdProd,
     idCarCtr: params.idCarCtr,
     idRefin: "N",
     dtContra: params.dtContra,
-    dtVct1Ap: row.dtVct1Ap ?? 0,
+    dtVct1Ap: d.dtVct1Ap,
     nmLogin: null,
-    // 0 no Excel = encargo inexistente → null, como no payload de referência.
-    vlOutvlr: row.vlOutros || null,
+    // 0 = encargo inexistente → null, como no payload de referência.
+    vlOutvlr: d.vlOutros || null,
     tpPgOutros: "F",
-    vlSeguro: row.vlSeguro || null,
+    vlSeguro: d.vlSeguro || null,
     tpPgSeguro: "F",
-    vlTac: row.vlTac || null,
+    vlTac: d.vlTac || null,
     tpPgTac: "F",
     idPrestResponse: "S",
   };
+}
+
+/** Variante do lote: extrai os dados da linha do Emissoes.xlsx. */
+export function buildCalcRequest(row: EmissaoRow, params: CalculoParams): CalcProspRequest {
+  return buildCalcRequestDados(
+    {
+      cpf: row.cpf,
+      qtParcelas: row.qtParcelas ?? 1,
+      vlLiquido: row.vlLiquido ?? 0,
+      dtVct1Ap: row.dtVct1Ap ?? 0,
+      vlTac: row.vlTac,
+      vlSeguro: row.vlSeguro,
+      vlOutros: row.vlOutros,
+    },
+    params,
+  );
 }
 
 export function startCalculoJob(input: CalculoJobInput): string {

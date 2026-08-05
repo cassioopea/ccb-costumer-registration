@@ -471,6 +471,87 @@ export interface LookupsResponse {
   avisos: string[];
 }
 
+/* --- Proposta individual (fluxo unitário) --- */
+
+export interface ClienteBuscaResponse {
+  env: string;
+  httpStatus: number;
+  encontrado: boolean;
+  nrClient: number | null;
+  nome: string;
+}
+
+/** Busca o cliente por CPF no ambiente ativo (somente leitura). */
+export async function buscarClienteParaProposta(cpf: string): Promise<ClienteBuscaResponse> {
+  const res = await fetch(`/api/propostas/cliente/${encodeURIComponent(cpf)}`);
+  return lerResposta(res, "Falha ao buscar o cliente");
+}
+
+export interface DadosOperacaoPayload {
+  vlLiquido: number;
+  qtParcelas: number;
+  /** AAAAMMDD. */
+  dtVct1Ap: number;
+  vlTac?: number;
+  vlSeguro?: number;
+  vlOutros?: number;
+}
+
+export interface CalculoUmaResumo {
+  vlPresta: number;
+  vlFinanciado: number;
+  vlLiquid: number;
+  vlIof: number | null;
+  vlTotal: number | null;
+  txAm: number;
+  txCetAm: number | null;
+  qtPrest: number;
+  dtVct1ap: number;
+  dtVctult: number | null;
+  vlTac: number;
+  vlSeguro: number;
+  vlOutvlr: number;
+}
+
+export interface CalcularUmaResponse {
+  env: string;
+  calcId: string;
+  httpStatus: number;
+  messages: string;
+  request: unknown;
+  resumo: CalculoUmaResumo;
+}
+
+/** Calcula UMA operação (calcProsp — nada é gravado). O cálculo fica retido no servidor. */
+export async function calcularUmaProposta(input: {
+  cpf: string;
+  nome: string;
+  dados: DadosOperacaoPayload;
+  params: CalculoParamsPayload;
+}): Promise<CalcularUmaResponse> {
+  const res = await fetch("/api/propostas/calcular-uma", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return lerResposta(res, "Falha ao calcular a proposta");
+}
+
+/** CRIA a proposta individual na Sinqia (irreversível). */
+export async function criarUmaProposta(input: {
+  calcId: string;
+  /** cdLoja ausente = proposta sem loja/filial. */
+  params: CalculoParamsPayload & { cdConven: string; cdLoja?: number };
+  forcarDuplicada: boolean;
+}): Promise<CriacaoRowResult & { env: string }> {
+  const res = await fetch("/api/propostas/criar-uma", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return lerResposta(res, "Falha ao criar a proposta");
+}
+
 /** Listas da Sinqia para os selects de parâmetros (somente leitura). */
 export async function getLookups(
   idCarctr: number,

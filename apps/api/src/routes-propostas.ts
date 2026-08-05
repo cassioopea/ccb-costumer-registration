@@ -1,16 +1,30 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { dateInt, emissaoRowSchema } from "@cadastro-lote/shared";
+import { dateInt, emissaoRowSchema, type CalcProspCalculo } from "@cadastro-lote/shared";
 import { env } from "./env.js";
 import { parseEmissoesXlsx } from "./emissoes.js";
 import {
+  buildCalcRequestDados,
   getCalculoCompleto,
   getCalculoEmitter,
   getCalculoJob,
   startCalculoJob,
 } from "./calculo-job.js";
-import { getCriacaoEmitter, getCriacaoJob, startCriacaoJob } from "./criacao-job.js";
-import { listarConvenios, listarFiliais, listarProdutos } from "./sinqia-client.js";
+import {
+  criarUma,
+  getCriacaoEmitter,
+  getCriacaoJob,
+  startCriacaoJob,
+  SessaoExpiradaError,
+} from "./criacao-job.js";
+import {
+  buscarClientePorCpf,
+  calcProsp,
+  listarConvenios,
+  listarFiliais,
+  listarProdutos,
+} from "./sinqia-client.js";
 import {
   getVerificacaoEmitter,
   getVerificacaoJob,
@@ -336,6 +350,183 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     }
     streamJob(req, reply, job, getCriacaoEmitter(jobId));
   });
+
+  /* ------------------- Proposta INDIVIDUAL (fluxo unitário) ------------------- */
+
+  /** Sessão/token da Sinqia morto no meio de uma chamada síncrona. */
+  const responder401 = (reply: FastifyReply, sessionId: string) => {
+    destroySession(sessionId);
+    reply.clearCookie(COOKIE_SID, { path: "/" });
+    return reply.code(401).send({
+      error: "O token da Sinqia expirou. Entre novamente.",
+      code: CODE_SESSAO_EXPIRADA,
+      motivo: "token",
+    });
+  };
+
+  /**
+   * Passo 1 — busca o cliente por CPF (somente leitura, autoritativo no
+   * ambiente ativo). As propostas existentes vêm do endpoint já existente
+   * /api/clientes/:cpf/propostas.
+   */
+  app.get("/api/propostas/cliente/:cpf", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const cpf = String((req.params as { cpf?: string }).cpf ?? "").replace(/\D/g, "");
+    if (cpf.length !== 11) {
+      return reply.code(400).send({ error: "CPF deve ter 11 dígitos." });
+    }
+
+    const busca = await buscarClientePorCpf(session.token, cpf);
+    if (busca.httpStatus === 401) return responder401(reply, session.id);
+
+    return reply.send({
+      env: env.SINQIA_ENV,
+      httpStatus: busca.httpStatus,
+      encontrado: busca.encontrado,
+      nrClient: busca.nrClient,
+      nome: busca.dsNome,
+    });
+  });
+
+  /**
+   * Passo 2 — cálculo de UMA operação (calcProsp; nada é gravado). O bloco
+   * `calculo` completo fica retido no servidor por sessão: a criação parte
+   * dele, nunca de valores reenviados pelo front.
+   */
+  app.post("/api/propostas/calcular-uma", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = calcularUmaBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.code(400).send({
+        error: `Requisição inválida${issue ? `: ${issue.path.join(".")} — ${issue.message}` : "."}`,
+      });
+    }
+    const { cpf, nome, dados, params } = parsed.data;
+
+    const request = buildCalcRequestDados({ cpf, ...dados }, params);
+    const { httpStatus, calculo, analysis, rawBody } = await calcProsp(session.token, request);
+    if (httpStatus === 401) return responder401(reply, session.id);
+
+    if (!calculo) {
+      return reply.code(422).send({
+        error: analysis.reason ?? "A Sinqia não devolveu o cálculo.",
+        httpStatus,
+        messages: analysis.messagesText || rawBody?.slice(0, 300) || "",
+        request,
+      });
+    }
+
+    const calcId = reterCalculoIndividual({
+      sessionId: session.id,
+      cpf,
+      nome,
+      calculo,
+      criadoEm: Date.now(),
+    });
+
+    return reply.send({
+      env: env.SINQIA_ENV,
+      calcId,
+      httpStatus,
+      messages: analysis.messagesText,
+      request,
+      resumo: {
+        vlPresta: calculo.vlPresta,
+        vlFinanciado: calculo.vlContra,
+        vlLiquid: calculo.vlLiquid,
+        vlIof: calculo.vlIof,
+        vlTotal: calculo.vlTotal,
+        txAm: calculo.txAm,
+        txCetAm: calculo.txCetAm,
+        qtPrest: calculo.qtPrest,
+        dtVct1ap: calculo.dtVct1ap,
+        dtVctult: calculo.dtVctult,
+        vlTac: calculo.vlTac ?? 0,
+        vlSeguro: calculo.vlSeguro ?? 0,
+        vlOutvlr: calculo.vlOutvlr ?? 0,
+      },
+    });
+  });
+
+  /**
+   * Passo 3 — CRIA a proposta individual (irreversível). Mesmo caminho do
+   * lote: busca do cliente na hora, guarda de duplicidade, TAC via vlConces,
+   * sem retry (não idempotente).
+   */
+  app.post("/api/propostas/criar-uma", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = criarUmaBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.code(400).send({
+        error: `Requisição inválida${issue ? `: ${issue.path.join(".")} — ${issue.message}` : "."}`,
+      });
+    }
+    const { calcId, params, forcarDuplicada } = parsed.data;
+
+    const retido = calculosIndividuais.get(calcId);
+    if (!retido) {
+      return reply.code(410).send({
+        error: "O cálculo desta proposta não está mais em memória — recalcule antes de criar.",
+      });
+    }
+    if (retido.sessionId !== session.id) {
+      return reply.code(403).send({ error: "Este cálculo pertence a outra sessão." });
+    }
+
+    try {
+      const result = await criarUma(
+        session.token,
+        { linha: 1, nome: retido.nome, cpf: retido.cpf, calculo: retido.calculo },
+        params,
+        forcarDuplicada,
+      );
+      // Criada com sucesso: descarta o cálculo retido para impedir reenvio
+      // acidental do MESMO calcId (nova proposta exige novo cálculo).
+      if (result.status === "OK") calculosIndividuais.delete(calcId);
+
+      app.log.info(
+        `Proposta individual: ${result.status} (CPF final ${retido.cpf.slice(-4)}) — ` +
+          `ambiente ${env.SINQIA_ENV.toUpperCase()}`,
+      );
+      return reply.send({ env: env.SINQIA_ENV, ...result });
+    } catch (e) {
+      if (e instanceof SessaoExpiradaError) return responder401(reply, session.id);
+      return reply.code(502).send({ error: (e as Error).message });
+    }
+  });
+}
+
+/** Cálculo individual retido por sessão — insumo do criar-uma. */
+interface CalculoIndividualRetido {
+  sessionId: string;
+  cpf: string;
+  nome: string;
+  calculo: CalcProspCalculo;
+  criadoEm: number;
+}
+
+const calculosIndividuais = new Map<string, CalculoIndividualRetido>();
+const MAX_CALCULOS_INDIVIDUAIS = 20;
+
+function reterCalculoIndividual(entry: CalculoIndividualRetido): string {
+  while (calculosIndividuais.size >= MAX_CALCULOS_INDIVIDUAIS) {
+    const maisAntigo = [...calculosIndividuais.entries()].sort(
+      (a, b) => a[1].criadoEm - b[1].criadoEm,
+    )[0];
+    if (!maisAntigo) break;
+    calculosIndividuais.delete(maisAntigo[0]);
+  }
+  const id = randomUUID();
+  calculosIndividuais.set(id, entry);
+  return id;
 }
 
 /** Query do GET /api/propostas/lookups. */
@@ -390,4 +581,42 @@ const calcularBodySchema = z.object({
     idCarCtr: z.number().int(),
     dtContra: dateInt,
   }),
+});
+
+const dinheiroOpcional = z.number().nonnegative().optional();
+
+/** Body do POST /api/propostas/calcular-uma (proposta individual). */
+const calcularUmaBodySchema = z.object({
+  cpf: z.string().regex(/^\d{11}$/, "CPF deve ter 11 dígitos."),
+  nome: z.string().default(""),
+  dados: z.object({
+    vlLiquido: z.number().positive("Informe o valor líquido da operação."),
+    qtParcelas: z.number().int().positive("Quantidade de parcelas inválida."),
+    dtVct1Ap: dateInt,
+    vlTac: dinheiroOpcional,
+    vlSeguro: dinheiroOpcional,
+    vlOutros: dinheiroOpcional,
+  }),
+  params: z.object({
+    txJuros: z.number().positive("Taxa de juros deve ser positiva."),
+    cdProd: z.number().int(),
+    idCarCtr: z.number().int(),
+    dtContra: dateInt,
+  }),
+});
+
+/** Body do POST /api/propostas/criar-uma (proposta individual). */
+const criarUmaBodySchema = z.object({
+  calcId: z.string().uuid("calcId inválido."),
+  params: z.object({
+    txJuros: z.number().positive(),
+    cdProd: z.number().int(),
+    idCarCtr: z.number().int(),
+    cdConven: z.string().min(1),
+    /** Ausente = proposta sem loja/filial. */
+    cdLoja: z.number().int().optional(),
+    dtContra: dateInt,
+  }),
+  /** true = cria mesmo com proposta idêntica existente (reemissão consciente). */
+  forcarDuplicada: z.boolean().default(false),
 });

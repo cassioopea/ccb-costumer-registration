@@ -28,7 +28,7 @@ import { destroySession } from "./session.js";
 const DETALHE_SESSAO_EXPIRADA =
   "Sessão expirou antes desta linha — entre novamente e reenvie as pendentes.";
 
-class SessaoExpiradaError extends Error {
+export class SessaoExpiradaError extends Error {
   constructor() {
     super(DETALHE_SESSAO_EXPIRADA);
     this.name = "SessaoExpiradaError";
@@ -242,8 +242,12 @@ async function processJob(id: string, input: CriacaoJobInput) {
   emit(id, "done", snapshot(state));
 }
 
-/** Cria UMA proposta: busca o cliente → guarda de duplicidade → monta → envia. */
-async function criarUma(
+/**
+ * Cria UMA proposta: busca o cliente → guarda de duplicidade → monta → envia.
+ * Exportada: a proposta individual usa exatamente o mesmo caminho do lote
+ * (mesma guarda, mesmo builder, mesmo TAC via vlConces).
+ */
+export async function criarUma(
   token: string,
   item: CriacaoItem,
   params: PropostaLoteParamsCriacao,
