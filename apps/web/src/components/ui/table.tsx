@@ -1,10 +1,18 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
-const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
-  ({ className, ...props }, ref) => (
-    <div className="relative w-full overflow-x-auto">
-      <table ref={ref} className={cn("w-full caption-bottom text-sm", className)} {...props} />
+interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
+  /**
+   * Rolagem interna com cabeçalho aderente (classe .table-scroll do CSS
+   * global). Use nas grades longas — planilhas de dezenas/centenas de linhas.
+   */
+  scroll?: boolean;
+}
+
+const Table = React.forwardRef<HTMLTableElement, TableProps>(
+  ({ className, scroll = false, ...props }, ref) => (
+    <div className={cn("relative w-full overflow-x-auto", scroll && "table-scroll")}>
+      <table ref={ref} className={cn("w-full caption-bottom text-body", className)} {...props} />
     </div>
   ),
 );
@@ -47,7 +55,7 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-10 px-3 text-left align-middle font-medium text-[var(--muted-foreground)] whitespace-nowrap",
+      "h-9 px-2 text-left align-middle text-label text-muted-foreground whitespace-nowrap",
       className,
     )}
     {...props}
@@ -59,7 +67,7 @@ const TableCell = React.forwardRef<
   HTMLTableCellElement,
   React.TdHTMLAttributes<HTMLTableCellElement>
 >(({ className, ...props }, ref) => (
-  <td ref={ref} className={cn("p-3 align-middle", className)} {...props} />
+  <td ref={ref} className={cn("px-2 py-2 align-middle", className)} {...props} />
 ));
 TableCell.displayName = "TableCell";
 
