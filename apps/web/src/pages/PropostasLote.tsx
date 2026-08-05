@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Calculator,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -10,9 +11,7 @@ import {
   FileSpreadsheet,
   Inbox,
   Loader2,
-  Scale,
   SearchX,
-  Upload,
   UserCheck,
   XCircle,
 } from "lucide-react";
@@ -51,6 +50,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
+import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
+import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
+import { RateInput } from "@/components/ui/rate-input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
   getLookups,
@@ -117,6 +120,17 @@ function paramInvalido(campo: keyof ParamsLote, valor: string): string | null {
 }
 
 const isoParaAAAAMMDD = (iso: string) => Number(iso.replace(/-/g, ""));
+
+const isoParaBR = (iso: string) =>
+  /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
+
+/** Rolagem suave que respeita prefers-reduced-motion (ver DESIGN.md › Movimento). */
+function rolarAte(el: HTMLElement | null) {
+  el?.scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    block: "start",
+  });
+}
 
 /**
  * Data-base sugerida para o contrato: 1 mês ANTES do 1º vencimento mais comum
@@ -234,12 +248,8 @@ export function PropostasLote() {
   const calcCardRef = useRef<HTMLDivElement>(null);
   const criacaoCardRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (phase === "calculando") {
-      calcCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-    if (phase === "criando") {
-      criacaoCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (phase === "calculando") rolarAte(calcCardRef.current);
+    if (phase === "criando") rolarAte(criacaoCardRef.current);
   }, [phase]);
 
   async function lerArquivo(file: File) {
@@ -551,6 +561,149 @@ export function PropostasLote() {
     (phase === "calculado" || phase === "criado") && conferidas > 0 && !!calcJobId;
   const confirmacaoProdOk = !IS_PROD || criarConfirmText.trim().toUpperCase() === "CRIAR";
 
+  /** Somas das linhas SELECIONADAS na planilha — alimentam o resumo vivo. */
+  const somaSelecionadas = useMemo(() => {
+    let financiado = 0;
+    let liquido = 0;
+    for (const r of rowsEfetivas) {
+      if (!selecionadas.has(r.linha)) continue;
+      financiado += r.vlFinanciado ?? 0;
+      liquido += r.vlLiquido ?? 0;
+    }
+    return { financiado, liquido };
+  }, [rowsEfetivas, selecionadas]);
+
+  /** Etapas do fluxo para o indicador passivo (não trava navegação). */
+  const etapas: EtapaPipeline[] = [
+    { id: "carregar", label: "Carregar planilha", estado: base ? "concluida" : "ativa" },
+    {
+      id: "verificar",
+      label: "Verificar clientes",
+      estado: verificando ? "ativa" : verificacao.size > 0 ? "concluida" : "pendente",
+    },
+    {
+      id: "calcular",
+      label: "Calcular e conferir",
+      estado:
+        phase === "calculando"
+          ? "ativa"
+          : calcResults.length > 0 && phase !== "carregado"
+            ? "concluida"
+            : "pendente",
+    },
+    {
+      id: "criar",
+      label: "Criar propostas",
+      estado: phase === "criando" ? "ativa" : phase === "criado" ? "concluida" : "pendente",
+    },
+  ];
+
+  const produtoSelecionado = lookups?.produtos.find(
+    (o) => String(o.codigo) === params.cdProd,
+  )?.descricao;
+
+  /** Dados-chave da operação para o resumo vivo (barra sticky). */
+  const itensResumo: ItemResumo[] = [
+    { rotulo: "Linhas selecionadas", valor: base ? `${selecionadas.size} de ${base.total}` : "—" },
+    { rotulo: "Financiado (seleção)", valor: formatBRL(somaSelecionadas.financiado), forte: true },
+    { rotulo: "Líquido (seleção)", valor: formatBRL(somaSelecionadas.liquido) },
+    { rotulo: "Taxa", valor: params.txJuros ? `${params.txJuros}% a.m.` : "—" },
+    {
+      rotulo: "Produto",
+      valor: (
+        <span title={produtoSelecionado}>{params.cdProd || "—"}</span>
+      ),
+    },
+    { rotulo: "Contrato", valor: isoParaBR(params.dtContra) },
+  ];
+
+  const statusResumo =
+    verificacao.size > 0 || calcResults.length > 0 || criacaoResults.length > 0 ? (
+      <span className="tabular-nums">
+        {verificacao.size > 0 && (
+          <>
+            Clientes: <span className="text-success">{verifContagem.ok} ok</span>
+            {verifContagem.diverge > 0 && (
+              <span className="text-warning-foreground"> · {verifContagem.diverge} divergentes</span>
+            )}
+            {verifContagem.naoEncontrado > 0 && (
+              <span className="text-destructive"> · {verifContagem.naoEncontrado} não cadastrados</span>
+            )}
+          </>
+        )}
+        {calcResults.length > 0 && (
+          <>
+            {verificacao.size > 0 && "   ·   "}
+            Cálculo: <span className="text-success">{calcProgress.success} OK</span>
+            {calcProgress.divergencia > 0 && (
+              <span className="text-warning-foreground"> · {calcProgress.divergencia} divergências</span>
+            )}
+            {calcProgress.error > 0 && (
+              <span className="text-destructive"> · {calcProgress.error} erros</span>
+            )}
+          </>
+        )}
+        {criacaoResults.length > 0 && (
+          <>
+            {"   ·   "}
+            Criação: <span className="text-success">{criacaoProgress.success} criadas</span>
+            {criacaoProgress.jaExiste > 0 && (
+              <span className="text-warning-foreground"> · {criacaoProgress.jaExiste} já existiam</span>
+            )}
+            {criacaoProgress.error > 0 && (
+              <span className="text-destructive"> · {criacaoProgress.error} erros</span>
+            )}
+          </>
+        )}
+      </span>
+    ) : (
+      "O cálculo só confere — nada é gravado na Sinqia até a criação."
+    );
+
+  /** CTA da fase atual — mora no resumo vivo, único lugar de ação primária. */
+  const ctaResumo = (
+    <>
+      {(phase === "calculado" || phase === "criado") && (
+        <Button variant="outline" onClick={() => void calcular()} disabled={!podeCalcular}>
+          <Calculator className="h-4 w-4" />
+          Recalcular
+        </Button>
+      )}
+      {phase === "criando" ? (
+        <Button disabled>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span className="tabular-nums">
+            Criando {criacaoProgress.processed}/{criacaoProgress.total}…
+          </span>
+        </Button>
+      ) : phase === "calculando" ? (
+        <Button disabled>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span className="tabular-nums">
+            Calculando {calcProgress.processed}/{calcProgress.total}…
+          </span>
+        </Button>
+      ) : podeCriar ? (
+        <Button
+          onClick={() => {
+            setCriarPiloto(false);
+            setCriarForcar(false);
+            setCriarConfirmText("");
+            setCriarOpen(true);
+          }}
+          title="Cria as propostas na Sinqia — ação irreversível, com confirmação"
+        >
+          Criar propostas ({conferidas} OK)
+        </Button>
+      ) : (
+        <Button onClick={() => void calcular()} disabled={!podeCalcular}>
+          <Calculator className="h-4 w-4" />
+          Calcular selecionadas
+        </Button>
+      )}
+    </>
+  );
+
   /** Dispara a criação (irreversível) das linhas OK do cálculo retido. */
   async function criarPropostas() {
     if (!calcJobId || linhasOK.length === 0) return;
@@ -607,18 +760,19 @@ export function PropostasLote() {
 
   return (
     <div className="space-y-6">
-      {/* Breadcrumb + título */}
-      <div>
-        <div className="mb-3 text-caption text-muted-foreground">
-          Esteira de Originação › Propostas › Lote de propostas
+      {/* Breadcrumb + título + etapas do fluxo */}
+      <div className="space-y-4">
+        <div>
+          <div className="mb-3 text-caption text-muted-foreground">
+            Esteira de Originação › Propostas › Lote de propostas
+          </div>
+          <h1 className="text-display text-foreground">Lote de Propostas</h1>
+          <p className="mt-1 text-body text-muted-foreground">
+            Carregue o Emissoes.xlsx, selecione as linhas, calcule e confira antes de
+            criar. O cálculo (calcProsp) não grava nada na Sinqia.
+          </p>
         </div>
-        <h1 className="text-display font-semibold tracking-tight text-foreground">
-          Lote de Propostas
-        </h1>
-        <p className="mt-1 text-label text-muted-foreground">
-          Carregue o Emissoes.xlsx, selecione as linhas, calcule e confira antes de
-          criar. O cálculo (calcProsp) não grava nada na Sinqia.
-        </p>
+        <PipelineSteps etapas={etapas} />
       </div>
 
       {error && (
@@ -633,10 +787,7 @@ export function PropostasLote() {
         {/* Upload */}
         <Card className="lg:col-span-1">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Upload className="h-4 w-4 text-primary" />
-              Planilha de emissões
-            </CardTitle>
+            <CardTitle>Planilha de emissões</CardTitle>
             <CardDescription>
               Aceita <code>.xlsx</code> no formato do Emissoes (Nome, CPF, ID_Sinqia,
               valores, 1º vcto., Situação).
@@ -655,7 +806,7 @@ export function PropostasLote() {
               onDragLeave={() => setDragOver(false)}
               onDrop={onDrop}
               className={cn(
-                "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors",
+                "focus-ring flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors duration-150",
                 dragOver ? "border-primary bg-accent" : "border-border hover:border-primary",
               )}
             >
@@ -714,10 +865,7 @@ export function PropostasLote() {
           <CardHeader>
             <div className="flex items-start justify-between gap-2">
               <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Calculator className="h-4 w-4 text-primary" />
-                  Parâmetros do lote
-                </CardTitle>
+                <CardTitle>Parâmetros do lote</CardTitle>
                 <CardDescription>
                   Valem para todas as propostas deste lote — não vêm do Excel. Produto,
                   convênio e loja vêm das listas da Sinqia.
@@ -746,10 +894,11 @@ export function PropostasLote() {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {/* Taxa de juros — sempre texto livre. */}
+              {/* Taxa de juros — campo financeiro com sufixo de unidade. */}
               <ParamInput
                 campo="txJuros"
-                label="Taxa de juros (% a.m.)"
+                label="Taxa de juros"
+                sufixo="% a.m."
                 params={params}
                 setParams={setParams}
               />
@@ -778,6 +927,7 @@ export function PropostasLote() {
                 setParams={setParams}
                 options={lookups?.produtos ?? []}
                 permitirManual
+                carregando={carregandoLookups}
               />
               <ParamSelect
                 campo="cdConven"
@@ -787,6 +937,7 @@ export function PropostasLote() {
                 options={lookups?.convenios ?? []}
                 onChangeValue={(v) => void carregarLookups(undefined, v)}
                 permitirManual
+                carregando={carregandoLookups}
               />
               <ParamSelect
                 campo="cdLoja"
@@ -796,28 +947,15 @@ export function PropostasLote() {
                 options={lookups?.filiais ?? []}
                 permitirManual
                 permitirVazio
+                carregando={carregandoLookups}
               />
-              <div className="space-y-1">
-                <Label htmlFor="param-dtContra" className="text-caption">
-                  Data do contrato
-                </Label>
-                <Input
-                  id="param-dtContra"
-                  type="date"
-                  value={params.dtContra}
-                  aria-invalid={paramInvalido("dtContra", params.dtContra) ? true : undefined}
-                  onChange={(e) => setParams((p) => ({ ...p, dtContra: e.target.value }))}
-                  className={cn(
-                    "tabular-nums",
-                    paramInvalido("dtContra", params.dtContra) && "border-destructive",
-                  )}
-                />
-                {paramInvalido("dtContra", params.dtContra) && (
-                  <p className="text-caption text-destructive">
-                    {paramInvalido("dtContra", params.dtContra)}
-                  </p>
-                )}
-              </div>
+              <ParamInput
+                campo="dtContra"
+                label="Data do contrato"
+                type="date"
+                params={params}
+                setParams={setParams}
+              />
             </div>
             <p className="mt-3 text-caption text-muted-foreground">
               A data do contrato é sugerida como 1 mês antes do 1º vencimento da planilha
@@ -865,9 +1003,13 @@ export function PropostasLote() {
                   ) : (
                     <UserCheck className="h-4 w-4" />
                   )}
-                  {verificando
-                    ? `Verificando ${verifProgress.processed}/${verifProgress.total}…`
-                    : "Verificar clientes"}
+                  {verificando ? (
+                    <span className="tabular-nums">
+                      Verificando {verifProgress.processed}/{verifProgress.total}…
+                    </span>
+                  ) : (
+                    "Verificar clientes"
+                  )}
                 </Button>
                 <Button
                   variant="outline"
@@ -949,7 +1091,7 @@ export function PropostasLote() {
                 type="button"
                 onClick={() => setFiltroSituacao(null)}
                 className={cn(
-                  "rounded-full border px-3 py-1 text-caption font-medium transition-colors",
+                  "focus-ring rounded-full border px-3 py-1 text-caption font-medium transition-colors duration-150",
                   filtroSituacao === null
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
@@ -963,7 +1105,7 @@ export function PropostasLote() {
                   type="button"
                   onClick={() => setFiltroSituacao(filtroSituacao === sit ? null : sit)}
                   className={cn(
-                    "rounded-full border px-3 py-1 text-caption font-medium transition-colors",
+                    "focus-ring rounded-full border px-3 py-1 text-caption font-medium transition-colors duration-150",
                     filtroSituacao === sit
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
@@ -990,11 +1132,14 @@ export function PropostasLote() {
             </div>
           )}
 
-          {/* Carregando */}
+          {/* Carregando — skeleton com a forma da grade que vai chegar */}
           {phase === "lendo" && !base && (
-            <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin" />
-              <span className="text-body">Lendo a planilha…</span>
+            <div className="space-y-2 py-2" role="status" aria-label="Lendo a planilha">
+              <Skeleton className="h-9 w-full" />
+              {Array.from({ length: 8 }, (_, i) => (
+                <Skeleton key={i} className="h-8 w-full" />
+              ))}
+              <span className="sr-only">Lendo a planilha…</span>
             </div>
           )}
 
@@ -1012,7 +1157,7 @@ export function PropostasLote() {
           )}
 
           {base && visiveis.length > 0 && (
-            <Table>
+            <Table scroll>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10">
@@ -1052,31 +1197,6 @@ export function PropostasLote() {
         </CardContent>
       </Card>
 
-      {/* Barra de ação do cálculo */}
-      {base && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-card p-4 shadow-card">
-          <p className="text-body text-muted-foreground">
-            <span className="font-semibold text-foreground">{selecionadas.size}</span>{" "}
-            linha(s) selecionada(s) para cálculo
-            {paramsErros.length > 0 && (
-              <span className="text-destructive"> · corrija os parâmetros do lote</span>
-            )}
-          </p>
-          <div className="flex items-center gap-3">
-            <span className="text-caption text-muted-foreground">
-              Só calcula e confere — nada é criado na Sinqia
-            </span>
-            <Button onClick={() => void calcular()} disabled={!podeCalcular}>
-              {phase === "calculando" ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Calculator className="h-4 w-4" />
-              )}
-              Calcular selecionadas
-            </Button>
-          </div>
-        </div>
-      )}
 
       {/* Resultado do cálculo + conferência (Fase 2) */}
       {(phase === "calculando" || phase === "calculado" || calcResults.length > 0) && (
@@ -1084,11 +1204,10 @@ export function PropostasLote() {
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Scale className="h-4 w-4 text-primary" />
+                <CardTitle>
                   {phase === "calculando" ? "Calculando e conferindo…" : "Conferência do cálculo"}
                 </CardTitle>
-                <CardDescription>
+                <CardDescription className="tabular-nums">
                   {calcProgress.processed} / {calcProgress.total} calculadas ·{" "}
                   <span className="text-success">{calcProgress.success} OK</span> ·{" "}
                   <span className="text-warning-foreground">
@@ -1141,7 +1260,7 @@ export function PropostasLote() {
                   : "Nenhuma linha neste filtro."}
               </p>
             ) : (
-              <Table>
+              <Table scroll>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-12">Linha</TableHead>
@@ -1218,7 +1337,7 @@ export function PropostasLote() {
                             <button
                               type="button"
                               onClick={() => toggleExpandida(r.linha)}
-                              className="flex items-center gap-1 text-caption text-primary hover:underline"
+                              className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
                             >
                               {aberta ? (
                                 <ChevronDown className="h-3 w-3" />
@@ -1243,44 +1362,27 @@ export function PropostasLote() {
               </Table>
             )}
 
-            {/* Gate da criação (Fase 3) */}
+            {/* Contexto da criação — o CTA mora no resumo vivo, único ponto de ação */}
             {(phase === "calculado" || phase === "criando" || phase === "criado") && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-4">
-                <div className="text-body text-muted-foreground">
-                  {calcProgress.divergencia > 0 ? (
-                    <span className="flex items-center gap-1.5 text-warning-foreground">
-                      <AlertTriangle className="h-4 w-4 text-warning" />
-                      {calcProgress.divergencia} divergência(s) ficarão de fora — a criação
-                      usa apenas as linhas OK.
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1.5 text-success">
-                      <CheckCircle2 className="h-4 w-4" />
-                      {conferidas} linha(s) conferida(s) e batendo com o Excel.
-                    </span>
-                  )}
-                  {pendencias.length > 0 && (
-                    <span className="mt-1 block text-caption">
-                      Exporte as <strong>pendências ({pendencias.length})</strong> no botão da
-                      grade acima e envie para quem corrige a planilha.
-                    </span>
-                  )}
-                </div>
-                <Button
-                  onClick={() => {
-                    setCriarPiloto(false);
-                    setCriarForcar(false);
-                    setCriarConfirmText("");
-                    setCriarOpen(true);
-                  }}
-                  disabled={phase === "criando" || !podeCriar}
-                  title="Cria as propostas na Sinqia — ação irreversível, com confirmação"
-                >
-                  {phase === "criando" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  Criar propostas ({conferidas} OK)
-                </Button>
+              <div className="rounded-lg border border-border bg-muted/30 p-4 text-body text-muted-foreground">
+                {calcProgress.divergencia > 0 ? (
+                  <span className="flex items-center gap-1.5 text-warning-foreground">
+                    <AlertTriangle className="h-4 w-4 text-warning" />
+                    {calcProgress.divergencia} divergência(s) ficarão de fora — a criação
+                    usa apenas as linhas OK.
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-success">
+                    <CheckCircle2 className="h-4 w-4" />
+                    {conferidas} linha(s) conferida(s) e batendo com o Excel.
+                  </span>
+                )}
+                {pendencias.length > 0 && (
+                  <span className="mt-1 block text-caption">
+                    Exporte as <strong>pendências ({pendencias.length})</strong> no botão da
+                    grade acima e envie para quem corrige a planilha.
+                  </span>
+                )}
               </div>
             )}
           </CardContent>
@@ -1293,11 +1395,10 @@ export function PropostasLote() {
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <CardTitle className="flex items-center gap-2">
-                  <FileSpreadsheet className="h-4 w-4 text-primary" />
+                <CardTitle>
                   {phase === "criando" ? "Criando propostas na Sinqia…" : "Resultado da criação"}
                 </CardTitle>
-                <CardDescription>
+                <CardDescription className="tabular-nums">
                   {criacaoProgress.processed} / {criacaoProgress.total} processadas ·{" "}
                   <span className="text-success">{criacaoProgress.success} criadas</span>
                   {criacaoProgress.jaExiste > 0 && (
@@ -1332,7 +1433,7 @@ export function PropostasLote() {
             />
           </CardHeader>
           <CardContent>
-            <Table>
+            <Table scroll>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-12">Linha</TableHead>
@@ -1359,7 +1460,7 @@ export function PropostasLote() {
                         <TableCell className="max-w-44 truncate font-medium" title={r.nome}>
                           {r.nome || "—"}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap font-mono text-label">
+                        <TableCell className="whitespace-nowrap text-label tabular-nums">
                           {formatCpf(r.cpf)}
                         </TableCell>
                         <TableCell className="text-right tabular-nums">{r.nrClient ?? "—"}</TableCell>
@@ -1400,7 +1501,7 @@ export function PropostasLote() {
                                   return next;
                                 })
                               }
-                              className="flex items-center gap-1 text-caption text-primary hover:underline"
+                              className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
                             >
                               {aberta ? (
                                 <ChevronDown className="h-3 w-3" />
@@ -1439,6 +1540,20 @@ export function PropostasLote() {
         </Card>
       )}
 
+      {/* Resumo vivo da operação — sempre à vista, carrega o CTA da fase */}
+      {base && (
+        <ResumoOperacao
+          itens={itensResumo}
+          status={statusResumo}
+          alerta={
+            paramsErros.length > 0
+              ? "Corrija os parâmetros do lote antes de calcular."
+              : null
+          }
+          cta={ctaResumo}
+        />
+      )}
+
       {/* Confirmação da criação — fricção deliberada: é irreversível */}
       <Dialog open={criarOpen} onOpenChange={setCriarOpen}>
         <DialogContent>
@@ -1447,58 +1562,59 @@ export function PropostasLote() {
               <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
               Criar propostas na Sinqia
             </DialogTitle>
-            <DialogDescription asChild>
-              <div className="space-y-2">
-                <p>
-                  Você está prestes a criar{" "}
-                  <strong>{criarPiloto ? 1 : conferidas} proposta(s)</strong> em{" "}
-                  <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>, total financiado de{" "}
-                  <strong className="tabular-nums">{formatBRL(somaFinanciadoOK)}</strong>. Esta
-                  ação é <strong>irreversível</strong> pela ferramenta.
-                </p>
-                <label className="flex items-center gap-2 text-body">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-[var(--primary)]"
-                    checked={criarPiloto}
-                    onChange={(e) => setCriarPiloto(e.target.checked)}
-                  />
-                  Piloto: criar <strong>somente a 1ª linha</strong> e conferir na Sinqia antes
-                  das demais
-                </label>
-                <p className="text-caption text-muted-foreground">
-                  Cada cliente é verificado antes do envio: se já existir proposta{" "}
-                  <strong>idêntica</strong> (produto, parcelas, valores e 1º vencimento),
-                  a linha é pulada como “Já existia”.
-                </p>
-                <label className="flex items-center gap-2 text-body">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-[var(--destructive)]"
-                    checked={criarForcar}
-                    onChange={(e) => setCriarForcar(e.target.checked)}
-                  />
-                  <span>
-                    Criar <strong>mesmo se já existir</strong> proposta idêntica
-                    <span className="text-muted-foreground"> (só para reemissão consciente)</span>
-                  </span>
-                </label>
-                {IS_PROD && (
-                  <div className="space-y-1">
-                    <Label htmlFor="confirma-criar" className="text-caption">
-                      Digite <strong>CRIAR</strong> para liberar:
-                    </Label>
-                    <Input
-                      id="confirma-criar"
-                      value={criarConfirmText}
-                      onChange={(e) => setCriarConfirmText(e.target.value)}
-                      placeholder="CRIAR"
-                    />
-                  </div>
-                )}
-              </div>
+            <DialogDescription>
+              Você está prestes a criar{" "}
+              <strong>{criarPiloto ? 1 : conferidas} proposta(s)</strong> em{" "}
+              <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>, total financiado de{" "}
+              <strong className="tabular-nums">{formatBRL(somaFinanciadoOK)}</strong>. Esta
+              ação é <strong>irreversível</strong> pela ferramenta.
             </DialogDescription>
           </DialogHeader>
+          {/* Controles fora da description — descrição é descrição, formulário é formulário. */}
+          <div className="space-y-3">
+            <label className="flex items-center gap-2 text-body">
+              <input
+                type="checkbox"
+                className="focus-ring h-4 w-4 accent-[var(--primary)]"
+                checked={criarPiloto}
+                onChange={(e) => setCriarPiloto(e.target.checked)}
+              />
+              <span>
+                Piloto: criar <strong>somente a 1ª linha</strong> e conferir na Sinqia antes
+                das demais
+              </span>
+            </label>
+            <p className="text-caption text-muted-foreground">
+              Cada cliente é verificado antes do envio: se já existir proposta{" "}
+              <strong>idêntica</strong> (produto, parcelas, valores e 1º vencimento),
+              a linha é pulada como “Já existia”.
+            </p>
+            <label className="flex items-center gap-2 text-body">
+              <input
+                type="checkbox"
+                className="focus-ring h-4 w-4 accent-[var(--destructive)]"
+                checked={criarForcar}
+                onChange={(e) => setCriarForcar(e.target.checked)}
+              />
+              <span>
+                Criar <strong>mesmo se já existir</strong> proposta idêntica
+                <span className="text-muted-foreground"> (só para reemissão consciente)</span>
+              </span>
+            </label>
+            {IS_PROD && (
+              <div className="space-y-1">
+                <Label htmlFor="confirma-criar" className="text-caption">
+                  Digite <strong>CRIAR</strong> para liberar:
+                </Label>
+                <Input
+                  id="confirma-criar"
+                  value={criarConfirmText}
+                  onChange={(e) => setCriarConfirmText(e.target.value)}
+                  placeholder="CRIAR"
+                />
+              </div>
+            )}
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCriarOpen(false)}>
               Cancelar
@@ -1541,7 +1657,7 @@ function DetalheCalculo({ r }: { r: CalculoRowResult }) {
       <div className="grid gap-1">
         <span>
           <span className="font-semibold">CPF:</span>{" "}
-          <span className="font-mono">{formatCpf(r.cpf)}</span>
+          <span className="tabular-nums">{formatCpf(r.cpf)}</span>
           {"  ·  "}
           <span className="font-semibold">nrClient:</span>{" "}
           <span className="tabular-nums">{r.nrClient ?? "—"}</span>
@@ -1584,10 +1700,10 @@ function DetalheCalculo({ r }: { r: CalculoRowResult }) {
       )}
 
       <details>
-        <summary className="cursor-pointer font-semibold text-primary">
+        <summary className="focus-ring cursor-pointer font-semibold text-primary">
           Ver o request enviado ao calcProsp (o que será usado na proposta)
         </summary>
-        <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-card p-3 font-mono text-[11px] leading-4">
+        <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-card p-3 font-mono text-code">
           {JSON.stringify(r.request, null, 2)}
         </pre>
       </details>
@@ -1664,7 +1780,10 @@ function DetalheCriacao({ r, mensagens }: { r: CriacaoRowResult; mensagens: stri
   );
 }
 
-/** Campo de parâmetro como texto livre (com validação inline + aviso opcional). */
+/**
+ * Campo de parâmetro como texto livre. Valida em BLUR (touched) — não grita
+ * erro enquanto o operador ainda digita; o bloqueio do CTA continua imediato.
+ */
 function ParamInput({
   campo,
   label,
@@ -1672,6 +1791,8 @@ function ParamInput({
   setParams,
   onBlur,
   aviso,
+  sufixo,
+  type,
 }: {
   campo: keyof ParamsLote;
   label: string;
@@ -1680,24 +1801,45 @@ function ParamInput({
   onBlur?: () => void;
   /** Aviso não-bloqueante (ex.: característica sem produtos na Sinqia). */
   aviso?: string;
+  /** Sufixo de unidade dentro do campo (ex.: "% a.m.") — vira RateInput. */
+  sufixo?: string;
+  /** Tipo do input nativo (ex.: "date"). */
+  type?: string;
 }) {
+  const [tocado, setTocado] = useState(false);
   const erro = paramInvalido(campo, params[campo]);
+  const mostraErro = tocado ? erro : null;
+
+  const comuns = {
+    id: `param-${campo}`,
+    value: params[campo],
+    type,
+    "aria-invalid": mostraErro ? true : undefined,
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+      setParams((p) => ({ ...p, [campo]: e.target.value })),
+    onBlur: () => {
+      setTocado(true);
+      onBlur?.();
+    },
+    className: cn(
+      "tabular-nums",
+      mostraErro && "border-destructive",
+      !mostraErro && aviso && "border-warning",
+    ),
+  };
+
   return (
     <div className="space-y-1">
       <Label htmlFor={`param-${campo}`} className="text-caption">
         {label}
       </Label>
-      <Input
-        id={`param-${campo}`}
-        value={params[campo]}
-        inputMode="decimal"
-        aria-invalid={erro ? true : undefined}
-        onChange={(e) => setParams((p) => ({ ...p, [campo]: e.target.value }))}
-        onBlur={onBlur}
-        className={cn("tabular-nums", erro && "border-destructive", !erro && aviso && "border-warning")}
-      />
-      {erro && <p className="text-caption text-destructive">{erro}</p>}
-      {!erro && aviso && (
+      {sufixo ? (
+        <RateInput sufixo={sufixo} {...comuns} />
+      ) : (
+        <Input inputMode={type ? undefined : "decimal"} {...comuns} />
+      )}
+      {mostraErro && <p className="text-caption text-destructive">{mostraErro}</p>}
+      {!mostraErro && aviso && (
         <p className="flex items-start gap-1 text-caption text-warning-foreground">
           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warning" />
           {aviso}
@@ -1722,6 +1864,7 @@ function ParamSelect({
   aviso,
   permitirManual = false,
   permitirVazio = false,
+  carregando = false,
 }: {
   campo: keyof ParamsLote;
   label: string;
@@ -1735,9 +1878,22 @@ function ParamSelect({
   permitirManual?: boolean;
   /** Inclui a opção "(vazia)" — o parâmetro é opcional. */
   permitirVazio?: boolean;
+  /** true enquanto as listas da Sinqia carregam — mostra skeleton, não input. */
+  carregando?: boolean;
 }) {
   /** Modo manual: o operador digita o código que a lista não trouxe. */
   const [manual, setManual] = useState(false);
+
+  if (carregando && options.length === 0 && !manual) {
+    return (
+      <div className="space-y-1">
+        <Label htmlFor={`param-${campo}`} className="text-caption">
+          {label}
+        </Label>
+        <Skeleton className="h-9 w-full" />
+      </div>
+    );
+  }
 
   if (options.length === 0 || manual) {
     return (
@@ -1747,7 +1903,7 @@ function ParamSelect({
           <button
             type="button"
             onClick={() => setManual(false)}
-            className="text-caption text-primary underline-offset-2 hover:underline"
+            className="focus-ring text-caption text-primary underline-offset-2 hover:underline"
           >
             ← escolher da lista
           </button>
@@ -1790,7 +1946,7 @@ function ParamSelect({
           type="button"
           onClick={() => setManual(true)}
           title="Use quando a lista da Sinqia não trouxer o código que você precisa"
-          className="text-caption text-primary underline-offset-2 hover:underline"
+          className="focus-ring text-caption text-primary underline-offset-2 hover:underline"
         >
           digitar código manualmente
         </button>
@@ -1824,7 +1980,8 @@ function ClienteSinqiaBadge({
         variant="success"
         title={`Usando o nº verificado da Sinqia (planilha dizia ${verif.nrClientPlanilha ?? "—"})`}
       >
-        ✓ {verif.nrClientSinqia} · adotado
+        <Check className="h-3 w-3" aria-hidden />
+        <span className="tabular-nums">{verif.nrClientSinqia}</span> · adotado
       </Badge>
     );
   }
@@ -1833,7 +1990,8 @@ function ClienteSinqiaBadge({
     case "ENCONTRADO":
       return (
         <Badge variant="success" title={`Sinqia: ${verif.nomeSinqia} (nrClient ${verif.nrClientSinqia})`}>
-          ✓ {verif.nrClientSinqia}
+          <Check className="h-3 w-3" aria-hidden />
+          <span className="tabular-nums">{verif.nrClientSinqia}</span>
         </Badge>
       );
     case "DIVERGE":
@@ -1848,7 +2006,7 @@ function ClienteSinqiaBadge({
           <button
             type="button"
             onClick={onAdotar}
-            className="text-caption font-medium text-primary underline-offset-2 hover:underline"
+            className="focus-ring text-caption font-medium text-primary underline-offset-2 hover:underline"
             title={`Substituir o nº da planilha (${verif.nrClientPlanilha ?? "—"}) pelo verificado na Sinqia (${verif.nrClientSinqia})`}
           >
             usar {verif.nrClientSinqia}
@@ -1911,7 +2069,7 @@ function LinhaEmissao({
       <TableCell className="max-w-52 truncate font-medium" title={row.nome}>
         {row.nome || "—"}
       </TableCell>
-      <TableCell className="whitespace-nowrap font-mono text-label">
+      <TableCell className="whitespace-nowrap text-label tabular-nums">
         {formatCpf(row.cpf)}
       </TableCell>
       <TableCell className="text-right tabular-nums" title={`nrClient extraído: ${row.nrClient ?? "—"}`}>

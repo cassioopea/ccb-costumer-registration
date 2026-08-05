@@ -48,7 +48,7 @@ function Shell() {
   if (carregando) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <Loader2 className="h-6 w-6 animate-spin text-[var(--primary)]" />
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
     );
   }
@@ -64,7 +64,7 @@ function Shell() {
 
       {/* Telas do módulo ativo. Trocar de módulo/aba não perde estado. */}
       <nav className="border-b border-border bg-card" aria-label="Telas do módulo">
-        <div className="mx-auto flex max-w-[1440px] gap-1 px-8">
+        <div className="mx-auto flex max-w-shell gap-1 px-8">
           {telas.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -76,9 +76,9 @@ function Shell() {
               }
               aria-current={telaAtiva === id ? "page" : undefined}
               className={cn(
-                "-mb-px flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors",
+                "focus-ring -mb-px flex items-center gap-2 border-b-2 px-4 py-3 text-body font-medium transition-colors duration-150",
                 telaAtiva === id
-                  ? "border-[var(--primary)] text-[var(--primary)]"
+                  ? "border-primary text-primary"
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
@@ -89,7 +89,7 @@ function Shell() {
         </div>
       </nav>
 
-      <main className="mx-auto w-full max-w-[1440px] flex-1 px-8 py-10">
+      <main className="mx-auto w-full max-w-shell flex-1 px-8 py-10">
         {/* Mantém todas montadas: trocar de módulo/aba não perde arquivo
             selecionado, base carregada, seleção nem lote em andamento. */}
         <div className={modulo === "clientes" && telaClientes === "individual" ? undefined : "hidden"}>
@@ -107,7 +107,7 @@ function Shell() {
       </main>
 
       <footer className="border-t border-border bg-card px-8 py-4 text-caption text-muted-foreground">
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between">
+        <div className="mx-auto flex max-w-shell items-center justify-between">
           <span>© Opea Solutions — Ferramenta interna</span>
           <span className="text-muted-foreground/80">
             Opea SCD · Esteira de Originação · Sinqia

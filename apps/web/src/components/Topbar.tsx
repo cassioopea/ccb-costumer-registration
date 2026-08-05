@@ -1,4 +1,4 @@
-import { ChevronDown, Clock, LogOut, UserRound } from "lucide-react";
+import { Clock, LogOut, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpeaLogo } from "./OpeaLogo";
 import { formatarRestante, useRestante, useSession } from "@/lib/session";
@@ -22,7 +22,6 @@ function EnvironmentChip() {
       <span className="font-medium uppercase tracking-wider">
         {IS_PROD ? "Produção" : "HML"}
       </span>
-      <ChevronDown className="size-3 opacity-70" />
     </span>
   );
 }
@@ -60,7 +59,7 @@ function SessionChip() {
       <button
         type="button"
         onClick={() => void sair()}
-        className="flex items-center gap-1.5 rounded-md border border-sidebar-foreground/20 px-2.5 py-1 text-caption text-sidebar-foreground/85 transition-colors hover:bg-sidebar-foreground/10"
+        className="focus-ring flex items-center gap-1.5 rounded-md border border-sidebar-foreground/20 px-2.5 py-1 text-caption text-sidebar-foreground/85 transition-colors duration-150 hover:bg-sidebar-foreground/10"
       >
         <LogOut className="size-3.5" />
         Sair
@@ -87,7 +86,7 @@ export function Topbar({ modulo, onModuloChange }: TopbarProps) {
     <header className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground shadow-elevated">
       {/* Faixa contextual */}
       <div className="border-b border-sidebar-foreground/10 bg-sidebar-foreground/[0.04]">
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-8 py-2.5 text-caption">
+        <div className="mx-auto flex max-w-shell items-center justify-between gap-4 px-8 py-2 text-caption">
           <div className="flex items-center gap-3">
             <EnvironmentChip />
             <span className="hidden text-sidebar-foreground/55 sm:inline">
@@ -105,11 +104,11 @@ export function Topbar({ modulo, onModuloChange }: TopbarProps) {
       </div>
 
       {/* Faixa principal: logo + produto + módulos + sessão */}
-      <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-8 px-8">
+      <div className="mx-auto flex h-16 max-w-shell items-center gap-8 px-8">
         <div className="flex items-center gap-3 text-sidebar-foreground">
           <OpeaLogo className="h-6 w-auto text-sidebar-foreground" />
           <span aria-hidden className="h-5 w-px bg-sidebar-foreground/25" />
-          <span className="text-caption font-medium uppercase tracking-[0.2em] text-sidebar-foreground/70">
+          <span className="text-caption font-medium uppercase tracking-label text-sidebar-foreground/70">
             Esteira de Originação
           </span>
         </div>
@@ -124,7 +123,7 @@ export function Topbar({ modulo, onModuloChange }: TopbarProps) {
                 onClick={() => onModuloChange(id)}
                 aria-current={ativo ? "page" : undefined}
                 className={cn(
-                  "relative inline-flex items-center px-3 py-5 text-subheading font-normal transition-colors",
+                  "focus-ring relative inline-flex items-center px-3 py-5 text-subheading font-normal transition-colors duration-150",
                   ativo
                     ? "text-sidebar-foreground"
                     : "text-sidebar-foreground/65 hover:text-sidebar-foreground",
