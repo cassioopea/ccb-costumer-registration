@@ -350,69 +350,64 @@ export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
       )}
 
       {/* Sem card de credenciais: a autenticação virou a sessão do login. */}
-      <div className="grid gap-6">
+      {/* Carga e ação lado a lado — controles em linha, não em largura total. */}
+      <div className="grid items-start gap-6 lg:grid-cols-2">
         {/* Carga */}
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <RefreshCw className="h-4 w-4 text-[var(--primary)]" />
-              Carregar clientes
-            </CardTitle>
+            <CardTitle>Carregar clientes</CardTitle>
             <CardDescription>
               Traz a base inteira de uma vez (<code>GET /v1/cliente</code>, todas as páginas, um
               login só). Depois o filtro é local e instantâneo.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1">
-              <Label htmlFor="sit-tipo" className="text-xs">
-                Tipo de pessoa
-              </Label>
-              <Select
-                id="sit-tipo"
-                value={tipoPessoa}
-                onChange={(e) => setTipoPessoa(e.target.value)}
-                disabled={busy}
-              >
-                <option value="">Todos</option>
-                <option value="F">PF</option>
-                <option value="J">PJ</option>
-              </Select>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-40 space-y-1">
+                <Label htmlFor="sit-tipo" className="text-caption">
+                  Tipo de pessoa
+                </Label>
+                <Select
+                  id="sit-tipo"
+                  value={tipoPessoa}
+                  onChange={(e) => setTipoPessoa(e.target.value)}
+                  disabled={busy}
+                >
+                  <option value="">Todos</option>
+                  <option value="F">PF</option>
+                  <option value="J">PJ</option>
+                </Select>
+              </div>
+
+              <Button variant="outline" onClick={() => void carregar()} disabled={busy}>
+                {phase === "carregando" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                {base ? "Recarregar clientes" : "Carregar clientes"}
+              </Button>
+
+              {base && (
+                <p className="pb-2 text-body">
+                  <strong className="tabular-nums">{base.items.length}</strong> cliente(s) em{" "}
+                  {base.paginas} página(s)
+                  {base.totalElements !== null && base.totalElements !== base.items.length
+                    ? ` — a Sinqia informa ${base.totalElements} no total`
+                    : ""}
+                  .
+                </p>
+              )}
             </div>
 
-            <Button
-              variant="outline"
-              onClick={() => void carregar()}
-              disabled={busy}
-              className="w-full"
-            >
-              {phase === "carregando" ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-              {base ? "Recarregar clientes" : "Carregar clientes"}
-            </Button>
-
             {phase === "carregando" && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 Varrendo as páginas na Sinqia — numa base grande isso leva alguns segundos.
               </p>
             )}
 
-            {base && (
-              <p className="text-sm">
-                <strong className="tabular-nums">{base.items.length}</strong> cliente(s)
-                carregado(s) em {base.paginas} página(s)
-                {base.totalElements !== null && base.totalElements !== base.items.length
-                  ? ` — a Sinqia informa ${base.totalElements} no total`
-                  : ""}
-                .
-              </p>
-            )}
-
             {base?.truncado && (
-              <div className="flex items-start gap-2 rounded-md border border-[var(--destructive)] bg-[var(--destructive)]/10 px-3 py-2 text-xs text-[var(--destructive)]">
+              <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-caption text-destructive">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
                   A carga bateu no teto de segurança do backend e <strong>pode estar
@@ -422,16 +417,12 @@ export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
             )}
           </CardContent>
         </Card>
-      </div>
 
-      {/* Seleção + ação */}
-      {base && (
+        {/* Seleção + ação */}
+        {base && (
         <Card ref={acaoCardRef} className="scroll-mt-40">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ListChecks className="h-4 w-4 text-[var(--primary)]" />
-              Alterar situação
-            </CardTitle>
+            <CardTitle>Alterar situação</CardTitle>
             <CardDescription>
               A seleção <strong>não é perdida</strong> ao filtrar ou recarregar — vá juntando os
               clientes de várias buscas e altere todos de uma vez.
@@ -439,8 +430,8 @@ export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap items-end gap-3">
-              <div className="min-w-[320px] flex-1 space-y-1">
-                <Label htmlFor="sit-nova" className="text-xs">
+              <div className="min-w-64 flex-1 space-y-1">
+                <Label htmlFor="sit-nova" className="text-caption">
                   Nova situação (<code>cdSituacao</code>)
                 </Label>
                 <Select
@@ -517,7 +508,8 @@ export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
             </div>
           </CardContent>
         </Card>
-      )}
+        )}
+      </div>
 
       {/* Progresso */}
       {(phase === "alterando" || phase === "done") && progress.total > 0 && (
