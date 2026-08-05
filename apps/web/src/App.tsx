@@ -21,9 +21,9 @@ type TelaClientes = "individual" | "cadastro" | "situacao";
 type TelaPropostas = "lote-propostas";
 
 const TELAS_CLIENTES = [
-  { id: "individual" as const, label: "Cadastro Individual", icon: UserPlus },
-  { id: "cadastro" as const, label: "Cadastro em Lote", icon: Upload },
-  { id: "situacao" as const, label: "Base de Clientes", icon: ListChecks },
+  { id: "situacao" as const, label: "Base de clientes", icon: ListChecks },
+  { id: "individual" as const, label: "Cadastro individual", icon: UserPlus },
+  { id: "cadastro" as const, label: "Cadastro em lote", icon: Upload },
 ];
 
 const TELAS_PROPOSTAS = [
@@ -41,7 +41,8 @@ export default function App() {
 function Shell() {
   const { session, carregando } = useSession();
   const [modulo, setModulo] = useState<Modulo>("clientes");
-  const [telaClientes, setTelaClientes] = useState<TelaClientes>("individual");
+  // Base de clientes é a primeira aba e a tela inicial do módulo.
+  const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
   const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("lote-propostas");
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.

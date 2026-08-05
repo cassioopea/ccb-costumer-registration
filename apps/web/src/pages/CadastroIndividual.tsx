@@ -185,8 +185,11 @@ export function CadastroIndividual() {
   return (
     <div className="space-y-6">
       <div>
+        <div className="mb-3 text-caption text-muted-foreground">
+          Esteira de Originação › Clientes › Cadastro individual
+        </div>
         <h1 className="text-display text-foreground">Cadastro individual</h1>
-        <p className="mt-1 text-label text-muted-foreground">
+        <p className="mt-1 text-body text-muted-foreground">
           Cadastre um tomador preenchendo o formulário. Usa a mesma rota e a mesma validação do
           cadastro em lote.
         </p>

@@ -313,10 +313,11 @@ export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-display font-semibold tracking-tight text-foreground">
-          Base de Clientes
-        </h1>
-        <p className="mt-1 text-label text-muted-foreground">
+        <div className="mb-3 text-caption text-muted-foreground">
+          Esteira de Originação › Clientes › Base de clientes
+        </div>
+        <h1 className="text-display text-foreground">Base de clientes</h1>
+        <p className="mt-1 text-body text-muted-foreground">
           A base carrega automaticamente ao abrir a aba. Em cada cliente: consulte as{" "}
           propostas criadas (e os dados de cada uma) ou altere a situação — individual
           ou em lote.
