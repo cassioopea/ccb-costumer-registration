@@ -11,9 +11,10 @@ export interface ItemResumo {
 
 /**
  * Resumo vivo da operação — elemento assinatura das telas de originação.
- * Barra aderente ao rodapé que consolida o que está sendo criado (linhas,
- * somas, parâmetros, status das fases) e carrega o CTA da fase atual.
- * O operador nunca perde de vista o que a ferramenta vai gravar na Sinqia.
+ * Barra aderente ao rodapé, na superfície azul do Backoffice Opea
+ * (.panel-dark), que consolida o que está sendo criado (linhas, somas,
+ * parâmetros, status das fases) e carrega o CTA da fase atual. O operador
+ * nunca perde de vista o que a ferramenta vai gravar na Sinqia.
  */
 export function ResumoOperacao({
   itens,
@@ -31,7 +32,7 @@ export function ResumoOperacao({
 }) {
   return (
     <div className="sticky bottom-4 z-30">
-      <div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3 rounded-xl border border-border bg-card/95 px-6 py-4 shadow-elevated backdrop-blur">
+      <div className="panel-dark flex flex-wrap items-center justify-between gap-x-8 gap-y-3 rounded-xl border border-border bg-panel px-6 py-4 shadow-elevated">
         <div className="min-w-0 space-y-1.5">
           <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             {itens.map((item) => (
