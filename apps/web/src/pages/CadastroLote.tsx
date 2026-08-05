@@ -326,13 +326,6 @@ export function CadastroLote() {
         <PipelineSteps etapas={etapas} />
       </div>
 
-      {IS_PROD && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-body font-medium text-destructive">
-          <AlertTriangle className="h-4 w-4" />
-          Ambiente de PRODUÇÃO ativo — os cadastros serão reais.
-        </div>
-      )}
-
       {sessaoCurta && (
         <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning/15 px-4 py-3 text-body">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />

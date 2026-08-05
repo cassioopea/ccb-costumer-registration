@@ -324,13 +324,6 @@ export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
         </p>
       </div>
 
-      {IS_PROD && (
-        <div className="flex items-center gap-2 rounded-lg border border-[var(--destructive)] bg-[var(--destructive)]/10 px-4 py-3 text-sm font-medium text-[var(--destructive)]">
-          <AlertTriangle className="h-4 w-4" />
-          Ambiente de PRODUÇÃO ativo — as alterações de situação são reais.
-        </div>
-      )}
-
       {sessaoCurta && (
         <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)] bg-[var(--warning)]/15 px-4 py-3 text-sm">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
