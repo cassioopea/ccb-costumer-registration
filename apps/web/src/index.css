@@ -307,6 +307,7 @@
     --warning: oklch(0.85 0.14 80);
     --warning-foreground: oklch(0.88 0.12 80);
     --destructive: oklch(0.78 0.16 22);
+    --destructive-foreground: oklch(0.2 0.06 22);
     color: var(--panel-foreground);
   }
 

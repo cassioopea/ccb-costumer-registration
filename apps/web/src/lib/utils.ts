@@ -31,3 +31,11 @@ const twMerge = extendTailwindMerge({
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+/** Rolagem suave que respeita prefers-reduced-motion (ver DESIGN.md › Movimento). */
+export function rolarAte(el: HTMLElement | null) {
+  el?.scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    block: "start",
+  });
+}

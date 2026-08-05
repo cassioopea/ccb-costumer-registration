@@ -1,7 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
@@ -9,7 +8,6 @@ import {
   Loader2,
   Play,
   ShieldCheck,
-  Upload,
   XCircle,
 } from "lucide-react";
 import {
@@ -40,7 +38,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
-import { cn } from "@/lib/utils";
+import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
+import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
+import { cn, rolarAte } from "@/lib/utils";
 import {
   startImport,
   streamImport,
@@ -102,9 +102,7 @@ export function CadastroLote() {
   /** Rola até a tabela de progresso assim que o lote começa. */
   const resultadoRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (phase === "importing") {
-      resultadoRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (phase === "importing") rolarAte(resultadoRef.current);
   }, [phase]);
 
   /**
@@ -222,26 +220,121 @@ export function CadastroLote() {
       return next;
     });
 
+  /** Etapas do fluxo para o indicador passivo (mesmo padrão do lote de propostas). */
+  const etapas: EtapaPipeline[] = [
+    { id: "arquivo", label: "Carregar arquivo", estado: file ? "concluida" : "ativa" },
+    {
+      id: "validar",
+      label: "Validar (dry-run)",
+      estado: phase === "validating" ? "ativa" : validation ? "concluida" : "pendente",
+    },
+    {
+      id: "executar",
+      label: "Executar lote",
+      estado: phase === "importing" ? "ativa" : phase === "done" ? "concluida" : "pendente",
+    },
+  ];
+
+  /** Dados-chave do lote para o resumo vivo (barra sticky). */
+  const itensResumo: ItemResumo[] = [
+    {
+      rotulo: "Arquivo",
+      valor: file ? (
+        <span className="inline-block max-w-48 truncate align-bottom" title={file.name}>
+          {file.name}
+        </span>
+      ) : (
+        "—"
+      ),
+    },
+    { rotulo: "Linhas", valor: validation ? validation.total : "—" },
+    { rotulo: "Válidas", valor: validation ? validCount : "—", forte: true },
+    { rotulo: "Serão puladas", valor: validation ? skipCount : "—" },
+    {
+      rotulo: "Ação",
+      valor: control.idAcao ? `${control.idAcao} — ${ACAO_VERBO[control.idAcao]}` : "Inclusão",
+    },
+  ];
+
+  const statusResumo =
+    phase === "importing" || phase === "done" || results.length > 0 ? (
+      <span className="tabular-nums">
+        {progress.processed}/{progress.total} processadas ·{" "}
+        <span className="text-success">{progress.success} OK</span> ·{" "}
+        <span className="text-destructive">{progress.error} erros</span>
+        {progress.skipped > 0 && <> · {progress.skipped} puladas</>}
+        {progress.naoEnviado > 0 && <> · {progress.naoEnviado} não enviadas</>}
+      </span>
+    ) : validation && validCount > 0 ? (
+      <span>
+        <span className="text-success">{validCount} válida(s)</span>
+        {skipCount > 0 && (
+          <span className="text-warning-foreground"> · {skipCount} serão puladas</span>
+        )}{" "}
+        — pronto para executar.
+      </span>
+    ) : (
+      "A validação (dry-run) não envia nada à Sinqia."
+    );
+
+  /** CTA da fase atual — mora no resumo vivo, único lugar de ação primária. */
+  const ctaResumo = (
+    <>
+      <Button variant="outline" onClick={handleValidate} disabled={!canValidate}>
+        {phase === "validating" ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <ShieldCheck className="h-4 w-4" />
+        )}
+        Validar (dry-run)
+      </Button>
+      {phase === "importing" ? (
+        <Button disabled>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span className="tabular-nums">
+            Processando {progress.processed}/{progress.total}…
+          </span>
+        </Button>
+      ) : (
+        <Button
+          onClick={handleExecuteClick}
+          disabled={!canExecute}
+          variant={control.idAcao === "EX" ? "destructive" : "default"}
+        >
+          <Play className="h-4 w-4" />
+          {control.idAcao && control.idAcao !== "IN"
+            ? `Executar lote (${control.idAcao} — ${ACAO_VERBO[control.idAcao]})`
+            : "Executar lote"}
+        </Button>
+      )}
+    </>
+  );
+
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-display font-semibold tracking-tight text-foreground">
-          Cadastro em Lote de Clientes
-        </h1>
-        <p className="mt-1 text-label text-muted-foreground">
-          Importe tomadores de CCB para a API Sinqia (BJ21M05). Requer VPN da Opea ativa.
-        </p>
+    <div className="space-y-6">
+      {/* Breadcrumb + título + etapas do fluxo */}
+      <div className="space-y-4">
+        <div>
+          <div className="mb-3 text-caption text-muted-foreground">
+            Esteira de Originação › Clientes › Cadastro em lote
+          </div>
+          <h1 className="text-display text-foreground">Cadastro em lote de clientes</h1>
+          <p className="mt-1 text-body text-muted-foreground">
+            Importe tomadores de CCB para a API Sinqia (BJ21M05). Requer VPN da Opea ativa.
+          </p>
+        </div>
+        <PipelineSteps etapas={etapas} />
       </div>
 
       {IS_PROD && (
-        <div className="flex items-center gap-2 rounded-lg border border-[var(--destructive)] bg-[var(--destructive)]/10 px-4 py-3 text-sm font-medium text-[var(--destructive)]">
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-body font-medium text-destructive">
           <AlertTriangle className="h-4 w-4" />
           Ambiente de PRODUÇÃO ativo — os cadastros serão reais.
         </div>
       )}
 
       {sessaoCurta && (
-        <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)] bg-[var(--warning)]/15 px-4 py-3 text-sm">
+        <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning/15 px-4 py-3 text-body">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             A sessão expira em <strong>{formatarRestante(restanteSessao)}</strong> e não há
@@ -253,29 +346,26 @@ export function CadastroLote() {
       )}
 
       {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-[var(--destructive)] bg-[var(--destructive)]/10 px-4 py-3 text-sm text-[var(--destructive)]">
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-body text-destructive">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
-      {/* Sem card de credenciais: a autenticação virou a sessão do login. */}
-      <div className="grid gap-6">
+      {/* 1/3 upload + 2/3 controles — mesmo layout do lote de propostas. */}
+      <div className="grid items-start gap-6 lg:grid-cols-3">
         {/* Upload */}
-        <Card>
+        <Card className="lg:col-span-1">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Upload className="h-4 w-4 text-[var(--primary)]" />
-              Arquivo do lote
-            </CardTitle>
+            <CardTitle>Arquivo do lote</CardTitle>
             <CardDescription>
               Aceita <code>.csv</code> ou <code>.json</code>.{" "}
-              <a href={TEMPLATE_URL} className="font-medium text-[var(--primary)] underline">
+              <a href={TEMPLATE_URL} className="focus-ring font-medium text-primary underline">
                 Baixar template CSV
               </a>
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent>
             <div
               role="button"
               tabIndex={0}
@@ -288,23 +378,23 @@ export function CadastroLote() {
               onDragLeave={() => setDragOver(false)}
               onDrop={onDrop}
               className={cn(
-                "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors",
-                dragOver
-                  ? "border-[var(--primary)] bg-[var(--accent)]"
-                  : "border-[var(--border)] hover:border-[var(--primary)]",
+                "focus-ring flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors duration-150",
+                dragOver ? "border-primary bg-accent" : "border-border hover:border-primary",
               )}
             >
-              <FileText className="h-8 w-8 text-[var(--muted-foreground)]" />
+              <FileText
+                className={cn("h-8 w-8", file ? "text-primary" : "text-muted-foreground")}
+              />
               {file ? (
-                <div className="text-sm">
+                <div className="text-body">
                   <span className="font-medium">{file.name}</span>
-                  <span className="text-[var(--muted-foreground)]">
+                  <span className="text-muted-foreground">
                     {" "}
                     ({(file.size / 1024).toFixed(1)} KB)
                   </span>
                 </div>
               ) : (
-                <p className="text-sm text-[var(--muted-foreground)]">
+                <p className="text-body text-muted-foreground">
                   Arraste o arquivo aqui ou clique para selecionar
                 </p>
               )}
@@ -316,75 +406,28 @@ export function CadastroLote() {
                 onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
               />
             </div>
-
-            {/* Controles do request — compartilhados com o cadastro individual. */}
-            <div className="rounded-lg border border-[var(--border)] p-3">
-              <ControlesLote
-                control={control}
-                setControl={setControl}
-                onChange={resetValidation}
-              />
-            </div>
           </CardContent>
         </Card>
-      </div>
 
-      {/* Ações */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="outline" onClick={handleValidate} disabled={!canValidate}>
-          {phase === "validating" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <ShieldCheck className="h-4 w-4" />
-          )}
-          Validar (dry-run)
-        </Button>
-        <Button
-          onClick={handleExecuteClick}
-          disabled={!canExecute}
-          variant={control.idAcao === "EX" ? "destructive" : "default"}
-        >
-          {phase === "importing" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Play className="h-4 w-4" />
-          )}
-          {control.idAcao && control.idAcao !== "IN"
-            ? `Executar lote (${control.idAcao} — ${ACAO_VERBO[control.idAcao]})`
-            : "Executar lote"}
-        </Button>
-
-        {validation && (
-          <span className="text-sm">
-            {validCount > 0 ? (
-              <span className="inline-flex items-center gap-1 text-[var(--success)]">
-                <CheckCircle2 className="h-4 w-4" />
-                {validCount} válida(s)
-                {skipCount > 0 ? (
-                  <span className="text-[var(--destructive)]">
-                    {" "}
-                    · {skipCount} serão puladas
-                  </span>
-                ) : null}{" "}
-                — pronto para executar
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-[var(--destructive)]">
-                <XCircle className="h-4 w-4" />
-                Nenhuma linha válida — corrija o arquivo
-              </span>
-            )}
-          </span>
-        )}
+        {/* Controles do request — compartilhados com o cadastro individual. */}
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Controles do lote</CardTitle>
+            <CardDescription>
+              Valem para todas as linhas do arquivo — vão no nível raiz do request.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ControlesLote control={control} setControl={setControl} onChange={resetValidation} />
+          </CardContent>
+        </Card>
       </div>
 
       {/* Erros de validação por linha */}
       {validation && !validation.valido && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">
-              {skipCount} linha(s) serão puladas
-            </CardTitle>
+            <CardTitle>{skipCount} linha(s) serão puladas</CardTitle>
             <CardDescription>
               Estas linhas têm erro e <strong>não serão enviadas</strong> à Sinqia. As válidas
               seguem normalmente. Corrija e valide de novo se quiser incluí-las.
@@ -406,10 +449,10 @@ export function CadastroLote() {
                     .filter((r) => r.errors.length > 0)
                     .map((r) => (
                       <TableRow key={r.index}>
-                        <TableCell>{r.index}</TableCell>
+                        <TableCell className="tabular-nums text-muted-foreground">{r.index}</TableCell>
                         <TableCell>{r.nome || "—"}</TableCell>
-                        <TableCell className="font-mono text-xs">{r.documento || "—"}</TableCell>
-                        <TableCell className="text-[var(--destructive)]">
+                        <TableCell className="text-label tabular-nums">{r.documento || "—"}</TableCell>
+                        <TableCell className="text-destructive">
                           <ul className="list-disc pl-4">
                             {r.errors.map((e, i) => (
                               <li key={i}>{e}</li>
@@ -431,14 +474,14 @@ export function CadastroLote() {
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <CardTitle className="text-base">
+                <CardTitle>
                   {phase === "importing" ? "Processando lote…" : "Lote concluído"}
                 </CardTitle>
-                <CardDescription>
+                <CardDescription className="tabular-nums">
                   {progress.processed} / {progress.total} processados ·{" "}
-                  <span className="text-[var(--success)]">{progress.success} OK</span> ·{" "}
-                  <span className="text-[var(--destructive)]">{progress.error} erro(s)</span> ·{" "}
-                  <span className="text-[var(--muted-foreground)]">{progress.skipped} pulada(s)</span>
+                  <span className="text-success">{progress.success} OK</span> ·{" "}
+                  <span className="text-destructive">{progress.error} erro(s)</span> ·{" "}
+                  <span className="text-muted-foreground">{progress.skipped} pulada(s)</span>
                 </CardDescription>
               </div>
               <div className="flex items-center gap-2">
@@ -469,7 +512,7 @@ export function CadastroLote() {
               ))}
             </div>
 
-            <Table>
+            <Table scroll>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-16">Linha</TableHead>
@@ -489,9 +532,9 @@ export function CadastroLote() {
                   return (
                     <Fragment key={r.index}>
                       <TableRow>
-                        <TableCell>{r.index}</TableCell>
-                        <TableCell className="max-w-48 truncate">{r.nome || "—"}</TableCell>
-                        <TableCell className="font-mono text-xs">{r.documento || "—"}</TableCell>
+                        <TableCell className="tabular-nums text-muted-foreground">{r.index}</TableCell>
+                        <TableCell className="max-w-48 truncate font-medium">{r.nome || "—"}</TableCell>
+                        <TableCell className="text-label tabular-nums">{r.documento || "—"}</TableCell>
                         <TableCell>
                           <Badge variant="secondary">{r.tipo}</Badge>
                         </TableCell>
@@ -508,15 +551,15 @@ export function CadastroLote() {
                             {r.status === "NAO_ENVIADO" ? "NÃO ENVIADO" : r.status}
                           </Badge>
                         </TableCell>
-                        <TableCell>{r.httpStatus ?? "—"}</TableCell>
-                        <TableCell className="font-mono text-xs">
+                        <TableCell className="tabular-nums">{r.httpStatus ?? "—"}</TableCell>
+                        <TableCell className="text-label">
                           {r.envelopeStatus ?? "—"}
                         </TableCell>
                         <TableCell>
                           {hasMsg ? (
                             <button
                               onClick={() => toggleExpand(r.index)}
-                              className="flex items-center gap-1 text-xs text-[var(--primary)] hover:underline"
+                              className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
                             >
                               {isOpen ? (
                                 <ChevronDown className="h-3 w-3" />
@@ -532,8 +575,8 @@ export function CadastroLote() {
                       </TableRow>
                       {isOpen && hasMsg && (
                         <TableRow>
-                          <TableCell colSpan={8} className="bg-[var(--muted)]/40">
-                            <div className="space-y-1 text-xs">
+                          <TableCell colSpan={8} className="bg-muted/40">
+                            <div className="space-y-1 text-caption">
                               {r.globalMessage && (
                                 <div>
                                   <span className="font-semibold">globalMessage:</span>{" "}
@@ -564,7 +607,7 @@ export function CadastroLote() {
                 })}
                 {filteredResults.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-8 text-center text-[var(--muted-foreground)]">
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
                       Nenhuma linha para este filtro.
                     </TableCell>
                   </TableRow>
@@ -573,6 +616,20 @@ export function CadastroLote() {
             </Table>
           </CardContent>
         </Card>
+      )}
+
+      {/* Resumo vivo do lote — sempre à vista, carrega o CTA da fase */}
+      {file && (
+        <ResumoOperacao
+          itens={itensResumo}
+          status={statusResumo}
+          alerta={
+            validation && validCount === 0
+              ? "Nenhuma linha válida — corrija o arquivo e valide de novo."
+              : null
+          }
+          cta={ctaResumo}
+        />
       )}
 
       {/* Confirmação de produção */}

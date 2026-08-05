@@ -54,7 +54,7 @@ import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
 import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
 import { RateInput } from "@/components/ui/rate-input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { cn, rolarAte } from "@/lib/utils";
 import {
   getLookups,
   parseEmissoes,
@@ -123,14 +123,6 @@ const isoParaAAAAMMDD = (iso: string) => Number(iso.replace(/-/g, ""));
 
 const isoParaBR = (iso: string) =>
   /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
-
-/** Rolagem suave que respeita prefers-reduced-motion (ver DESIGN.md › Movimento). */
-function rolarAte(el: HTMLElement | null) {
-  el?.scrollIntoView({
-    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    block: "start",
-  });
-}
 
 /**
  * Data-base sugerida para o contrato: 1 mês ANTES do 1º vencimento mais comum
