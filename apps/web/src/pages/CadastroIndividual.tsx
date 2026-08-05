@@ -183,11 +183,9 @@ export function CadastroIndividual() {
   const preenchidos = Object.keys(campos).length;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div>
-        <h1 className="text-display font-semibold tracking-tight text-foreground">
-          Cadastro Individual
-        </h1>
+        <h1 className="text-display text-foreground">Cadastro individual</h1>
         <p className="mt-1 text-label text-muted-foreground">
           Cadastre um tomador preenchendo o formulário. Usa a mesma rota e a mesma validação do
           cadastro em lote.
@@ -239,13 +237,12 @@ export function CadastroIndividual() {
         </CardContent>
       </Card>
 
+      {/* Consulta de obrigatórios + controles lado a lado — compactos. */}
+      <div className="grid items-start gap-6 lg:grid-cols-2">
       {/* Campos obrigatórios da Sinqia */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ListChecks className="h-4 w-4 text-[var(--primary)]" />
-            Campos obrigatórios da Sinqia
-          </CardTitle>
+          <CardTitle>Campos obrigatórios da Sinqia</CardTitle>
           <CardDescription>
             <code>GET consultarCamposObrigatorios</code> — somente leitura. Os campos retornados
             ficam marcados com <span className="text-[var(--destructive)]">*</span> no formulário.
@@ -348,6 +345,7 @@ export function CadastroIndividual() {
           <ControlesLote control={control} setControl={setControl} onChange={() => setResultado(null)} />
         </CardContent>
       </Card>
+      </div>
 
       {/* Seções do formulário */}
       {secoes.map((secao) => {
