@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { matchCliente, SITUACOES, situacaoLabel } from "@cadastro-lote/shared";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Card,
   CardContent,
@@ -122,9 +123,10 @@ export function SituacaoClientes({
     naoEnviado: 0,
   });
   const [results, setResults] = useState<SituacaoRowResult[]>([]);
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  /** Modal de alteração de situação (a ação saiu dos cards e virou CTA). */
+  const [alterarOpen, setAlterarOpen] = useState(false);
+  const [alterarConfirmText, setAlterarConfirmText] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [verSelecionados, setVerSelecionados] = useState(false);
 
   const busy = phase === "carregando" || phase === "alterando";
   const totalSelecionados = selecionados.size;
@@ -143,19 +145,29 @@ export function SituacaoClientes({
   const restanteSessao = useRestante(session);
   const sessaoCurta = restanteSessao > 0 && restanteSessao < MARGEM_CURTA_MS;
 
-  const carregar = useCallback(async () => {
-    setError(null);
-    setPhase("carregando");
-    try {
-      const res = await listarTodosClientes(tipoPessoa || undefined);
-      setBase(res);
-      setPhase("carregado");
-    } catch (e) {
-      // Sessão expirada já abre o modal de reautenticação — não vira erro na tela.
-      if (!(e instanceof SessaoExpiradaError)) setError((e as Error).message);
-      setPhase(base ? "carregado" : "idle");
-    }
-  }, [tipoPessoa, base]);
+  const carregar = useCallback(
+    async (tipo?: string) => {
+      setError(null);
+      setPhase("carregando");
+      try {
+        const res = await listarTodosClientes((tipo ?? tipoPessoa) || undefined);
+        setBase(res);
+        setPhase("carregado");
+      } catch (e) {
+        // Sessão expirada já abre o modal de reautenticação — não vira erro na tela.
+        if (!(e instanceof SessaoExpiradaError)) setError((e as Error).message);
+        setPhase(base ? "carregado" : "idle");
+      }
+    },
+    [tipoPessoa, base],
+  );
+
+  /** Chips PF/PJ: trocar o tipo recarrega a base direto (sem botão de carga). */
+  const trocarTipo = (tipo: string) => {
+    if (busy || tipo === tipoPessoa) return;
+    setTipoPessoa(tipo);
+    void carregar(tipo);
+  };
 
   /**
    * A função principal da aba é VER a base — carrega sozinha na primeira vez
@@ -200,12 +212,12 @@ export function SituacaoClientes({
     }
   }
 
-  /** Ação por linha: prepara a alteração de situação SÓ deste cliente. */
-  const acaoCardRef = useRef<HTMLDivElement>(null);
+  /** Ação por linha: abre a modal de situação SÓ com este cliente. */
   function alterarSituacaoDe(c: ClienteResumo) {
     if (c.nrCliente === null) return;
     setSelecionados(new Map([[c.nrCliente, c]]));
-    acaoCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setAlterarConfirmText("");
+    setAlterarOpen(true);
   }
 
   /* ---------------------------------------------------------------- */
@@ -267,14 +279,12 @@ export function SituacaoClientes({
   /* Alteração                                                         */
   /* ---------------------------------------------------------------- */
 
-  function handleAlterarClick() {
-    if (!podeAlterar) return;
-    if (IS_PROD) setConfirmOpen(true);
-    else void executarAlteracao();
-  }
+  /** Em produção o botão da modal só libera com "ALTERAR" digitado. */
+  const confirmacaoAlterarOk = !IS_PROD || alterarConfirmText.trim().toUpperCase() === "ALTERAR";
 
   async function executarAlteracao() {
-    setConfirmOpen(false);
+    setAlterarOpen(false);
+    setAlterarConfirmText("");
     setError(null);
     setResults([]);
     setProgress({ processed: 0, total: totalSelecionados, success: 0, error: 0, naoEnviado: 0 });
@@ -364,167 +374,6 @@ export function SituacaoClientes({
         </div>
       )}
 
-      {/* Sem card de credenciais: a autenticação virou a sessão do login. */}
-      {/* Carga e ação lado a lado — controles em linha, não em largura total. */}
-      <div className="grid items-start gap-6 lg:grid-cols-2">
-        {/* Carga */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Carregar clientes</CardTitle>
-            <CardDescription>
-              Traz a base inteira de uma vez (<code>GET /v1/cliente</code>, todas as páginas, um
-              login só). Depois o filtro é local e instantâneo.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="w-40 space-y-1">
-                <Label htmlFor="sit-tipo" className="text-caption">
-                  Tipo de pessoa
-                </Label>
-                <Select
-                  id="sit-tipo"
-                  value={tipoPessoa}
-                  onChange={(e) => setTipoPessoa(e.target.value)}
-                  disabled={busy}
-                >
-                  <option value="">Todos</option>
-                  <option value="F">PF</option>
-                  <option value="J">PJ</option>
-                </Select>
-              </div>
-
-              <Button variant="outline" onClick={() => void carregar()} disabled={busy}>
-                {phase === "carregando" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-                {base ? "Recarregar clientes" : "Carregar clientes"}
-              </Button>
-
-              {base && (
-                <p className="pb-2 text-body">
-                  <strong className="tabular-nums">{base.items.length}</strong> cliente(s) em{" "}
-                  {base.paginas} página(s)
-                  {base.totalElements !== null && base.totalElements !== base.items.length
-                    ? ` — a Sinqia informa ${base.totalElements} no total`
-                    : ""}
-                  .
-                </p>
-              )}
-            </div>
-
-            {phase === "carregando" && (
-              <p className="text-caption text-muted-foreground">
-                Varrendo as páginas na Sinqia — numa base grande isso leva alguns segundos.
-              </p>
-            )}
-
-            {base?.truncado && (
-              <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-caption text-destructive">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <span>
-                  A carga bateu no teto de segurança do backend e <strong>pode estar
-                  incompleta</strong>. Use o filtro de tipo de pessoa para reduzir o conjunto.
-                </span>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Seleção + ação */}
-        {base && (
-        <Card ref={acaoCardRef} className="scroll-mt-40">
-          <CardHeader>
-            <CardTitle>Alterar situação</CardTitle>
-            <CardDescription>
-              A seleção <strong>não é perdida</strong> ao filtrar ou recarregar — vá juntando os
-              clientes de várias buscas e altere todos de uma vez.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="min-w-64 flex-1 space-y-1">
-                <Label htmlFor="sit-nova" className="text-caption">
-                  Nova situação (<code>cdSituacao</code>)
-                </Label>
-                <Select
-                  id="sit-nova"
-                  value={String(cdSituacao)}
-                  onChange={(e) => setCdSituacao(Number(e.target.value))}
-                >
-                  {SITUACOES.map((s) => (
-                    <option key={s.codigo} value={s.codigo}>
-                      {s.codigo} — {s.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-              <Button onClick={handleAlterarClick} disabled={!podeAlterar}>
-                {phase === "alterando" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ListChecks className="h-4 w-4" />
-                )}
-                Alterar {totalSelecionados > 0 ? `${totalSelecionados} cliente(s)` : "situação"}
-              </Button>
-            </div>
-
-            {/* Painel de selecionados — deixa a seleção acumulada sempre visível. */}
-            <div className="rounded-lg border border-[var(--border)]">
-              <div className="flex items-center justify-between gap-3 px-3 py-2">
-                <button
-                  type="button"
-                  onClick={() => setVerSelecionados((v) => !v)}
-                  className="flex items-center gap-2 text-sm font-medium"
-                  disabled={totalSelecionados === 0}
-                >
-                  {verSelecionados ? (
-                    <ChevronDown className="h-4 w-4" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4" />
-                  )}
-                  {totalSelecionados} selecionado(s)
-                </button>
-                {totalSelecionados > 0 && (
-                  <Button variant="outline" onClick={limparSelecao} disabled={busy}>
-                    Limpar seleção
-                  </Button>
-                )}
-              </div>
-
-              {verSelecionados && totalSelecionados > 0 && (
-                <div className="max-h-56 overflow-auto border-t border-[var(--border)] px-3 py-2">
-                  <div className="flex flex-wrap gap-2">
-                    {[...selecionados.values()].map((c) => (
-                      <span
-                        key={c.nrCliente!}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--muted)]/40 px-2.5 py-1 text-xs"
-                      >
-                        <span className="tabular-nums font-medium">{c.nrCliente}</span>
-                        <span className="max-w-[220px] truncate text-muted-foreground">
-                          {c.nome || c.documento}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => removerSelecionado(c.nrCliente!)}
-                          disabled={busy}
-                          aria-label={`Remover ${c.nome || c.nrCliente}`}
-                          className="text-muted-foreground hover:text-[var(--destructive)]"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-        )}
-      </div>
 
       {/* Progresso */}
       {(phase === "alterando" || phase === "done") && progress.total > 0 && (
@@ -643,16 +492,113 @@ export function SituacaoClientes({
         </Card>
       )}
 
-      {/* Lista + filtro */}
-      {base && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Clientes</CardTitle>
-            <CardDescription>
-              Filtro sobre os {base.items.length} carregados — encontra qualquer cliente, não só os
-              da página.
-            </CardDescription>
-          </CardHeader>
+      {/* Lista + filtro — o card é o hub da página */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle>Clientes</CardTitle>
+              <CardDescription>
+                {base ? (
+                  <span className="tabular-nums">
+                    <span className="font-medium text-foreground">{base.items.length}</span>{" "}
+                    cliente(s) carregado(s)
+                    {base.totalElements !== null && base.totalElements !== base.items.length
+                      ? ` — a Sinqia informa ${base.totalElements} no total`
+                      : ""}{" "}
+                    · o filtro abaixo é local e instantâneo
+                  </span>
+                ) : (
+                  "Carregando a base na Sinqia — numa base grande isso leva alguns segundos."
+                )}
+              </CardDescription>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {/* Tipo de pessoa: trocar recarrega a base já filtrada no servidor */}
+              <div
+                className="flex items-center gap-0.5 rounded-lg border border-border p-0.5"
+                role="group"
+                aria-label="Tipo de pessoa"
+              >
+                {(
+                  [
+                    ["", "Todos"],
+                    ["F", "PF"],
+                    ["J", "PJ"],
+                  ] as const
+                ).map(([valor, rotulo]) => (
+                  <button
+                    key={valor}
+                    type="button"
+                    onClick={() => trocarTipo(valor)}
+                    disabled={busy}
+                    aria-pressed={tipoPessoa === valor}
+                    className={cn(
+                      "focus-ring rounded-md px-3 py-1 text-caption font-medium transition-colors duration-150",
+                      tipoPessoa === valor
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {rotulo}
+                  </button>
+                ))}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void carregar()}
+                disabled={busy}
+                title="Recarrega a base na Sinqia"
+              >
+                {phase === "carregando" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                onClick={() => {
+                  setAlterarConfirmText("");
+                  setAlterarOpen(true);
+                }}
+                disabled={!podeAlterar}
+                title={
+                  totalSelecionados === 0
+                    ? "Selecione clientes na tabela para habilitar"
+                    : "Altera a situação dos clientes selecionados"
+                }
+              >
+                {phase === "alterando" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ListChecks className="h-4 w-4" />
+                )}
+                Alterar situação{totalSelecionados > 0 ? ` (${totalSelecionados})` : ""}
+              </Button>
+            </div>
+          </div>
+
+          {base?.truncado && (
+            <div className="mt-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-caption text-destructive">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                A carga bateu no teto de segurança do backend e <strong>pode estar
+                incompleta</strong>. Use o filtro PF/PJ para reduzir o conjunto.
+              </span>
+            </div>
+          )}
+        </CardHeader>
+        {!base ? (
+          <CardContent>
+            <div className="space-y-2 py-2" role="status" aria-label="Carregando a base de clientes">
+              <Skeleton className="h-9 w-full" />
+              {Array.from({ length: 8 }, (_, i) => (
+                <Skeleton key={i} className="h-8 w-full" />
+              ))}
+            </div>
+          </CardContent>
+        ) : (
           <CardContent className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="sit-filtro">Filtrar por número do cliente, nome ou CPF/CNPJ</Label>
@@ -828,30 +774,102 @@ export function SituacaoClientes({
               </>
             )}
           </CardContent>
-        </Card>
-      )}
+        )}
+      </Card>
 
-      {/* Confirmação de produção */}
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      {/* Alterar situação — a ação virou modal, com a seleção sempre à vista */}
+      <Dialog open={alterarOpen} onOpenChange={setAlterarOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-[var(--destructive)]">
-              <AlertTriangle className="h-5 w-5" />
-              Confirmar alteração em PRODUÇÃO
+            <DialogTitle className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}>
+              <ListChecks className="h-5 w-5" />
+              Alterar situação de {totalSelecionados} cliente(s)
             </DialogTitle>
             <DialogDescription>
-              Você está prestes a alterar a situação de <strong>{totalSelecionados}</strong>{" "}
-              cliente(s) para <strong>{situacaoLabel(cdSituacao)}</strong> em{" "}
-              <strong>PRODUÇÃO</strong>. Esta ação é real e não pode ser desfeita pela ferramenta.
-              Confirma?
+              Em <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong> — a alteração é real e
+              não pode ser desfeita pela ferramenta. A seleção não se perde ao filtrar ou
+              recarregar a base.
             </DialogDescription>
           </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="sit-nova" className="text-caption">
+                Nova situação
+              </Label>
+              <Select
+                id="sit-nova"
+                value={String(cdSituacao)}
+                onChange={(e) => setCdSituacao(Number(e.target.value))}
+              >
+                {SITUACOES.map((s) => (
+                  <option key={s.codigo} value={s.codigo}>
+                    {s.codigo} — {s.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="max-h-48 overflow-y-auto rounded-lg border border-border p-2">
+              <div className="flex flex-wrap gap-2">
+                {[...selecionados.values()].map((c) => (
+                  <span
+                    key={c.nrCliente!}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-caption"
+                  >
+                    <span className="tabular-nums font-medium">{c.nrCliente}</span>
+                    <span className="max-w-52 truncate text-muted-foreground">
+                      {c.nome || c.documento}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removerSelecionado(c.nrCliente!)}
+                      disabled={busy}
+                      aria-label={`Remover ${c.nome || c.nrCliente}`}
+                      className="focus-ring text-muted-foreground hover:text-destructive"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {IS_PROD && (
+              <div className="space-y-1">
+                <Label htmlFor="confirma-alterar" className="text-caption">
+                  Digite <strong>ALTERAR</strong> para liberar:
+                </Label>
+                <Input
+                  id="confirma-alterar"
+                  value={alterarConfirmText}
+                  onChange={(e) => setAlterarConfirmText(e.target.value)}
+                  placeholder="ALTERAR"
+                />
+              </div>
+            )}
+          </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                limparSelecao();
+                setAlterarOpen(false);
+              }}
+              disabled={busy}
+            >
+              Limpar seleção
+            </Button>
+            <Button variant="outline" onClick={() => setAlterarOpen(false)}>
               Cancelar
             </Button>
-            <Button variant="destructive" onClick={() => void executarAlteracao()}>
-              Confirmar e alterar
+            <Button
+              variant={IS_PROD ? "destructive" : "default"}
+              onClick={() => void executarAlteracao()}
+              disabled={!podeAlterar || !confirmacaoAlterarOk}
+            >
+              Alterar {totalSelecionados} cliente(s) para {situacaoLabel(cdSituacao)}
             </Button>
           </DialogFooter>
         </DialogContent>
