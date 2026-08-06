@@ -1,4 +1,11 @@
-import type { CalculoRowResult, CriacaoRowResult, RowResult, SituacaoRowResult } from "./api";
+import type {
+  CalculoRowResult,
+  CriacaoRowResult,
+  PropostaPainel,
+  RowResult,
+  SituacaoRowResult,
+} from "./api";
+import { formatDataAAAAMMDD } from "./format";
 
 /**
  * Escapa um valor para CSV.
@@ -161,6 +168,62 @@ export function exportPendenciasCsv(rows: PendenciaRow[]): void {
     "pendencias-emissoes",
     ["linha", "nome", "cpf", "idSinqia", "situacao", "origem", "problema"],
     rows.map((r) => [r.linha, r.nome, r.cpf, r.idSinqia, r.situacao, r.origem, r.problema]),
+  );
+}
+
+/**
+ * Exporta a fila do Painel de propostas como está na tela (etapa + filtros
+ * aplicados). O nome do arquivo carrega a etapa para o CSV se explicar sozinho.
+ */
+export function exportPainelCsv(propostas: PropostaPainel[], etapa: string): void {
+  const slug =
+    etapa
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "fila";
+  const hora = (hr: number | null) =>
+    hr === null ? "" : `${String(hr).padStart(4, "0").slice(0, 2)}:${String(hr).padStart(4, "0").slice(2, 4)}`;
+
+  download(
+    `fila-${slug}`,
+    [
+      "nrProposta",
+      "cliente",
+      "cpfCnpj",
+      "cdProduto",
+      "produto",
+      "valorSolicitado",
+      "status",
+      "nrStatus",
+      "entradaData",
+      "entradaHora",
+      "contrato",
+      "cdConvenio",
+      "convenio",
+      "cdFilial",
+      "filial",
+      "dataSolicitacao",
+    ],
+    propostas.map((p) => [
+      p.nrProsp,
+      p.nmClient,
+      p.nrCpfCnpj,
+      p.cdProd ?? "",
+      p.dsProd,
+      p.vlSolic ?? "",
+      p.dsStatus,
+      p.nrStatus ?? "",
+      formatDataAAAAMMDD(p.dtEntrad),
+      hora(p.hrEntrad),
+      p.nrContra ?? "",
+      p.cdConv ?? "",
+      p.nmConv,
+      p.cdFilial ?? "",
+      p.nmFilial,
+      formatDataAAAAMMDD(p.dtSolic),
+    ]),
   );
 }
 

@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Download,
   Loader2,
   RefreshCw,
   Search,
@@ -54,6 +55,7 @@ import {
   type PropostaPainel,
   type TransicaoStatus,
 } from "@/lib/api";
+import { exportPainelCsv } from "@/lib/export-csv";
 import { formatBRL, formatCpf, formatDataAAAAMMDD } from "@/lib/format";
 import { SessaoExpiradaError } from "@/lib/session";
 
@@ -437,10 +439,26 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
       {/* Filtros */}
       <Card>
         <CardHeader>
-          <CardTitle>Filtros</CardTitle>
-          <CardDescription>
-            Todos opcionais — refinam a etapa selecionada acima.
-          </CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Filtros</CardTitle>
+              <CardDescription>
+                Todos opcionais — refinam a etapa selecionada acima.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                exportPainelCsv(propostas, filaAtual ? nomeEtapa(filaAtual.dsStatus) : "fila")
+              }
+              disabled={propostas.length === 0}
+              title="Baixa a fila como está na tela (etapa + filtros aplicados)"
+            >
+              <Download className="h-4 w-4" />
+              Exportar CSV ({propostas.length})
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap items-end gap-3">
