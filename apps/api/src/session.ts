@@ -103,6 +103,36 @@ export function describeToken(token: string): TokenInfo {
   };
 }
 
+/**
+ * Instituição/agência lidas dos claims do JWT — o consultarStatusWf (filas do
+ * painel) exige os dois. Os nomes exatos dos claims variam por instalação,
+ * então a busca é permissiva (chave contendo "inst"/"agen" com valor numérico);
+ * quem não encontrar usa o fallback de env (SINQIA_NR_INST/SINQIA_NR_AGEN).
+ */
+export function extrairInstAgen(token: string): {
+  nrInst: number | null;
+  nrAgen: number | null;
+} {
+  const vazio = { nrInst: null, nrAgen: null };
+  const partes = token.replace(/^Bearer\s+/i, "").split(".");
+  if (partes.length !== 3) return vazio;
+  const payload = decodeSegment(partes[1]);
+  if (!payload) return vazio;
+
+  const numDe = (v: unknown): number | null => {
+    const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+    return typeof n === "number" && Number.isFinite(n) ? n : null;
+  };
+
+  let nrInst: number | null = null;
+  let nrAgen: number | null = null;
+  for (const [k, v] of Object.entries(payload)) {
+    if (nrInst === null && /inst/i.test(k)) nrInst = numDe(v);
+    if (nrAgen === null && /agen/i.test(k)) nrAgen = numDe(v);
+  }
+  return { nrInst, nrAgen };
+}
+
 /* ------------------------------------------------------------------ */
 /* Store                                                              */
 /* ------------------------------------------------------------------ */

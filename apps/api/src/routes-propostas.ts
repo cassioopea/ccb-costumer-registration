@@ -21,6 +21,9 @@ import {
 import {
   buscarClientePorCpf,
   calcProsp,
+  consultarHistoricoProposta,
+  consultarPropostaPainel,
+  consultarStatusWf,
   listarConvenios,
   listarFiliais,
   listarProdutos,
@@ -31,7 +34,13 @@ import {
   startVerificacaoJob,
 } from "./verificacao-job.js";
 import { streamJob } from "./routes.js";
-import { destroySession, getSession, motivoTexto, type Session } from "./session.js";
+import {
+  destroySession,
+  extrairInstAgen,
+  getSession,
+  motivoTexto,
+  type Session,
+} from "./session.js";
 
 /**
  * Rotas do módulo PROPOSTAS (Esteira de Originação).
@@ -502,6 +511,99 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
       return reply.code(502).send({ error: (e as Error).message });
     }
   });
+
+  /* ------------------- Painel de propostas (somente leitura) ------------------- */
+
+  /**
+   * Listagem geral de propostas com filtros e cursor — o mesmo
+   * consultarPropostaPainel do Portal. Sem cursor no body, parte de agora
+   * olhando para trás (mais recentes primeiro).
+   */
+  app.post("/api/propostas/painel", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = painelBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.code(400).send({
+        error: `Requisição inválida${issue ? `: ${issue.path.join(".")} — ${issue.message}` : "."}`,
+      });
+    }
+    const { filtros, size } = parsed.data;
+    const cursor = parsed.data.cursor ?? cursorAgora();
+
+    const res = await consultarPropostaPainel(session.token, filtros, cursor, size);
+    if (res.httpStatus === 401) return responder401(reply, session.id);
+    if (res.httpStatus >= 400) {
+      return reply
+        .code(502)
+        .send({ error: `A Sinqia respondeu HTTP ${res.httpStatus} no painel de propostas.` });
+    }
+
+    // Cursor da PRÓXIMA página: entrada da última linha (o front dedup por nrProsp).
+    const ultima = res.propostas[res.propostas.length - 1];
+    const proximoCursor =
+      res.propostas.length === size && ultima?.dtEntrad
+        ? {
+            dtConsulta: String(ultima.dtEntrad),
+            hrConsulta: `${String(ultima.hrEntrad ?? 0).padStart(4, "0")}00`,
+            idSentido: "ANT" as const,
+          }
+        : null;
+
+    return reply.send({
+      env: env.SINQIA_ENV,
+      httpStatus: res.httpStatus,
+      propostas: res.propostas,
+      proximoCursor,
+    });
+  });
+
+  /** Filas do workflow com contagem por status (dashboard da esteira). */
+  app.get("/api/propostas/filas", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    // Instituição/agência: claims do JWT do login; fallback = env.
+    const claims = extrairInstAgen(session.token);
+    const res = await consultarStatusWf(session.token, {
+      nrInst: claims.nrInst ?? env.SINQIA_NR_INST,
+      nrAgen: claims.nrAgen ?? env.SINQIA_NR_AGEN,
+      nmLogin: session.username,
+    });
+    if (res.httpStatus === 401) return responder401(reply, session.id);
+    if (res.httpStatus >= 400) {
+      return reply
+        .code(502)
+        .send({ error: `A Sinqia respondeu HTTP ${res.httpStatus} nas filas do workflow.` });
+    }
+    return reply.send({ env: env.SINQIA_ENV, filas: res.filas });
+  });
+
+  /** Histórico (linha do tempo) de uma proposta. */
+  app.get("/api/propostas-historico/:nrProsp", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const nrProsp = String((req.params as { nrProsp?: string }).nrProsp ?? "").replace(/\D/g, "");
+    if (!nrProsp) return reply.code(400).send({ error: "Número de proposta inválido." });
+
+    const res = await consultarHistoricoProposta(session.token, nrProsp);
+    if (res.httpStatus === 401) return responder401(reply, session.id);
+    return reply.send({ env: env.SINQIA_ENV, historicos: res.historicos });
+  });
+}
+
+/** Cursor inicial do painel: agora, olhando para trás (mais recentes primeiro). */
+function cursorAgora(): { dtConsulta: string; hrConsulta: string; idSentido: "ANT" } {
+  const d = new Date();
+  const pad = (n: number, l = 2) => String(n).padStart(l, "0");
+  return {
+    dtConsulta: `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`,
+    hrConsulta: `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`,
+    idSentido: "ANT",
+  };
 }
 
 /** Cálculo individual retido por sessão — insumo do criar-uma. */
@@ -603,6 +705,30 @@ const calcularUmaBodySchema = z.object({
     idCarCtr: z.number().int(),
     dtContra: dateInt,
   }),
+});
+
+/** Body do POST /api/propostas/painel (listagem geral, somente leitura). */
+const painelBodySchema = z.object({
+  filtros: z
+    .object({
+      nrPropos: z.string().max(20).optional(),
+      nrCPFCNPJ: z.string().max(14).optional(),
+      nmClient: z.string().max(120).optional(),
+      /** AAAAMMDD como string (formato do Portal). */
+      dtPerIni: z.string().regex(/^\d{8}$/).optional(),
+      dtPerFim: z.string().regex(/^\d{8}$/).optional(),
+      nrStatus: z.number().int().optional(),
+      cdProdut: z.number().int().optional(),
+    })
+    .default({}),
+  size: z.number().int().min(1).max(200).default(100),
+  cursor: z
+    .object({
+      dtConsulta: z.string().regex(/^\d{8}$/),
+      hrConsulta: z.string().regex(/^\d{4,6}$/),
+      idSentido: z.enum(["POS", "ANT"]),
+    })
+    .optional(),
 });
 
 /** Body do POST /api/propostas/criar-uma (proposta individual). */

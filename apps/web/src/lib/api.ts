@@ -471,6 +471,94 @@ export interface LookupsResponse {
   avisos: string[];
 }
 
+/* --- Painel de propostas (somente leitura) --- */
+
+export interface PropostaPainel {
+  nrProsp: number;
+  nrStatus: number | null;
+  dsStatus: string;
+  nrWf: number | null;
+  dtEntrad: number | null;
+  hrEntrad: number | null;
+  nrCpfCnpj: string;
+  nmClient: string;
+  dtSolic: number | null;
+  cdProd: number | null;
+  dsProd: string;
+  cdConv: number | null;
+  nmConv: string;
+  cdFilial: number | null;
+  nmFilial: string;
+  vlSolic: number | null;
+  idCarctr: number | null;
+  nrContra: number | null;
+}
+
+export interface PainelCursor {
+  dtConsulta: string;
+  hrConsulta: string;
+  idSentido: "POS" | "ANT";
+}
+
+export interface PainelFiltros {
+  nrPropos?: string;
+  nrCPFCNPJ?: string;
+  nmClient?: string;
+  /** AAAAMMDD como string. */
+  dtPerIni?: string;
+  dtPerFim?: string;
+  nrStatus?: number;
+  cdProdut?: number;
+}
+
+/** Listagem geral de propostas (todas, com filtros e cursor de paginação). */
+export async function painelPropostas(input: {
+  filtros?: PainelFiltros;
+  size?: number;
+  cursor?: PainelCursor;
+}): Promise<{
+  env: string;
+  propostas: PropostaPainel[];
+  proximoCursor: PainelCursor | null;
+}> {
+  const res = await fetch("/api/propostas/painel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return lerResposta(res, "Falha ao consultar o painel de propostas");
+}
+
+export interface FilaWf {
+  nrWf: number;
+  nrStatus: number;
+  dsStatus: string;
+  qtFilhos: number;
+}
+
+/** Filas do workflow com a contagem de propostas em cada status. */
+export async function getFilasPropostas(): Promise<{ env: string; filas: FilaWf[] }> {
+  const res = await fetch("/api/propostas/filas");
+  return lerResposta(res, "Falha ao consultar as filas do workflow");
+}
+
+export interface HistoricoPropostaItem {
+  nrSeq: number;
+  dtIn: string;
+  nmUsr: string;
+  nrStatus: number | null;
+  dsStatus: string;
+  dsObserv: string;
+}
+
+/** Linha do tempo (histórico de status) de uma proposta. */
+export async function getHistoricoProposta(
+  nrProsp: number,
+): Promise<{ env: string; historicos: HistoricoPropostaItem[] }> {
+  const res = await fetch(`/api/propostas-historico/${nrProsp}`);
+  return lerResposta(res, "Falha ao consultar o histórico da proposta");
+}
+
 /* --- Proposta individual (fluxo unitário) --- */
 
 export interface ClienteBuscaResponse {

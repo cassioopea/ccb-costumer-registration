@@ -78,11 +78,10 @@ export function Login() {
           </span>
 
           <h1 className="text-display font-bold tracking-tight">
-            Portal de cadastro de clientes CCB
+            Esteira de Originação
           </h1>
           <p className="text-body text-[var(--sidebar-foreground)]/75">
-            Importe tomadores para a API Sinqia e gerencie a situação dos cadastros — em uma
-            ferramenta local, atrás da VPN da Opea.
+            Importe ou inclua novos tomadores, gerencie a situação dos cadastros e gere novas propostas.
           </p>
         </div>
 

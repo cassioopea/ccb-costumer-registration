@@ -77,6 +77,27 @@ const envSchema = z.object({
   SINQIA_FILIAIS_PATH: z
     .string()
     .default("/BJ21M05/BJ21M05/BJ21SS0501P/consultarFilialByCdConv"),
+  /**
+   * Painel de propostas — endpoints que o Portal usa (gravação DevTools de
+   * 2026-08-06): listagem geral com filtros/cursor, histórico da proposta e
+   * filas do workflow com contagem.
+   */
+  SINQIA_PAINEL_PATH: z
+    .string()
+    .default("/BJ21M05/BJ21M05/BJ21SS0501E/consultarPropostaPainel"),
+  SINQIA_HISTORICO_PROPOSTA_PATH: z
+    .string()
+    .default("/BJ21M05/BJ21M05/BJ21SS0501E/consultarHistoricoProposta"),
+  SINQIA_STATUS_WF_PATH: z
+    .string()
+    .default("/BJ21M05/BJ21M05/BJ21SS0502O/consultarStatusWf"),
+  /**
+   * Instituição/agência do workflow (consultarStatusWf). Preferimos os claims
+   * do JWT do login; estes valores são o fallback (observados no Portal — a
+   * instituição Opea é a mesma em HML e produção).
+   */
+  SINQIA_NR_INST: z.coerce.number().int().default(1309),
+  SINQIA_NR_AGEN: z.coerce.number().int().default(19),
   PORT: z.coerce.number().int().positive().default(3333),
   WEB_ORIGIN: z.string().default("http://localhost:5173"),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
@@ -117,6 +138,9 @@ export const propostasPorCpfUrl = () => sinqiaUrl(env.SINQIA_PROPOSTAS_CPF_PATH)
 export const dadosPropostaUrl = () => sinqiaUrl(env.SINQIA_DADOS_PROPOSTA_PATH);
 export const conveniosUrl = () => sinqiaUrl(env.SINQIA_CONVENIOS_PATH);
 export const filiaisUrl = () => sinqiaUrl(env.SINQIA_FILIAIS_PATH);
+export const painelUrl = () => sinqiaUrl(env.SINQIA_PAINEL_PATH);
+export const historicoPropostaUrl = () => sinqiaUrl(env.SINQIA_HISTORICO_PROPOSTA_PATH);
+export const statusWfUrl = () => sinqiaUrl(env.SINQIA_STATUS_WF_PATH);
 export const primeiroVencimentoUrl = () => sinqiaUrl(env.SINQIA_PRIMEIRO_VENC_PATH);
 export const propostaUrl = () => sinqiaUrl(env.SINQIA_PROPOSTA_PATH);
 

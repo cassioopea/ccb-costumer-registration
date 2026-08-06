@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { FilePlus2, FileSpreadsheet, ListChecks, Loader2, Upload, UserPlus } from "lucide-react";
+import {
+  FilePlus2,
+  FileSpreadsheet,
+  LayoutList,
+  ListChecks,
+  Loader2,
+  Upload,
+  UserPlus,
+} from "lucide-react";
 import { Topbar, type Modulo } from "@/components/Topbar";
 import { SessionExpiredDialog } from "@/components/SessionExpiredDialog";
 import { CadastroIndividual } from "@/pages/CadastroIndividual";
@@ -7,6 +15,7 @@ import { CadastroLote } from "@/pages/CadastroLote";
 import { SituacaoClientes } from "@/pages/SituacaoClientes";
 import { PropostasLote } from "@/pages/PropostasLote";
 import { PropostaIndividual } from "@/pages/PropostaIndividual";
+import { PainelPropostas } from "@/pages/PainelPropostas";
 import { Login } from "@/pages/Login";
 import { SessionProvider, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -19,7 +28,7 @@ import { cn } from "@/lib/utils";
  */
 
 type TelaClientes = "individual" | "cadastro" | "situacao";
-type TelaPropostas = "lote-propostas" | "proposta-individual";
+type TelaPropostas = "painel-propostas" | "lote-propostas" | "proposta-individual";
 
 const TELAS_CLIENTES = [
   { id: "situacao" as const, label: "Base de clientes", icon: ListChecks },
@@ -28,6 +37,7 @@ const TELAS_CLIENTES = [
 ];
 
 const TELAS_PROPOSTAS = [
+  { id: "painel-propostas" as const, label: "Painel de propostas", icon: LayoutList },
   { id: "lote-propostas" as const, label: "Lote de propostas", icon: FileSpreadsheet },
   { id: "proposta-individual" as const, label: "Proposta individual", icon: FilePlus2 },
 ];
@@ -45,7 +55,8 @@ function Shell() {
   const [modulo, setModulo] = useState<Modulo>("clientes");
   // Base de clientes é a primeira aba e a tela inicial do módulo.
   const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
-  const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("lote-propostas");
+  // Painel é a porta de entrada do módulo: chega-se à proposta pela listagem.
+  const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("painel-propostas");
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -103,6 +114,15 @@ function Shell() {
         </div>
         <div className={modulo === "clientes" && telaClientes === "situacao" ? undefined : "hidden"}>
           <SituacaoClientes ativa={modulo === "clientes" && telaClientes === "situacao"} />
+        </div>
+        <div
+          className={
+            modulo === "propostas" && telaPropostas === "painel-propostas" ? undefined : "hidden"
+          }
+        >
+          <PainelPropostas
+            ativa={modulo === "propostas" && telaPropostas === "painel-propostas"}
+          />
         </div>
         <div
           className={

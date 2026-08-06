@@ -25,10 +25,13 @@ import {
   conveniosUrl,
   dadosPropostaUrl,
   filiaisUrl,
+  historicoPropostaUrl,
+  painelUrl,
   produtosUrl,
   propostaUrl,
   propostasPorCpfUrl,
   situacaoUrl,
+  statusWfUrl,
 } from "./env.js";
 
 /**
@@ -419,6 +422,215 @@ async function getJsonLookup(token: string, url: string): Promise<{ httpStatus: 
   });
   const { json } = await readJson(res);
   return { httpStatus: res.statusCode, json };
+}
+
+/** POST JSON de consulta (somente leitura): devolve status + JSON parseado. */
+async function postJsonConsulta(
+  token: string,
+  url: string,
+  body: unknown,
+): Promise<{ httpStatus: number; json: unknown }> {
+  const res = await request(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    headersTimeout: env.REQUEST_TIMEOUT_MS,
+    bodyTimeout: env.REQUEST_TIMEOUT_MS,
+  });
+  const { json } = await readJson(res);
+  return { httpStatus: res.statusCode, json };
+}
+
+/* ------------------------------------------------------------------ */
+/* Painel de propostas (endpoints do Portal — gravação 2026-08-06)     */
+/* ------------------------------------------------------------------ */
+
+/** Linha da listagem geral de propostas (consultarPropostaPainel). */
+export interface PropostaPainel {
+  nrProsp: number;
+  nrStatus: number | null;
+  dsStatus: string;
+  nrWf: number | null;
+  /** Entrada no status atual: AAAAMMDD + HHMM. */
+  dtEntrad: number | null;
+  hrEntrad: number | null;
+  nrCpfCnpj: string;
+  nmClient: string;
+  dtSolic: number | null;
+  cdProd: number | null;
+  dsProd: string;
+  cdConv: number | null;
+  nmConv: string;
+  cdFilial: number | null;
+  nmFilial: string;
+  vlSolic: number | null;
+  idCarctr: number | null;
+  /** Nº do contrato integrado (quando já existe). */
+  nrContra: number | null;
+}
+
+export interface PainelFiltros {
+  nrPropos?: string;
+  nrCPFCNPJ?: string;
+  nmClient?: string;
+  /** AAAAMMDD como string (formato do Portal). */
+  dtPerIni?: string;
+  dtPerFim?: string;
+  nrStatus?: number;
+  cdProdut?: number;
+}
+
+/** Cursor de paginação do painel: data/hora de referência + sentido. */
+export interface PainelCursor {
+  dtConsulta: string;
+  hrConsulta: string;
+  idSentido: "POS" | "ANT";
+}
+
+/**
+ * POST consultarPropostaPainel?size=N — a LISTAGEM GERAL do Portal, com todos
+ * os filtros anuláveis (tudo nulo = todas as propostas). Paginação por cursor
+ * (dtConsulta/hrConsulta + idSentido). 204 = nenhum registro.
+ */
+export async function consultarPropostaPainel(
+  token: string,
+  filtros: PainelFiltros,
+  cursor: PainelCursor,
+  size: number,
+): Promise<{ httpStatus: number; propostas: PropostaPainel[] }> {
+  const url = new URL(painelUrl());
+  url.searchParams.set("size", String(size));
+
+  // Estrutura EXATA observada no Portal — campos ausentes vão como null/"".
+  const parametros = {
+    tpProsp: null,
+    nrPropos: filtros.nrPropos ?? "",
+    dtPerIni: filtros.dtPerIni ?? "",
+    dtPerFim: filtros.dtPerFim ?? "",
+    nmClient: filtros.nmClient || null,
+    nmResponsavel: null,
+    vlMinimo: null,
+    vlMaximo: null,
+    nrStatus: filtros.nrStatus ?? null,
+    nrCPFCNPJ: filtros.nrCPFCNPJ ?? "",
+    idSituac: null,
+    cdConvProd: null,
+    cdFilialProd: null,
+    cdAgenteProducao: null,
+    cdConvConsig: null,
+    cdFilialConsig: null,
+    cdProdut: filtros.cdProdut ?? null,
+    cdTpopeList: null,
+    dtConsulta: cursor.dtConsulta,
+    hrConsulta: cursor.hrConsulta,
+    idSentido: cursor.idSentido,
+  };
+
+  const { httpStatus, json } = await postJsonConsulta(token, url.toString(), { parametros });
+  if (httpStatus === 204) return { httpStatus, propostas: [] };
+
+  const lista = (json as { propostas?: Array<Record<string, any>> } | null)?.propostas ?? [];
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+
+  return {
+    httpStatus,
+    propostas: lista
+      .map((p) => ({
+        nrProsp: Number(p.nrProsp),
+        nrStatus: num(p.nrStatus),
+        dsStatus: str(p.dsStatus),
+        nrWf: num(p.nrWf),
+        dtEntrad: num(p.dtEntrad),
+        hrEntrad: num(p.hrEntrad),
+        nrCpfCnpj: str(p.nrCpfCnpj),
+        nmClient: str(p.nmClient),
+        dtSolic: num(p.dtSolic),
+        cdProd: num(p.cdProd),
+        dsProd: str(p.dsProd),
+        cdConv: num(p.cdConv),
+        nmConv: str(p.nmConv),
+        cdFilial: num(p.cdFilial),
+        nmFilial: str(p.nmFilial),
+        vlSolic: num(p.vlSolic),
+        idCarctr: num(p.idCarctr),
+        nrContra: num(p.nrContra),
+      }))
+      .filter((p) => Number.isFinite(p.nrProsp)),
+  };
+}
+
+/** Item do histórico de uma proposta (transições de status). */
+export interface HistoricoPropostaItem {
+  nrSeq: number;
+  /** "dd/mm/aaaa hh:mm" — exatamente como a Sinqia devolve. */
+  dtIn: string;
+  nmUsr: string;
+  nrStatus: number | null;
+  dsStatus: string;
+  dsObserv: string;
+}
+
+/** POST consultarHistoricoProposta — linha do tempo da proposta. 204 = sem histórico. */
+export async function consultarHistoricoProposta(
+  token: string,
+  nrProsp: string | number,
+): Promise<{ httpStatus: number; historicos: HistoricoPropostaItem[] }> {
+  const { httpStatus, json } = await postJsonConsulta(token, historicoPropostaUrl(), {
+    parametros: { nrPropos: String(nrProsp) },
+  });
+  if (httpStatus === 204) return { httpStatus, historicos: [] };
+
+  const lista = (json as { historicos?: Array<Record<string, any>> } | null)?.historicos ?? [];
+  return {
+    httpStatus,
+    historicos: lista.map((h) => ({
+      nrSeq: Number(h.nrSeq) || 0,
+      dtIn: String(h.dtIn ?? ""),
+      nmUsr: String(h.nmUsr ?? ""),
+      nrStatus: typeof h.nrStatus === "number" ? h.nrStatus : null,
+      dsStatus: String(h.dsStatus ?? ""),
+      dsObserv: String(h.dsObserv ?? ""),
+    })),
+  };
+}
+
+/** Fila do workflow: status + quantas propostas estão nele (qtFilhos). */
+export interface FilaWf {
+  nrWf: number;
+  nrStatus: number;
+  dsStatus: string;
+  qtFilhos: number;
+}
+
+/**
+ * POST consultarStatusWf — todas as filas da esteira com contagem por status.
+ * Exige instituição/agência (claims do JWT ou fallback de env) + login.
+ */
+export async function consultarStatusWf(
+  token: string,
+  p: { nrInst: number; nrAgen: number; nmLogin: string },
+): Promise<{ httpStatus: number; filas: FilaWf[] }> {
+  const { httpStatus, json } = await postJsonConsulta(token, statusWfUrl(), {
+    parametros: { nrInst: p.nrInst, nmLogin: p.nmLogin, nrAgen: p.nrAgen, idVazio: "S" },
+  });
+  if (httpStatus === 204) return { httpStatus, filas: [] };
+
+  const lista = (json as { status?: Array<Record<string, any>> } | null)?.status ?? [];
+  return {
+    httpStatus,
+    filas: lista
+      .map((s) => ({
+        nrWf: Number(s.nrWf),
+        nrStatus: Number(s.nrStatus),
+        dsStatus: String(s.dsStatus ?? ""),
+        qtFilhos: Number(s.qtFilhos) || 0,
+      }))
+      .filter((s) => Number.isFinite(s.nrStatus)),
+  };
 }
 
 /**
