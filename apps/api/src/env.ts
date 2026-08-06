@@ -91,6 +91,13 @@ const envSchema = z.object({
   SINQIA_STATUS_WF_PATH: z
     .string()
     .default("/BJ21M05/BJ21M05/BJ21SS0502O/consultarStatusWf"),
+  /** Transferência de status: destinos permitidos + o movimento em si. */
+  SINQIA_STATUS_TRANSF_PATH: z
+    .string()
+    .default("/BJ21M05/BJ21M05/BJ21SS0502X/consultarStatusTransf"),
+  SINQIA_TRANSF_STATUS_PATH: z
+    .string()
+    .default("/BJ21M05/BJ21M05/BJ21SS0502L/transfStatus"),
   /**
    * Instituição/agência do workflow (consultarStatusWf). Preferimos os claims
    * do JWT do login; estes valores são o fallback (observados no Portal — a
@@ -141,6 +148,8 @@ export const filiaisUrl = () => sinqiaUrl(env.SINQIA_FILIAIS_PATH);
 export const painelUrl = () => sinqiaUrl(env.SINQIA_PAINEL_PATH);
 export const historicoPropostaUrl = () => sinqiaUrl(env.SINQIA_HISTORICO_PROPOSTA_PATH);
 export const statusWfUrl = () => sinqiaUrl(env.SINQIA_STATUS_WF_PATH);
+export const statusTransfUrl = () => sinqiaUrl(env.SINQIA_STATUS_TRANSF_PATH);
+export const transfStatusUrl = () => sinqiaUrl(env.SINQIA_TRANSF_STATUS_PATH);
 export const primeiroVencimentoUrl = () => sinqiaUrl(env.SINQIA_PRIMEIRO_VENC_PATH);
 export const propostaUrl = () => sinqiaUrl(env.SINQIA_PROPOSTA_PATH);
 

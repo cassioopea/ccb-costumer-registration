@@ -31,7 +31,9 @@ import {
   propostaUrl,
   propostasPorCpfUrl,
   situacaoUrl,
+  statusTransfUrl,
   statusWfUrl,
+  transfStatusUrl,
 } from "./env.js";
 
 /**
@@ -604,6 +606,80 @@ export interface FilaWf {
   nrStatus: number;
   dsStatus: string;
   qtFilhos: number;
+}
+
+/** Destino permitido a partir de um status do workflow. */
+export interface TransicaoStatus {
+  proxStatus: number;
+  nrWf: number;
+  dsStatus: string;
+  /** "S" no idExiObs = a transição exige observação. */
+  exigeObservacao: boolean;
+}
+
+/**
+ * GET consultarStatusTransf?nrWf&nrStatus — para onde a proposta PODE ir a
+ * partir do status atual. O workflow é a fonte da verdade; nada é hardcoded.
+ */
+export async function consultarStatusTransf(
+  token: string,
+  nrWf: number,
+  nrStatus: number,
+): Promise<{ httpStatus: number; transicoes: TransicaoStatus[] }> {
+  const url = new URL(statusTransfUrl());
+  url.searchParams.set("nrWf", String(nrWf));
+  url.searchParams.set("nrStatus", String(nrStatus));
+  const { httpStatus, json } = await getJsonLookup(token, url.toString());
+  if (httpStatus === 204) return { httpStatus, transicoes: [] };
+
+  const lista =
+    (json as { status?: { status?: Array<Record<string, any>> } } | null)?.status?.status ?? [];
+  return {
+    httpStatus,
+    transicoes: lista
+      .map((t) => ({
+        proxStatus: Number(t.proxStatus),
+        nrWf: Number(t.nrWf),
+        dsStatus: String(t.dsStatus ?? ""),
+        exigeObservacao: String(t.idExiObs ?? "").trim().toUpperCase() === "S",
+      }))
+      .filter((t) => Number.isFinite(t.proxStatus)),
+  };
+}
+
+export interface TransfStatusInput {
+  /** Status DESTINO — a Sinqia recebe como string (payload gravado). */
+  nrStatus: number;
+  dsObserv: string;
+  nrCpf: string;
+  nrProsp: number;
+  nmCliente: string;
+  nrWf: number;
+  cdProd: number;
+  nrContra: number;
+}
+
+/**
+ * POST transfStatus — MOVE a proposta de fila (efeito real no workflow).
+ * Resposta de sucesso observada: {"transferência":"OK"}.
+ */
+export async function transferirStatus(
+  token: string,
+  input: TransfStatusInput,
+): Promise<{ httpStatus: number; ok: boolean; detalhe: string }> {
+  const { httpStatus, json } = await postJsonConsulta(token, transfStatusUrl(), {
+    ...input,
+    nrStatus: String(input.nrStatus),
+  });
+
+  // A chave vem com acento ("transferência") — checa qualquer valor "OK".
+  const valores = json && typeof json === "object" ? Object.values(json as object) : [];
+  const ok = httpStatus >= 200 && httpStatus < 300 && valores.includes("OK");
+  return {
+    httpStatus,
+    ok,
+    detalhe: ok ? "OK" : json ? JSON.stringify(json).slice(0, 300) : `HTTP ${httpStatus}`,
+  };
 }
 
 /**

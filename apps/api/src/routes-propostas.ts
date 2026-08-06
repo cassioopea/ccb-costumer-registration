@@ -23,10 +23,12 @@ import {
   calcProsp,
   consultarHistoricoProposta,
   consultarPropostaPainel,
+  consultarStatusTransf,
   consultarStatusWf,
   listarConvenios,
   listarFiliais,
   listarProdutos,
+  transferirStatus,
 } from "./sinqia-client.js";
 import {
   getVerificacaoEmitter,
@@ -593,6 +595,88 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     if (res.httpStatus === 401) return responder401(reply, session.id);
     return reply.send({ env: env.SINQIA_ENV, historicos: res.historicos });
   });
+
+  /** Destinos permitidos a partir do status atual (somente leitura). */
+  app.get("/api/propostas-transicoes", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const q = transicoesQuerySchema.safeParse(req.query ?? {});
+    if (!q.success) {
+      return reply
+        .code(400)
+        .send({ error: q.error.issues[0]?.message ?? "Parâmetros inválidos." });
+    }
+
+    const res = await consultarStatusTransf(session.token, q.data.nrWf, q.data.nrStatus);
+    if (res.httpStatus === 401) return responder401(reply, session.id);
+    return reply.send({ env: env.SINQIA_ENV, transicoes: res.transicoes });
+  });
+
+  /**
+   * MOVE a proposta de fila (transfStatus — efeito real e irreversível pela
+   * ferramenta). O destino é revalidado no servidor contra o
+   * consultarStatusTransf: só transição que o workflow permite passa.
+   */
+  app.post("/api/propostas-transferir", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = transferirBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.code(400).send({
+        error: `Requisição inválida${issue ? `: ${issue.path.join(".")} — ${issue.message}` : "."}`,
+      });
+    }
+    const b = parsed.data;
+
+    // Revalida o destino no workflow — o front não é fonte de verdade.
+    const permitidas = await consultarStatusTransf(session.token, b.nrWf, b.nrStatusAtual);
+    if (permitidas.httpStatus === 401) return responder401(reply, session.id);
+    const destino = permitidas.transicoes.find((t) => t.proxStatus === b.proxStatus);
+    if (!destino) {
+      return reply.code(422).send({
+        error:
+          `O workflow não permite mover do status ${b.nrStatusAtual} para ${b.proxStatus}. ` +
+          "Recarregue a fila — a proposta pode ter mudado de etapa.",
+      });
+    }
+    if (destino.exigeObservacao && !b.dsObserv.trim()) {
+      return reply.code(422).send({
+        error: `A transição para "${destino.dsStatus}" exige observação.`,
+      });
+    }
+
+    const res = await transferirStatus(session.token, {
+      nrStatus: b.proxStatus,
+      dsObserv: b.dsObserv.trim(),
+      nrCpf: b.nrCpf,
+      nrProsp: b.nrProsp,
+      nmCliente: b.nmCliente,
+      nrWf: b.nrWf,
+      cdProd: b.cdProd,
+      nrContra: b.nrContra ?? 0,
+    });
+    if (res.httpStatus === 401) return responder401(reply, session.id);
+
+    app.log.info(
+      `Transferência de status: proposta ${b.nrProsp} ${b.nrStatusAtual}→${b.proxStatus} ` +
+        `(${res.ok ? "OK" : "FALHOU"}) — ambiente ${env.SINQIA_ENV.toUpperCase()}`,
+    );
+
+    if (!res.ok) {
+      return reply.code(502).send({
+        error: `A Sinqia não confirmou a transferência: ${res.detalhe}`,
+        httpStatus: res.httpStatus,
+      });
+    }
+    return reply.send({
+      env: env.SINQIA_ENV,
+      ok: true,
+      destino: { proxStatus: destino.proxStatus, dsStatus: destino.dsStatus },
+    });
+  });
 }
 
 /** Cursor inicial do painel: agora, olhando para trás (mais recentes primeiro). */
@@ -729,6 +813,25 @@ const painelBodySchema = z.object({
       idSentido: z.enum(["POS", "ANT"]),
     })
     .optional(),
+});
+
+/** Query do GET /api/propostas-transicoes. */
+const transicoesQuerySchema = z.object({
+  nrWf: z.coerce.number().int(),
+  nrStatus: z.coerce.number().int(),
+});
+
+/** Body do POST /api/propostas-transferir (move a proposta de fila). */
+const transferirBodySchema = z.object({
+  nrProsp: z.number().int().positive(),
+  nrWf: z.number().int(),
+  nrStatusAtual: z.number().int(),
+  proxStatus: z.number().int(),
+  dsObserv: z.string().max(500).default(""),
+  nrCpf: z.string().min(11).max(14),
+  nmCliente: z.string().max(120).default(""),
+  cdProd: z.number().int(),
+  nrContra: z.number().int().nullable().optional(),
 });
 
 /** Body do POST /api/propostas/criar-uma (proposta individual). */

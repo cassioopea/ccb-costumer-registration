@@ -559,6 +559,42 @@ export async function getHistoricoProposta(
   return lerResposta(res, "Falha ao consultar o histórico da proposta");
 }
 
+export interface TransicaoStatus {
+  proxStatus: number;
+  nrWf: number;
+  dsStatus: string;
+  exigeObservacao: boolean;
+}
+
+/** Para onde a proposta pode ir a partir do status atual (somente leitura). */
+export async function getTransicoesProposta(
+  nrWf: number,
+  nrStatus: number,
+): Promise<{ env: string; transicoes: TransicaoStatus[] }> {
+  const res = await fetch(`/api/propostas-transicoes?nrWf=${nrWf}&nrStatus=${nrStatus}`);
+  return lerResposta(res, "Falha ao consultar as transições permitidas");
+}
+
+/** MOVE a proposta de fila (transfStatus — efeito real no workflow). */
+export async function transferirProposta(input: {
+  nrProsp: number;
+  nrWf: number;
+  nrStatusAtual: number;
+  proxStatus: number;
+  dsObserv: string;
+  nrCpf: string;
+  nmCliente: string;
+  cdProd: number;
+  nrContra: number | null;
+}): Promise<{ env: string; ok: boolean; destino: { proxStatus: number; dsStatus: string } }> {
+  const res = await fetch("/api/propostas-transferir", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return lerResposta(res, "Falha ao transferir a proposta");
+}
+
 /* --- Proposta individual (fluxo unitário) --- */
 
 export interface ClienteBuscaResponse {
