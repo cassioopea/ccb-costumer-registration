@@ -211,6 +211,15 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
     [filas, filaSelecionada],
   );
 
+  /**
+   * Só etapas COM propostas — as de passagem (o motor transita sozinho) e as
+   * vazias ficam de fora. A selecionada permanece mesmo que zere no refresh.
+   */
+  const filasVisiveis = useMemo(
+    () => (filas ?? []).filter((f) => f.qtFilhos > 0 || f.nrStatus === filaSelecionada),
+    [filas, filaSelecionada],
+  );
+
   /** Nome da etapa sem o sufixo entre parênteses — ele vai para o title. */
   const nomeEtapa = (ds: string) => ds.replace(/\s*\(.*\)\s*$/, "");
 
@@ -249,7 +258,8 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
                     <span className="font-medium text-foreground tabular-nums">
                       {totalNasFilas}
                     </span>{" "}
-                    proposta(s) no fluxo — clique numa etapa para ver a fila dela.
+                    proposta(s) no fluxo — clique numa etapa para ver a fila dela. Etapas
+                    vazias (incluindo as de passagem automática) ficam ocultas.
                   </>
                 )}
               </CardDescription>
@@ -278,7 +288,7 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
             </div>
           ) : (
             <ol className="flex items-stretch gap-0 overflow-x-auto pb-1" aria-label="Etapas da esteira">
-              {filas.map((f, i) => {
+              {filasVisiveis.map((f, i) => {
                 const ativa = filaSelecionada === f.nrStatus;
                 return (
                   <li key={f.nrStatus} className="flex shrink-0 items-center">
