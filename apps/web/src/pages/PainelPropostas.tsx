@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Search,
   SearchX,
+  SlidersHorizontal,
   XCircle,
 } from "lucide-react";
 import {
@@ -108,6 +109,8 @@ export function PainelPropostas({
   const [filaSelecionada, setFilaSelecionada] = useState<number | null>(null);
 
   const [filtros, setFiltros] = useState<FiltrosForm>(FILTROS_INICIAIS);
+  /** Filtros recolhidos por padrão — a tabela é a protagonista da página. */
+  const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [propostas, setPropostas] = useState<PropostaPainel[]>([]);
   const [cursor, setCursor] = useState<PainelCursor | null>(null);
   const [carregando, setCarregando] = useState(false);
@@ -260,6 +263,12 @@ export function PainelPropostas({
 
   /** Nome da etapa sem o sufixo entre parênteses — ele vai para o title. */
   const nomeEtapa = (ds: string) => ds.replace(/\s*\(.*\)\s*$/, "");
+
+  /** Quantos filtros estão preenchidos — visível mesmo com o painel recolhido. */
+  const filtrosAtivos = useMemo(
+    () => Object.values(filtros).filter((v) => v.trim() !== "").length,
+    [filtros],
+  );
 
   /** Abre o dialog de transferência e busca os destinos permitidos. */
   async function abrirMover(p: PropostaPainel) {
@@ -458,129 +467,148 @@ export function PainelPropostas({
         </CardContent>
       </Card>
 
-      {/* Filtros */}
+      {/* Listagem — a tabela é a protagonista; filtros recolhíveis no header */}
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>Filtros</CardTitle>
+              <CardTitle>
+                {filaAtual ? `Fila: ${nomeEtapa(filaAtual.dsStatus)}` : "Propostas"}
+              </CardTitle>
               <CardDescription>
-                Todos opcionais — refinam a etapa selecionada acima.
+                {propostas.length > 0 ? (
+                  <span className="tabular-nums">
+                    <span className="font-medium text-foreground">{propostas.length}</span>{" "}
+                    proposta(s) carregada(s) nesta etapa, mais recentes primeiro
+                    {cursor ? " — há mais para carregar" : ""}
+                    {filtrosAtivos > 0 && (
+                      <span className="text-warning-foreground">
+                        {" "}
+                        · {filtrosAtivos} filtro(s) aplicado(s)
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  "Selecione uma etapa da esteira para ver a fila dela."
+                )}
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                exportPainelCsv(propostas, filaAtual ? nomeEtapa(filaAtual.dsStatus) : "fila")
-              }
-              disabled={propostas.length === 0}
-              title="Baixa a fila como está na tela (etapa + filtros aplicados)"
-            >
-              <Download className="h-4 w-4" />
-              Exportar CSV ({propostas.length})
-            </Button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setMostrarFiltros((v) => !v)}
+                aria-expanded={mostrarFiltros}
+                title="Mostra/oculta os filtros da fila"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filtros{filtrosAtivos > 0 ? ` (${filtrosAtivos})` : ""}
+                {mostrarFiltros ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <ChevronRight className="h-3 w-3" />
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  exportPainelCsv(propostas, filaAtual ? nomeEtapa(filaAtual.dsStatus) : "fila")
+                }
+                disabled={propostas.length === 0}
+                title="Baixa a fila como está na tela (etapa + filtros aplicados)"
+              >
+                <Download className="h-4 w-4" />
+                Exportar CSV ({propostas.length})
+              </Button>
+            </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="w-36 space-y-1">
-              <Label htmlFor="pf-nr" className="text-caption">
-                Nº da proposta
-              </Label>
-              <Input
-                id="pf-nr"
-                value={filtros.nrPropos}
-                inputMode="numeric"
-                className="tabular-nums"
-                onChange={(e) => setFiltros((f) => ({ ...f, nrPropos: e.target.value }))}
-                onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
-              />
-            </div>
-            <div className="w-44 space-y-1">
-              <Label htmlFor="pf-cpf" className="text-caption">
-                CPF/CNPJ
-              </Label>
-              <Input
-                id="pf-cpf"
-                value={filtros.cpf}
-                inputMode="numeric"
-                className="tabular-nums"
-                onChange={(e) => setFiltros((f) => ({ ...f, cpf: e.target.value }))}
-                onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
-              />
-            </div>
-            <div className="min-w-48 flex-1 space-y-1">
-              <Label htmlFor="pf-nome" className="text-caption">
-                Nome do cliente
-              </Label>
-              <Input
-                id="pf-nome"
-                value={filtros.nome}
-                onChange={(e) => setFiltros((f) => ({ ...f, nome: e.target.value }))}
-                onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
-              />
-            </div>
-            <div className="w-40 space-y-1">
-              <Label htmlFor="pf-ini" className="text-caption">
-                Período — de
-              </Label>
-              <Input
-                id="pf-ini"
-                type="date"
-                className="tabular-nums"
-                value={filtros.dtIni}
-                onChange={(e) => setFiltros((f) => ({ ...f, dtIni: e.target.value }))}
-              />
-            </div>
-            <div className="w-40 space-y-1">
-              <Label htmlFor="pf-fim" className="text-caption">
-                até
-              </Label>
-              <Input
-                id="pf-fim"
-                type="date"
-                className="tabular-nums"
-                value={filtros.dtFim}
-                onChange={(e) => setFiltros((f) => ({ ...f, dtFim: e.target.value }))}
-              />
-            </div>
-            <Button onClick={() => void buscar(filaSelecionada)} disabled={carregando}>
-              {carregando ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Search className="h-4 w-4" />
-              )}
-              Buscar
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={() => setFiltros(FILTROS_INICIAIS)}
-              disabled={carregando}
-            >
-              Limpar filtros
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
 
-      {/* Listagem */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            {filaAtual ? `Fila: ${nomeEtapa(filaAtual.dsStatus)}` : "Propostas"}
-          </CardTitle>
-          <CardDescription>
-            {propostas.length > 0 ? (
-              <span className="tabular-nums">
-                <span className="font-medium text-foreground">{propostas.length}</span>{" "}
-                proposta(s) carregada(s) nesta etapa, mais recentes primeiro
-                {cursor ? " — há mais para carregar" : ""}
-              </span>
-            ) : (
-              "Selecione uma etapa da esteira para ver a fila dela."
-            )}
-          </CardDescription>
+          {/* Painel de filtros — recolhido por padrão, aparece só quando necessário */}
+          {mostrarFiltros && (
+            <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-border bg-muted/30 p-3">
+              <div className="w-36 space-y-1">
+                <Label htmlFor="pf-nr" className="text-caption">
+                  Nº da proposta
+                </Label>
+                <Input
+                  id="pf-nr"
+                  value={filtros.nrPropos}
+                  inputMode="numeric"
+                  className="tabular-nums"
+                  onChange={(e) => setFiltros((f) => ({ ...f, nrPropos: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
+                />
+              </div>
+              <div className="w-44 space-y-1">
+                <Label htmlFor="pf-cpf" className="text-caption">
+                  CPF/CNPJ
+                </Label>
+                <Input
+                  id="pf-cpf"
+                  value={filtros.cpf}
+                  inputMode="numeric"
+                  className="tabular-nums"
+                  onChange={(e) => setFiltros((f) => ({ ...f, cpf: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
+                />
+              </div>
+              <div className="min-w-48 flex-1 space-y-1">
+                <Label htmlFor="pf-nome" className="text-caption">
+                  Nome do cliente
+                </Label>
+                <Input
+                  id="pf-nome"
+                  value={filtros.nome}
+                  onChange={(e) => setFiltros((f) => ({ ...f, nome: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
+                />
+              </div>
+              <div className="w-40 space-y-1">
+                <Label htmlFor="pf-ini" className="text-caption">
+                  Período — de
+                </Label>
+                <Input
+                  id="pf-ini"
+                  type="date"
+                  className="tabular-nums"
+                  value={filtros.dtIni}
+                  onChange={(e) => setFiltros((f) => ({ ...f, dtIni: e.target.value }))}
+                />
+              </div>
+              <div className="w-40 space-y-1">
+                <Label htmlFor="pf-fim" className="text-caption">
+                  até
+                </Label>
+                <Input
+                  id="pf-fim"
+                  type="date"
+                  className="tabular-nums"
+                  value={filtros.dtFim}
+                  onChange={(e) => setFiltros((f) => ({ ...f, dtFim: e.target.value }))}
+                />
+              </div>
+              <Button size="sm" onClick={() => void buscar(filaSelecionada)} disabled={carregando}>
+                {carregando ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Search className="h-4 w-4" />
+                )}
+                Buscar
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setFiltros(FILTROS_INICIAIS);
+                  void buscar(filaSelecionada);
+                }}
+                disabled={carregando || filtrosAtivos === 0}
+              >
+                Limpar
+              </Button>
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
           {carregando && propostas.length === 0 ? (
