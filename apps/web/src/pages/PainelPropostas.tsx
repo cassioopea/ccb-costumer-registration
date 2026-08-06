@@ -74,8 +74,10 @@ function variantDoStatus(ds: string): "success" | "warning" | "destructive" | "s
 export function PainelPropostas({ ativa }: { ativa: boolean }) {
   const [filas, setFilas] = useState<FilaWf[] | null>(null);
   const [carregandoFilas, setCarregandoFilas] = useState(false);
-  const [mostrarVazias, setMostrarVazias] = useState(false);
-  /** Fila selecionada (nrStatus) — filtra a listagem. null = todas. */
+  /**
+   * Etapa selecionada da esteira (nrStatus). O consultarPropostaPainel EXIGE
+   * um status (sem ele a Sinqia devolve 400) — a navegação é sempre por fila.
+   */
   const [filaSelecionada, setFilaSelecionada] = useState<number | null>(null);
 
   const [filtros, setFiltros] = useState<FiltrosForm>(FILTROS_INICIAIS);
@@ -95,20 +97,32 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
   useEffect(() => {
     if (!ativa || jaAtivou.current) return;
     jaAtivou.current = true;
-    void carregarFilas();
-    void buscar(null);
+    // Carrega as etapas e já abre a primeira com propostas dentro.
+    void carregarFilas().then((lista) => {
+      const primeira = lista?.find((f) => f.qtFilhos > 0) ?? lista?.[0];
+      if (primeira) {
+        setFilaSelecionada(primeira.nrStatus);
+        void buscar(primeira.nrStatus);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- só na 1ª ativação
   }, [ativa]);
 
-  async function carregarFilas() {
-    if (carregandoFilas) return;
+  async function carregarFilas(): Promise<FilaWf[] | null> {
+    if (carregandoFilas) return filas;
     setCarregandoFilas(true);
     try {
       const res = await getFilasPropostas();
-      setFilas(res.filas);
+      // Ordem da esteira: os nrStatus crescem no sentido do fluxo.
+      const ordenadas = [...res.filas].sort((a, b) => a.nrStatus - b.nrStatus);
+      setFilas(ordenadas);
+      return ordenadas;
     } catch (e) {
-      // Filas são orientação; a listagem funciona sem elas.
-      if (!(e instanceof SessaoExpiradaError)) setFilas([]);
+      if (!(e instanceof SessaoExpiradaError)) {
+        setFilas([]);
+        setErro(`Não foi possível carregar as filas da esteira: ${(e as Error).message}`);
+      }
+      return null;
     } finally {
       setCarregandoFilas(false);
     }
@@ -126,9 +140,9 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
     };
   }
 
-  /** Busca do zero (nova consulta) com a fila indicada. */
+  /** Busca do zero (nova consulta) com a etapa indicada — status é obrigatório. */
   async function buscar(status: number | null) {
-    if (carregando) return;
+    if (carregando || status === null) return;
     setCarregando(true);
     setErro(null);
     setPropostas([]);
@@ -165,10 +179,10 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
     }
   }
 
-  const selecionarFila = (nrStatus: number | null) => {
-    const novo = filaSelecionada === nrStatus ? null : nrStatus;
-    setFilaSelecionada(novo);
-    void buscar(novo);
+  const selecionarFila = (nrStatus: number) => {
+    if (nrStatus === filaSelecionada) return;
+    setFilaSelecionada(nrStatus);
+    void buscar(nrStatus);
   };
 
   async function toggleHistorico(nrProsp: number) {
@@ -187,17 +201,18 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
     }
   }
 
-  const filasVisiveis = useMemo(() => {
-    if (!filas) return [];
-    return filas.filter(
-      (f) => mostrarVazias || f.qtFilhos > 0 || f.nrStatus === filaSelecionada,
-    );
-  }, [filas, mostrarVazias, filaSelecionada]);
-
   const totalNasFilas = useMemo(
     () => (filas ?? []).reduce((acc, f) => acc + f.qtFilhos, 0),
     [filas],
   );
+
+  const filaAtual = useMemo(
+    () => filas?.find((f) => f.nrStatus === filaSelecionada) ?? null,
+    [filas, filaSelecionada],
+  );
+
+  /** Nome da etapa sem o sufixo entre parênteses — ele vai para o title. */
+  const nomeEtapa = (ds: string) => ds.replace(/\s*\(.*\)\s*$/, "");
 
   return (
     <div className="space-y-6">
@@ -220,88 +235,88 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
         </div>
       )}
 
-      {/* Filas do workflow */}
+      {/* Etapas da esteira — o fluxo inteiro, com contagem por etapa */}
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle>Filas da esteira</CardTitle>
+              <CardTitle>Esteira</CardTitle>
               <CardDescription>
                 {filas === null ? (
-                  "Carregando as filas do workflow…"
+                  "Carregando as etapas da esteira…"
                 ) : (
                   <>
                     <span className="font-medium text-foreground tabular-nums">
                       {totalNasFilas}
                     </span>{" "}
-                    proposta(s) distribuída(s) nas filas — clique para filtrar.
+                    proposta(s) no fluxo — clique numa etapa para ver a fila dela.
                   </>
                 )}
               </CardDescription>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setMostrarVazias((v) => !v)}
-                className="focus-ring text-caption text-primary underline-offset-2 hover:underline"
-              >
-                {mostrarVazias ? "ocultar filas vazias" : "mostrar filas vazias"}
-              </button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void carregarFilas()}
-                disabled={carregandoFilas}
-                title="Recarrega as contagens das filas"
-              >
-                {carregandoFilas ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void carregarFilas()}
+              disabled={carregandoFilas}
+              title="Recarrega as contagens das etapas"
+            >
+              {carregandoFilas ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
           {filas === null ? (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex gap-2 overflow-x-auto pb-1">
               {Array.from({ length: 6 }, (_, i) => (
-                <Skeleton key={i} className="h-7 w-40 rounded-full" />
+                <Skeleton key={i} className="h-20 w-40 shrink-0 rounded-lg" />
               ))}
             </div>
           ) : (
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => selecionarFila(null)}
-                className={cn(
-                  "focus-ring rounded-full border px-3 py-1 text-caption font-medium transition-colors duration-150",
-                  filaSelecionada === null
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
-                )}
-              >
-                Todas
-              </button>
-              {filasVisiveis.map((f) => (
-                <button
-                  key={f.nrStatus}
-                  type="button"
-                  onClick={() => selecionarFila(f.nrStatus)}
-                  title={`Status ${f.nrStatus} (workflow ${f.nrWf})`}
-                  className={cn(
-                    "focus-ring rounded-full border px-3 py-1 text-caption font-medium transition-colors duration-150 tabular-nums",
-                    filaSelecionada === f.nrStatus
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
-                    f.qtFilhos === 0 && filaSelecionada !== f.nrStatus && "opacity-60",
-                  )}
-                >
-                  {f.dsStatus} · {f.qtFilhos}
-                </button>
-              ))}
-            </div>
+            <ol className="flex items-stretch gap-0 overflow-x-auto pb-1" aria-label="Etapas da esteira">
+              {filas.map((f, i) => {
+                const ativa = filaSelecionada === f.nrStatus;
+                return (
+                  <li key={f.nrStatus} className="flex shrink-0 items-center">
+                    {i > 0 && <span aria-hidden className="mx-1 h-px w-4 shrink-0 bg-border" />}
+                    <button
+                      type="button"
+                      onClick={() => selecionarFila(f.nrStatus)}
+                      aria-current={ativa ? "true" : undefined}
+                      title={`${f.dsStatus} — status ${f.nrStatus} (workflow ${f.nrWf})`}
+                      className={cn(
+                        "focus-ring flex h-full w-40 flex-col justify-between rounded-lg border px-3 py-2 text-left transition-colors duration-150",
+                        ativa
+                          ? "border-primary bg-accent"
+                          : "border-border hover:border-primary/50",
+                        f.qtFilhos === 0 && !ativa && "opacity-60",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "text-caption leading-tight",
+                          ativa ? "font-semibold text-accent-foreground" : "text-muted-foreground",
+                        )}
+                      >
+                        {nomeEtapa(f.dsStatus)}
+                      </span>
+                      <span
+                        className={cn(
+                          "text-title tabular-nums",
+                          ativa ? "text-primary" : "text-foreground",
+                        )}
+                      >
+                        {f.qtFilhos}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
           )}
         </CardContent>
       </Card>
@@ -311,7 +326,7 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
         <CardHeader>
           <CardTitle>Filtros</CardTitle>
           <CardDescription>
-            Todos opcionais — combinam com a fila selecionada acima.
+            Todos opcionais — refinam a etapa selecionada acima.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -399,16 +414,18 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
       {/* Listagem */}
       <Card>
         <CardHeader>
-          <CardTitle>Propostas</CardTitle>
+          <CardTitle>
+            {filaAtual ? `Fila: ${nomeEtapa(filaAtual.dsStatus)}` : "Propostas"}
+          </CardTitle>
           <CardDescription>
             {propostas.length > 0 ? (
               <span className="tabular-nums">
                 <span className="font-medium text-foreground">{propostas.length}</span>{" "}
-                proposta(s) carregada(s), mais recentes primeiro
+                proposta(s) carregada(s) nesta etapa, mais recentes primeiro
                 {cursor ? " — há mais para carregar" : ""}
               </span>
             ) : (
-              "As propostas aparecem aqui, mais recentes primeiro."
+              "Selecione uma etapa da esteira para ver a fila dela."
             )}
           </CardDescription>
         </CardHeader>
@@ -424,18 +441,17 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
             <div className="flex flex-col items-center gap-2 py-12 text-center">
               <SearchX className="h-8 w-8 text-muted-foreground/60" />
               <p className="text-body text-muted-foreground">
-                Nenhuma proposta com estes filtros.
+                Nenhuma proposta nesta etapa com estes filtros.
               </p>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   setFiltros(FILTROS_INICIAIS);
-                  setFilaSelecionada(null);
-                  void buscar(null);
+                  void buscar(filaSelecionada);
                 }}
               >
-                Ver todas
+                Limpar filtros e recarregar a fila
               </Button>
             </div>
           ) : (
