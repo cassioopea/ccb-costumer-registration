@@ -27,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
 import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
 import {
@@ -104,7 +105,7 @@ function dadoInvalido(campo: keyof DadosOperacao, valor: string): string | null 
   }
 }
 
-export function PropostaIndividual() {
+export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
   /* --- Passo 1: cliente --- */
   const [cpf, setCpf] = useState("");
   const [buscando, setBuscando] = useState(false);
@@ -395,9 +396,11 @@ export function PropostaIndividual() {
       {/* Breadcrumb + título + etapas do fluxo */}
       <div className="space-y-4">
         <div>
-          <div className="mb-3 text-caption text-muted-foreground">
-            Esteira de Originação › Propostas › Proposta individual
-          </div>
+          <Breadcrumb
+            paginaPrincipal="Painel de propostas"
+            onVoltar={onVoltar}
+            atual="Proposta individual"
+          />
           <h1 className="text-display text-foreground">Proposta individual</h1>
           <p className="mt-1 text-body text-muted-foreground">
             Busque o cliente, preencha a operação, calcule na Sinqia e confira antes de

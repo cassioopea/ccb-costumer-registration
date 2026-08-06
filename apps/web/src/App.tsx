@@ -1,13 +1,5 @@
 import { useState } from "react";
-import {
-  FilePlus2,
-  FileSpreadsheet,
-  LayoutList,
-  ListChecks,
-  Loader2,
-  Upload,
-  UserPlus,
-} from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { Topbar, type Modulo } from "@/components/Topbar";
 import { SessionExpiredDialog } from "@/components/SessionExpiredDialog";
 import { CadastroIndividual } from "@/pages/CadastroIndividual";
@@ -18,29 +10,17 @@ import { PropostaIndividual } from "@/pages/PropostaIndividual";
 import { PainelPropostas } from "@/pages/PainelPropostas";
 import { Login } from "@/pages/Login";
 import { SessionProvider, useSession } from "@/lib/session";
-import { cn } from "@/lib/utils";
 
 /**
- * Esteira de Originação — dois módulos:
- *  - Clientes: cadastro individual, em lote e situação (já existiam);
- *  - Propostas: lote de propostas a partir do Emissoes.xlsx (Fase 1).
- * Módulo na topbar; telas do módulo nas abas abaixo dela.
+ * Esteira de Originação — dois módulos, cada um com uma PÁGINA PRINCIPAL
+ * (a listagem) e sub-páginas alcançadas por CTAs nela:
+ *  - Clientes: Base de clientes → Cadastro individual / Cadastro em lote;
+ *  - Propostas: Painel de propostas → Lote de propostas / Proposta individual.
+ * A volta é pelo breadcrumb clicável das sub-páginas. Sem barra de abas.
  */
 
-type TelaClientes = "individual" | "cadastro" | "situacao";
-type TelaPropostas = "painel-propostas" | "lote-propostas" | "proposta-individual";
-
-const TELAS_CLIENTES = [
-  { id: "situacao" as const, label: "Base de clientes", icon: ListChecks },
-  { id: "individual" as const, label: "Cadastro individual", icon: UserPlus },
-  { id: "cadastro" as const, label: "Cadastro em lote", icon: Upload },
-];
-
-const TELAS_PROPOSTAS = [
-  { id: "painel-propostas" as const, label: "Painel de propostas", icon: LayoutList },
-  { id: "lote-propostas" as const, label: "Lote de propostas", icon: FileSpreadsheet },
-  { id: "proposta-individual" as const, label: "Proposta individual", icon: FilePlus2 },
-];
+export type TelaClientes = "situacao" | "individual" | "cadastro";
+export type TelaPropostas = "painel-propostas" | "lote-propostas" | "proposta-individual";
 
 export default function App() {
   return (
@@ -53,9 +33,7 @@ export default function App() {
 function Shell() {
   const { session, carregando } = useSession();
   const [modulo, setModulo] = useState<Modulo>("clientes");
-  // Base de clientes é a primeira aba e a tela inicial do módulo.
   const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
-  // Painel é a porta de entrada do módulo: chega-se à proposta pela listagem.
   const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("painel-propostas");
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
@@ -69,51 +47,24 @@ function Shell() {
 
   if (!session) return <Login />;
 
-  const telas = modulo === "clientes" ? TELAS_CLIENTES : TELAS_PROPOSTAS;
-  const telaAtiva = modulo === "clientes" ? telaClientes : telaPropostas;
-
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <Topbar modulo={modulo} onModuloChange={setModulo} />
 
-      {/* Telas do módulo ativo. Trocar de módulo/aba não perde estado. */}
-      <nav className="border-b border-border bg-card" aria-label="Telas do módulo">
-        <div className="mx-auto flex max-w-shell gap-1 px-8">
-          {telas.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() =>
-                modulo === "clientes"
-                  ? setTelaClientes(id as TelaClientes)
-                  : setTelaPropostas(id as TelaPropostas)
-              }
-              aria-current={telaAtiva === id ? "page" : undefined}
-              className={cn(
-                "focus-ring -mb-px flex items-center gap-2 border-b-2 px-4 py-3 text-body font-medium transition-colors duration-150",
-                telaAtiva === id
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
-        </div>
-      </nav>
-
       <main className="mx-auto w-full max-w-shell flex-1 px-8 py-10">
-        {/* Mantém todas montadas: trocar de módulo/aba não perde arquivo
-            selecionado, base carregada, seleção nem lote em andamento. */}
+        {/* Mantém todas montadas: navegar não perde arquivo selecionado,
+            base carregada, seleção nem lote em andamento. */}
+        <div className={modulo === "clientes" && telaClientes === "situacao" ? undefined : "hidden"}>
+          <SituacaoClientes
+            ativa={modulo === "clientes" && telaClientes === "situacao"}
+            onNavegar={setTelaClientes}
+          />
+        </div>
         <div className={modulo === "clientes" && telaClientes === "individual" ? undefined : "hidden"}>
-          <CadastroIndividual />
+          <CadastroIndividual onVoltar={() => setTelaClientes("situacao")} />
         </div>
         <div className={modulo === "clientes" && telaClientes === "cadastro" ? undefined : "hidden"}>
-          <CadastroLote />
-        </div>
-        <div className={modulo === "clientes" && telaClientes === "situacao" ? undefined : "hidden"}>
-          <SituacaoClientes ativa={modulo === "clientes" && telaClientes === "situacao"} />
+          <CadastroLote onVoltar={() => setTelaClientes("situacao")} />
         </div>
         <div
           className={
@@ -122,6 +73,7 @@ function Shell() {
         >
           <PainelPropostas
             ativa={modulo === "propostas" && telaPropostas === "painel-propostas"}
+            onNavegar={setTelaPropostas}
           />
         </div>
         <div
@@ -129,7 +81,7 @@ function Shell() {
             modulo === "propostas" && telaPropostas === "lote-propostas" ? undefined : "hidden"
           }
         >
-          <PropostasLote />
+          <PropostasLote onVoltar={() => setTelaPropostas("painel-propostas")} />
         </div>
         <div
           className={
@@ -138,7 +90,7 @@ function Shell() {
               : "hidden"
           }
         >
-          <PropostaIndividual />
+          <PropostaIndividual onVoltar={() => setTelaPropostas("painel-propostas")} />
         </div>
       </main>
 

@@ -6,6 +6,8 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  FilePlus2,
+  FileSpreadsheet,
   Loader2,
   RefreshCw,
   Search,
@@ -41,6 +43,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { cn } from "@/lib/utils";
 import {
   getFilasPropostas,
@@ -88,7 +91,14 @@ function variantDoStatus(ds: string): "success" | "warning" | "destructive" | "s
   return "secondary";
 }
 
-export function PainelPropostas({ ativa }: { ativa: boolean }) {
+export function PainelPropostas({
+  ativa,
+  onNavegar,
+}: {
+  ativa: boolean;
+  /** Navega para as sub-páginas do módulo (lote/proposta individual). */
+  onNavegar?: (tela: "lote-propostas" | "proposta-individual") => void;
+}) {
   const [filas, setFilas] = useState<FilaWf[] | null>(null);
   const [carregandoFilas, setCarregandoFilas] = useState(false);
   /**
@@ -313,16 +323,28 @@ export function PainelPropostas({ ativa }: { ativa: boolean }) {
 
   return (
     <div className="space-y-6">
-      {/* Breadcrumb + título */}
-      <div>
-        <div className="mb-3 text-caption text-muted-foreground">
-          Esteira de Originação › Propostas › Painel de propostas
+      {/* Breadcrumb + título + CTAs de criação */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <Breadcrumb paginaPrincipal="Propostas" atual="Painel de propostas" />
+          <h1 className="text-display text-foreground">Painel de propostas</h1>
+          <p className="mt-1 text-body text-muted-foreground">
+            As propostas do ambiente, etapa a etapa da esteira — acompanhe o histórico,
+            mova de fila e crie novas propostas pelos botões ao lado.
+          </p>
         </div>
-        <h1 className="text-display text-foreground">Painel de propostas</h1>
-        <p className="mt-1 text-body text-muted-foreground">
-          As propostas do ambiente, etapa a etapa da esteira — acompanhe o histórico e
-          mova propostas de fila conforme o workflow permite.
-        </p>
+        {onNavegar && (
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button variant="outline" onClick={() => onNavegar("proposta-individual")}>
+              <FilePlus2 className="h-4 w-4" />
+              Proposta individual
+            </Button>
+            <Button onClick={() => onNavegar("lote-propostas")}>
+              <FileSpreadsheet className="h-4 w-4" />
+              Lote de propostas
+            </Button>
+          </div>
+        )}
       </div>
 
       {erro && (

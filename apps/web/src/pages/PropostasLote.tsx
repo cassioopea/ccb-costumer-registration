@@ -45,6 +45,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
 import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
 import {
@@ -110,7 +111,7 @@ function sugerirDtContra(rows: EmissaoRow[]): string | null {
   return `${anoAnt}-${String(mesAnt).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
-export function PropostasLote() {
+export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [base, setBase] = useState<ParseEmissoesResult | null>(null);
@@ -715,9 +716,11 @@ export function PropostasLote() {
       {/* Breadcrumb + título + etapas do fluxo */}
       <div className="space-y-4">
         <div>
-          <div className="mb-3 text-caption text-muted-foreground">
-            Esteira de Originação › Propostas › Lote de propostas
-          </div>
+          <Breadcrumb
+            paginaPrincipal="Painel de propostas"
+            onVoltar={onVoltar}
+            atual="Lote de propostas"
+          />
           <h1 className="text-display text-foreground">Lote de propostas</h1>
           <p className="mt-1 text-body text-muted-foreground">
             Carregue o Emissoes.xlsx, selecione as linhas, calcule e confira antes de

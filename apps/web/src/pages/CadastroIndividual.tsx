@@ -44,6 +44,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { cn } from "@/lib/utils";
 import {
   cadastrarUm,
@@ -56,7 +57,7 @@ import { ControlesLote, sanitizeControl, useControlesLote } from "@/components/C
 
 type Fase = "editando" | "validando" | "enviando";
 
-export function CadastroIndividual() {
+export function CadastroIndividual({ onVoltar }: { onVoltar?: () => void }) {
   /** Estado do formulário: mapa achatado, igual a uma linha de CSV. */
   const [campos, setCampos] = useState<Record<string, string>>({});
   const [fase, setFase] = useState<Fase>("editando");
@@ -185,9 +186,11 @@ export function CadastroIndividual() {
   return (
     <div className="space-y-6">
       <div>
-        <div className="mb-3 text-caption text-muted-foreground">
-          Esteira de Originação › Clientes › Cadastro individual
-        </div>
+        <Breadcrumb
+          paginaPrincipal="Base de clientes"
+          onVoltar={onVoltar}
+          atual="Cadastro individual"
+        />
         <h1 className="text-display text-foreground">Cadastro individual</h1>
         <p className="mt-1 text-body text-muted-foreground">
           Cadastre um tomador preenchendo o formulário. Usa a mesma rota e a mesma validação do

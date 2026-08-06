@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
 import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
 import { cn, rolarAte } from "@/lib/utils";
@@ -73,7 +74,7 @@ const ACAO_VERBO: Record<IdAcao | "", string> = {
 
 const ENV_LABEL = IS_PROD ? "PRODUÇÃO" : "HML";
 
-export function CadastroLote() {
+export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -315,9 +316,11 @@ export function CadastroLote() {
       {/* Breadcrumb + título + etapas do fluxo */}
       <div className="space-y-4">
         <div>
-          <div className="mb-3 text-caption text-muted-foreground">
-            Esteira de Originação › Clientes › Cadastro em lote
-          </div>
+          <Breadcrumb
+            paginaPrincipal="Base de clientes"
+            onVoltar={onVoltar}
+            atual="Cadastro em lote"
+          />
           <h1 className="text-display text-foreground">Cadastro em lote de clientes</h1>
           <p className="mt-1 text-body text-muted-foreground">
             Importe tomadores de CCB para a API Sinqia (BJ21M05). Requer VPN da Opea ativa.

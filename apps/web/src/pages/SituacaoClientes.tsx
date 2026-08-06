@@ -11,10 +11,13 @@ import {
   Loader2,
   RefreshCw,
   Search,
+  Upload,
+  UserPlus,
   X,
   XCircle,
 } from "lucide-react";
 import { matchCliente, SITUACOES, situacaoLabel } from "@cadastro-lote/shared";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import {
   Card,
   CardContent,
@@ -73,7 +76,14 @@ type Phase = "idle" | "carregando" | "carregado" | "alterando" | "done";
 /** Teto de linhas renderizadas. Filtrar é barato; desenhar 20 mil <tr> não é. */
 const MAX_LINHAS_VISIVEIS = 200;
 
-export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
+export function SituacaoClientes({
+  ativa = true,
+  onNavegar,
+}: {
+  ativa?: boolean;
+  /** Navega para as sub-páginas do módulo (cadastro individual/em lote). */
+  onNavegar?: (tela: "individual" | "cadastro") => void;
+}) {
   const [tipoPessoa, setTipoPessoa] = useState("");
   const [filtro, setFiltro] = useState("");
 
@@ -312,16 +322,27 @@ export function SituacaoClientes({ ativa = true }: { ativa?: boolean }) {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="mb-3 text-caption text-muted-foreground">
-          Esteira de Originação › Clientes › Base de clientes
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <Breadcrumb paginaPrincipal="Clientes" atual="Base de clientes" />
+          <h1 className="text-display text-foreground">Base de clientes</h1>
+          <p className="mt-1 text-body text-muted-foreground">
+            A base carrega automaticamente. Em cada cliente: consulte as propostas
+            criadas ou altere a situação — e cadastre novos tomadores pelos botões ao lado.
+          </p>
         </div>
-        <h1 className="text-display text-foreground">Base de clientes</h1>
-        <p className="mt-1 text-body text-muted-foreground">
-          A base carrega automaticamente ao abrir a aba. Em cada cliente: consulte as{" "}
-          propostas criadas (e os dados de cada uma) ou altere a situação — individual
-          ou em lote.
-        </p>
+        {onNavegar && (
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button variant="outline" onClick={() => onNavegar("individual")}>
+              <UserPlus className="h-4 w-4" />
+              Cadastro individual
+            </Button>
+            <Button onClick={() => onNavegar("cadastro")}>
+              <Upload className="h-4 w-4" />
+              Cadastro em lote
+            </Button>
+          </div>
+        )}
       </div>
 
       {sessaoCurta && (
