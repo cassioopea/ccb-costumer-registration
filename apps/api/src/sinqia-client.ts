@@ -418,7 +418,8 @@ export interface LookupResult {
 async function getJsonLookup(token: string, url: string): Promise<{ httpStatus: number; json: unknown }> {
   const res = await request(url, {
     method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
+    // Accept explícito: alguns endpoints (ex.: histórico) devolvem XML sem ele.
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     headersTimeout: env.REQUEST_TIMEOUT_MS,
     bodyTimeout: env.REQUEST_TIMEOUT_MS,
   });
@@ -437,6 +438,8 @@ async function postJsonConsulta(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      // Sem o Accept a Sinqia responde XML em alguns endpoints (histórico).
+      Accept: "application/json",
     },
     body: JSON.stringify(body),
     headersTimeout: env.REQUEST_TIMEOUT_MS,
