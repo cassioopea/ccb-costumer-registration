@@ -19,7 +19,6 @@ import {
 } from "lucide-react";
 import { matchCliente, SITUACOES, situacaoLabel } from "@cadastro-lote/shared";
 import { Breadcrumb } from "@/components/Breadcrumb";
-import { FichaCliente } from "@/components/FichaCliente";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Card,
@@ -720,7 +719,6 @@ export function SituacaoClientes({
                           aria-label="Selecionar todos os filtrados"
                         />
                       </TableHead>
-                      <TableHead className="w-8" />
                       <TableHead>nrCliente</TableHead>
                       <TableHead>Nome</TableHead>
                       <TableHead>Documento</TableHead>
@@ -746,20 +744,6 @@ export function SituacaoClientes({
                                 disabled={c.nrCliente === null || busy}
                                 aria-label={`Selecionar ${c.nome || chave}`}
                               />
-                            </TableCell>
-                            <TableCell>
-                              <button
-                                type="button"
-                                onClick={() => toggleExpand(chave)}
-                                className="text-muted-foreground hover:text-foreground"
-                                aria-label="Ver campos brutos"
-                              >
-                                {expanded.has(chave) ? (
-                                  <ChevronDown className="h-4 w-4" />
-                                ) : (
-                                  <ChevronRight className="h-4 w-4" />
-                                )}
-                              </button>
                             </TableCell>
                             <TableCell className="tabular-nums">
                               {c.nrCliente ?? <span className="text-muted-foreground">—</span>}
@@ -822,13 +806,6 @@ export function SituacaoClientes({
                               </div>
                             </TableCell>
                           </TableRow>
-                          {expanded.has(chave) && (
-                            <TableRow>
-                              <TableCell colSpan={9} className="bg-muted/40">
-                                <FichaCliente raw={c.raw} />
-                              </TableCell>
-                            </TableRow>
-                          )}
                         </Fragment>
                       );
                     })}
