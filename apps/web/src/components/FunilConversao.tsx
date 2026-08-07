@@ -21,7 +21,7 @@ export function FunilConversao({
   convenioFiltrado: boolean;
 }) {
   const degraus = [
-    { nome: "Tomadores cadastrados", valor: funil.tomadores },
+    { nome: "Tomadores (persona)", valor: funil.tomadores },
     { nome: "Propostas criadas", valor: funil.propostas },
     { nome: "Aprovadas*", valor: funil.aprovadas },
     { nome: "Contratos efetivados", valor: funil.efetivadas },
@@ -55,8 +55,8 @@ export function FunilConversao({
         </div>
         <CardTitle>Funil de conversão</CardTitle>
         <CardDescription>
-          Do cadastro ao contrato. *Aprovadas é aproximação pelo estado atual
-          (≥ aprovado para desembolso).
+          Da persona tomadora (PF + PJs promovidas na Base) ao contrato. *Aprovadas é
+          aproximação pelo estado atual (≥ aprovado para desembolso).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -113,7 +113,7 @@ export function FunilConversao({
           acento
           rodape={
             funil.tomadores !== null
-              ? `${funil.efetivadas} contrato(s) / ${funil.tomadores} tomador(es)`
+              ? `${funil.efetivadas} contrato(s) / ${funil.tomadores} persona(s) tomadora(s)`
               : `${funil.efetivadas} contrato(s) — denominador global indisponível no recorte`
           }
         />

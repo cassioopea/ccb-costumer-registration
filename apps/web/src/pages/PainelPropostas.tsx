@@ -52,12 +52,15 @@ import {
   getHistoricoProposta,
   getTransicoesProposta,
   painelPropostas,
+  startTransferirLote,
+  streamTransferenciaLote,
   transferirProposta,
   type FilaWf,
   type HistoricoPropostaItem,
   type PainelCursor,
   type PainelFiltros,
   type PropostaPainel,
+  type TransferenciaRowResult,
   type TransicaoStatus,
 } from "@/lib/api";
 import { exportPainelCsv } from "@/lib/export-csv";
@@ -185,6 +188,25 @@ export function PainelPropostas({
   );
   const [expandidas, setExpandidas] = useState<Set<number>>(new Set());
 
+  /* --- Seleção para MOVER EM LOTE (mesma fila; agrupável por convênio) --- */
+  const [selecionadas, setSelecionadas] = useState<Set<number>>(new Set());
+  const [loteOpen, setLoteOpen] = useState(false);
+  const [loteTransicoes, setLoteTransicoes] = useState<TransicaoStatus[] | null>(null);
+  const [loteDestino, setLoteDestino] = useState<number | null>(null);
+  const [loteObservacao, setLoteObservacao] = useState("");
+  const [loteConfirmText, setLoteConfirmText] = useState("");
+  const [loteMovendo, setLoteMovendo] = useState(false);
+  const [loteErro, setLoteErro] = useState<string | null>(null);
+  const [loteProgress, setLoteProgress] = useState({
+    processed: 0,
+    total: 0,
+    success: 0,
+    error: 0,
+    naoEnviado: 0,
+  });
+  const [loteFalhas, setLoteFalhas] = useState<TransferenciaRowResult[]>([]);
+  const [loteConcluido, setLoteConcluido] = useState(false);
+
   /* --- Mover de fila (Fase 2 — efeito real no workflow) --- */
   const [moverAlvo, setMoverAlvo] = useState<PropostaPainel | null>(null);
   const [transicoes, setTransicoes] = useState<TransicaoStatus[] | null>(null);
@@ -195,6 +217,118 @@ export function PainelPropostas({
   const [moverErro, setMoverErro] = useState<string | null>(null);
   /** Mensagem de sucesso da última transferência. */
   const [info, setInfo] = useState<string | null>(null);
+
+  /* --- Helpers da seleção em lote --- */
+  const toggleSelecionada = (nrProsp: number) =>
+    setSelecionadas((prev) => {
+      const next = new Set(prev);
+      next.has(nrProsp) ? next.delete(nrProsp) : next.add(nrProsp);
+      return next;
+    });
+
+  const toggleGrupo = (itens: PropostaPainel[]) =>
+    setSelecionadas((prev) => {
+      const next = new Set(prev);
+      const todos = itens.every((p) => next.has(p.nrProsp));
+      for (const p of itens) {
+        if (todos) next.delete(p.nrProsp);
+        else next.add(p.nrProsp);
+      }
+      return next;
+    });
+
+  const todasSelecionadas =
+    propostas.length > 0 && propostas.every((p) => selecionadas.has(p.nrProsp));
+
+  /** Abre o modal de lote e busca os destinos permitidos da fila atual. */
+  async function abrirMoverLote() {
+    const fila = filas?.find((f) => f.nrStatus === filaSelecionada);
+    if (!fila || selecionadas.size === 0) return;
+    setLoteOpen(true);
+    setLoteTransicoes(null);
+    setLoteDestino(null);
+    setLoteObservacao("");
+    setLoteConfirmText("");
+    setLoteErro(null);
+    setLoteConcluido(false);
+    setLoteFalhas([]);
+    setLoteProgress({ processed: 0, total: 0, success: 0, error: 0, naoEnviado: 0 });
+    try {
+      const res = await getTransicoesProposta(fila.nrWf, fila.nrStatus);
+      setLoteTransicoes(res.transicoes);
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setLoteErro((e as Error).message);
+      setLoteTransicoes([]);
+    }
+  }
+
+  const loteTransicao = loteTransicoes?.find((t) => t.proxStatus === loteDestino) ?? null;
+  const loteObsOk = !loteTransicao?.exigeObservacao || loteObservacao.trim() !== "";
+  const loteConfirmOk = !IS_PROD || loteConfirmText.trim().toUpperCase() === "MOVER";
+  const podeMoverLote =
+    !!loteTransicao && loteObsOk && loteConfirmOk && !loteMovendo && selecionadas.size > 0;
+
+  /** Dispara o job de transferência em lote e acompanha pelo SSE no modal. */
+  async function confirmarMoverLote() {
+    const fila = filas?.find((f) => f.nrStatus === filaSelecionada);
+    if (!fila || !loteTransicao || !podeMoverLote) return;
+    const itens = propostas
+      .filter((p) => selecionadas.has(p.nrProsp))
+      .map((p) => ({
+        nrProsp: p.nrProsp,
+        nrCpf: p.nrCpfCnpj,
+        nmCliente: p.nmClient,
+        cdProd: p.cdProd ?? 0,
+        nrContra: p.nrContra,
+      }));
+    setLoteMovendo(true);
+    setLoteErro(null);
+    setLoteFalhas([]);
+    setLoteProgress({ processed: 0, total: itens.length, success: 0, error: 0, naoEnviado: 0 });
+    try {
+      const { jobId, total } = await startTransferirLote({
+        nrWf: fila.nrWf,
+        nrStatusAtual: fila.nrStatus,
+        proxStatus: loteTransicao.proxStatus,
+        dsObserv: loteObservacao.trim(),
+        itens,
+      });
+      setLoteProgress((p) => ({ ...p, total }));
+      streamTransferenciaLote(jobId, {
+        onSnapshot: (d) => {
+          setLoteProgress({
+            processed: d.processed,
+            total: d.total,
+            success: d.success,
+            error: d.error,
+            naoEnviado: d.naoEnviado ?? 0,
+          });
+          setLoteFalhas(d.results.filter((r) => r.status !== "OK"));
+          if (d.done) finalizarLote(d.success);
+        },
+        onRow: (row) => {
+          if (row.status !== "OK") setLoteFalhas((prev) => [...prev, row]);
+        },
+        onProgress: (p) =>
+          setLoteProgress((prev) => ({ ...prev, ...p, naoEnviado: p.naoEnviado ?? prev.naoEnviado })),
+        onSessaoExpirada: () => setLoteMovendo(false),
+        onDone: () => {
+          setLoteMovendo(false);
+          setLoteConcluido(true);
+        },
+      });
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setLoteErro((e as Error).message);
+      setLoteMovendo(false);
+    }
+  }
+
+  /** Pós-lote: banner, seleção limpa, esteira + fila + históricos atualizados. */
+  function finalizarLote(movidas: number) {
+    setInfo(`${movidas} proposta(s) movida(s) em lote.`);
+    setHistoricos(new Map());
+    setSelecionadas(new Set());
+  }
 
   /** Aplica o pedido do Início: fila selecionada + convênio herdado do dashboard. */
   const aplicarFiltrosExternos = (convenio: number | null): FiltrosForm => {
@@ -286,6 +420,7 @@ export function PainelPropostas({
     setPropostas([]);
     setCursor(null);
     setExpandidas(new Set());
+    setSelecionadas(new Set());
     try {
       const res = await painelPropostas({ filtros: filtrosEfetivos(status, filtrosBase) });
       setPropostas(res.propostas);
@@ -618,6 +753,16 @@ export function PainelPropostas({
               </CardDescription>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
+              {selecionadas.size > 0 && (
+                <Button
+                  size="sm"
+                  onClick={() => void abrirMoverLote()}
+                  title="Move todas as selecionadas para a mesma etapa (uma chamada por proposta)"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                  Mover selecionadas ({selecionadas.size})
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -776,6 +921,16 @@ export function PainelPropostas({
             <Table scroll>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <input
+                      type="checkbox"
+                      className="focus-ring h-4 w-4 accent-[var(--primary)]"
+                      checked={todasSelecionadas}
+                      onChange={() => toggleGrupo(propostas)}
+                      aria-label="Selecionar todas as propostas carregadas"
+                      disabled={propostas.length === 0}
+                    />
+                  </TableHead>
                   <TableHead className="w-20 text-right">Nº</TableHead>
                   <TableHead>Tomador</TableHead>
                   <TableHead>CPF/CNPJ</TableHead>
@@ -793,6 +948,15 @@ export function PainelPropostas({
                   <Fragment key={`conv-${g.cdConv ?? "sem"}`}>
                     {/* Cabeçalho do grupo — o convênio separa o "bolo" de propostas */}
                     <TableRow className="bg-muted/60 hover:bg-muted/60">
+                      <TableCell className="py-2">
+                        <input
+                          type="checkbox"
+                          className="focus-ring h-4 w-4 accent-[var(--primary)]"
+                          checked={g.itens.every((p) => selecionadas.has(p.nrProsp))}
+                          onChange={() => toggleGrupo(g.itens)}
+                          aria-label={`Selecionar todas do convênio ${g.cdConv ?? "—"}`}
+                        />
+                      </TableCell>
                       <TableCell colSpan={10} className="py-2">
                         <span className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
                           <span className="text-caption font-medium uppercase tracking-label text-muted-foreground">
@@ -813,7 +977,16 @@ export function PainelPropostas({
                   const hist = historicos.get(p.nrProsp);
                   return (
                     <Fragment key={p.nrProsp}>
-                      <TableRow>
+                      <TableRow className={cn(selecionadas.has(p.nrProsp) && "bg-accent/50")}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            className="focus-ring h-4 w-4 accent-[var(--primary)]"
+                            checked={selecionadas.has(p.nrProsp)}
+                            onChange={() => toggleSelecionada(p.nrProsp)}
+                            aria-label={`Selecionar proposta ${p.nrProsp}`}
+                          />
+                        </TableCell>
                         <TableCell className="text-right font-semibold tabular-nums">
                           {p.nrProsp}
                         </TableCell>
@@ -895,7 +1068,7 @@ export function PainelPropostas({
                       </TableRow>
                       {aberta && (
                         <TableRow>
-                          <TableCell colSpan={9} className="bg-muted/40">
+                          <TableCell colSpan={11} className="bg-muted/40">
                             {hist === null || hist === undefined ? (
                               <div className="flex items-center gap-2 py-2 text-caption text-muted-foreground">
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -951,6 +1124,178 @@ export function PainelPropostas({
           )}
         </CardContent>
       </Card>
+
+      {/* Mover EM LOTE — job com progresso ao vivo; efeito real no workflow */}
+      <Dialog
+        open={loteOpen}
+        onOpenChange={(o) => {
+          if (o || loteMovendo) return; // não fecha no meio do lote
+          setLoteOpen(false);
+          if (loteConcluido) {
+            void carregarFilas();
+            void buscar(filaSelecionada);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}>
+              <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
+              Mover {selecionadas.size} proposta(s) em lote
+            </DialogTitle>
+            <DialogDescription>
+              Todas saem de{" "}
+              <strong>{filaAtual ? nomeEtapa(filaAtual.dsStatus) : "—"}</strong> para o mesmo
+              destino, em <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong> — uma
+              chamada por proposta na Sinqia, sem desfazer pela ferramenta.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {loteErro && (
+              <p className="flex items-start gap-1.5 text-caption text-destructive">
+                <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {loteErro}
+              </p>
+            )}
+
+            {loteMovendo || loteConcluido ? (
+              <div className="space-y-2">
+                <div className="h-2 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-200"
+                    style={{
+                      width: `${loteProgress.total > 0 ? (loteProgress.processed / loteProgress.total) * 100 : 0}%`,
+                    }}
+                  />
+                </div>
+                <p className="text-body tabular-nums">
+                  {loteProgress.processed}/{loteProgress.total} processadas ·{" "}
+                  <span className="text-success">{loteProgress.success} movidas</span> ·{" "}
+                  <span className="text-destructive">{loteProgress.error} erro(s)</span>
+                  {loteProgress.naoEnviado > 0 && <> · {loteProgress.naoEnviado} não enviadas</>}
+                </p>
+                {loteFalhas.length > 0 && (
+                  <ul className="max-h-32 space-y-1 overflow-y-auto text-caption text-destructive">
+                    {loteFalhas.map((f) => (
+                      <li key={f.nrProsp} className="tabular-nums">
+                        nº {f.nrProsp} — {f.detalhe}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : loteTransicoes === null ? (
+              <div className="space-y-2">
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+            ) : loteTransicoes.length === 0 ? (
+              <p className="text-body text-muted-foreground">
+                O workflow não permite mover propostas a partir desta etapa.
+              </p>
+            ) : (
+              <>
+                <div className="space-y-1" role="radiogroup" aria-label="Etapa de destino do lote">
+                  {loteTransicoes.map((t) => (
+                    <label
+                      key={t.proxStatus}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-body transition-colors duration-150",
+                        loteDestino === t.proxStatus
+                          ? "border-primary bg-accent"
+                          : "border-border hover:border-primary/50",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="destino-lote"
+                        className="focus-ring h-4 w-4 accent-[var(--primary)]"
+                        checked={loteDestino === t.proxStatus}
+                        onChange={() => setLoteDestino(t.proxStatus)}
+                      />
+                      <PontoCategoria nrStatus={t.proxStatus} dsStatus={t.dsStatus} />
+                      <span className="flex-1 font-medium">{nomeEtapa(t.dsStatus)}</span>
+                      {t.exigeObservacao && (
+                        <span className="text-caption text-muted-foreground">
+                          exige observação
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="lote-obs" className="text-caption">
+                    Observação
+                    {loteTransicao?.exigeObservacao ? (
+                      <span className="text-destructive"> (obrigatória)</span>
+                    ) : (
+                      " (opcional)"
+                    )}
+                  </Label>
+                  <Input
+                    id="lote-obs"
+                    value={loteObservacao}
+                    maxLength={500}
+                    placeholder="Ex.: Contratos assinados"
+                    onChange={(e) => setLoteObservacao(e.target.value)}
+                  />
+                  <p className="text-caption text-muted-foreground">
+                    A mesma observação vai para o histórico de todas as propostas do lote.
+                  </p>
+                </div>
+
+                {IS_PROD && (
+                  <div className="space-y-1">
+                    <Label htmlFor="lote-confirma" className="text-caption">
+                      Digite <strong>MOVER</strong> para liberar:
+                    </Label>
+                    <Input
+                      id="lote-confirma"
+                      value={loteConfirmText}
+                      onChange={(e) => setLoteConfirmText(e.target.value)}
+                      placeholder="MOVER"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <DialogFooter>
+            {loteConcluido ? (
+              <Button
+                onClick={() => {
+                  setLoteOpen(false);
+                  void carregarFilas();
+                  void buscar(filaSelecionada);
+                }}
+              >
+                Fechar e atualizar a fila
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setLoteOpen(false)} disabled={loteMovendo}>
+                  Cancelar
+                </Button>
+                <Button
+                  variant={IS_PROD ? "destructive" : "default"}
+                  onClick={() => void confirmarMoverLote()}
+                  disabled={!podeMoverLote}
+                >
+                  {loteMovendo ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ArrowRight className="h-4 w-4" />
+                  )}
+                  Mover {selecionadas.size} proposta(s)
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Mover de fila — fricção deliberada: efeito real no workflow */}
       <Dialog open={moverAlvo !== null} onOpenChange={(o) => !o && setMoverAlvo(null)}>

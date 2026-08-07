@@ -54,8 +54,10 @@ import { IS_PROD } from "@/components/Topbar";
 import { cn } from "@/lib/utils";
 import {
   getDadosProposta,
+  getPersonas,
   listarPropostasCliente,
   listarTodosClientes,
+  salvarPersona,
   startAlterarSituacao,
   streamSituacao,
   type ClienteResumo,
@@ -173,6 +175,50 @@ export function SituacaoClientes({
     setTipoPessoa(tipo);
     void carregar(tipo);
   };
+
+  /* ---------------------------------------------------------------- */
+  /* Personas — regra: PF = tomador; a base local guarda só as exceções */
+  /* ---------------------------------------------------------------- */
+
+  /** Exceções de persona (documento → tomador). Regra implícita cobre o resto. */
+  const [personas, setPersonas] = useState<Map<string, boolean>>(new Map());
+  const [salvandoPersona, setSalvandoPersona] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!ativa) return;
+    void getPersonas()
+      .then((r) => setPersonas(new Map(r.overrides.map((o) => [o.documento, o.tomador]))))
+      .catch(() => setPersonas(new Map()));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 1x por ativação
+  }, [ativa]);
+
+  const ehTomador = (c: ClienteResumo): boolean => {
+    const doc = c.documento.replace(/\D/g, "");
+    return personas.get(doc) ?? c.tipoPessoa.toUpperCase().startsWith("F");
+  };
+
+  /** Alterna a persona do cliente (grava a exceção na base local). */
+  async function alternarPersona(c: ClienteResumo) {
+    const doc = c.documento.replace(/\D/g, "");
+    if (!doc || salvandoPersona) return;
+    const tp = c.tipoPessoa.toUpperCase().startsWith("F") ? "F" : "J";
+    const novo = !ehTomador(c);
+    setSalvandoPersona(doc);
+    try {
+      await salvarPersona({ documento: doc, tpPessoa: tp, tomador: novo });
+      setPersonas((prev) => {
+        const next = new Map(prev);
+        // Voltou ao padrão da regra? A exceção some.
+        if (novo === (tp === "F")) next.delete(doc);
+        else next.set(doc, novo);
+        return next;
+      });
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setError((e as Error).message);
+    } finally {
+      setSalvandoPersona(null);
+    }
+  }
 
   /**
    * A função principal da aba é VER a base — carrega sozinha na primeira vez
@@ -680,6 +726,7 @@ export function SituacaoClientes({
                       <TableHead>Documento</TableHead>
                       <TableHead>Tipo</TableHead>
                       <TableHead>Situação atual</TableHead>
+                      <TableHead>Persona</TableHead>
                       <TableHead>Ações</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -724,6 +771,29 @@ export function SituacaoClientes({
                             <TableCell>{c.tipoPessoa}</TableCell>
                             <TableCell>{c.dsSituacao}</TableCell>
                             <TableCell>
+                              {/* Regra: PF nasce tomadora; PJ só se promovida.
+                                  Clicar alterna e grava a exceção na base local. */}
+                              <button
+                                type="button"
+                                onClick={() => void alternarPersona(c)}
+                                disabled={busy || salvandoPersona !== null}
+                                title={
+                                  ehTomador(c)
+                                    ? "Persona tomadora — clique para remover"
+                                    : "Sem persona tomadora — clique para tornar tomador"
+                                }
+                                className="focus-ring rounded-md"
+                              >
+                                {ehTomador(c) ? (
+                                  <Badge>Tomador</Badge>
+                                ) : (
+                                  <Badge variant="outline" className="text-muted-foreground">
+                                    —
+                                  </Badge>
+                                )}
+                              </button>
+                            </TableCell>
+                            <TableCell>
                               <div className="flex items-center gap-1">
                                 <Button
                                   variant="outline"
@@ -754,7 +824,7 @@ export function SituacaoClientes({
                           </TableRow>
                           {expanded.has(chave) && (
                             <TableRow>
-                              <TableCell colSpan={8} className="bg-muted/40">
+                              <TableCell colSpan={9} className="bg-muted/40">
                                 <FichaCliente raw={c.raw} />
                               </TableCell>
                             </TableRow>

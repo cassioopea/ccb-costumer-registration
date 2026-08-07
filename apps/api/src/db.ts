@@ -52,6 +52,19 @@ db.exec(`
     detalhe  TEXT NOT NULL DEFAULT '{}'
   );
   CREATE INDEX IF NOT EXISTS idx_eventos_tipo_ts ON eventos (tipo, ts);
+
+  -- Persona dos clientes. A REGRA é: PF = tomador, PJ = não-tomador; esta
+  -- tabela guarda só as EXCEÇÕES marcadas pelo operador (PJ promovida a
+  -- tomadora, ou PF despromovida). A Sinqia não tem esse conceito.
+  CREATE TABLE IF NOT EXISTS personas (
+    ambiente      TEXT    NOT NULL,
+    documento     TEXT    NOT NULL,
+    tp_pessoa     TEXT    NOT NULL,
+    tomador       INTEGER NOT NULL,
+    usuario       TEXT    NOT NULL DEFAULT '',
+    atualizado_em TEXT    NOT NULL,
+    PRIMARY KEY (ambiente, documento)
+  );
 `);
 
 export interface PropostaCriadaRegistro {
@@ -106,6 +119,63 @@ export function registrarEvento(
     tipo,
     JSON.stringify(detalhe),
   );
+}
+
+export interface PersonaOverride {
+  documento: string;
+  tpPessoa: string;
+  tomador: boolean;
+}
+
+/**
+ * Define/atualiza a persona de um cliente. Quando a marcação volta ao padrão
+ * da regra (PF tomador, PJ não), a exceção é removida — a tabela guarda só
+ * desvios, nunca o óbvio.
+ */
+export function definirPersona(
+  documento: string,
+  tpPessoa: string,
+  tomador: boolean,
+  usuario: string,
+): void {
+  const padrao = tpPessoa.toUpperCase() === "F";
+  if (tomador === padrao) {
+    db.prepare(`DELETE FROM personas WHERE ambiente = ? AND documento = ?`).run(
+      env.SINQIA_ENV,
+      documento,
+    );
+    return;
+  }
+  db.prepare(
+    `INSERT OR REPLACE INTO personas
+       (ambiente, documento, tp_pessoa, tomador, usuario, atualizado_em)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(env.SINQIA_ENV, documento, tpPessoa.toUpperCase(), tomador ? 1 : 0, usuario, new Date().toISOString());
+}
+
+/** Todas as exceções de persona do ambiente ativo (base ~centenas — tranquilo). */
+export function listarPersonas(): PersonaOverride[] {
+  const linhas = db
+    .prepare(`SELECT documento, tp_pessoa, tomador FROM personas WHERE ambiente = ?`)
+    .all(env.SINQIA_ENV) as Array<{ documento: string; tp_pessoa: string; tomador: number }>;
+  return linhas.map((l) => ({
+    documento: l.documento,
+    tpPessoa: l.tp_pessoa,
+    tomador: l.tomador === 1,
+  }));
+}
+
+/** Ajuste do funil: +PJs promovidas a tomadoras, −PFs despromovidas. */
+export function ajustePersonasTomadores(): { pjTomadoras: number; pfNaoTomadoras: number } {
+  const linha = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN tp_pessoa = 'J' AND tomador = 1 THEN 1 ELSE 0 END), 0) AS pj,
+         COALESCE(SUM(CASE WHEN tp_pessoa = 'F' AND tomador = 0 THEN 1 ELSE 0 END), 0) AS pf
+       FROM personas WHERE ambiente = ?`,
+    )
+    .get(env.SINQIA_ENV) as { pj: number; pf: number } | undefined;
+  return { pjTomadoras: linha?.pj ?? 0, pfNaoTomadoras: linha?.pf ?? 0 };
 }
 
 export interface LiquidoAgregado {

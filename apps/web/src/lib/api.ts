@@ -651,6 +651,124 @@ export async function getTransicoesProposta(
   return lerResposta(res, "Falha ao consultar as transições permitidas");
 }
 
+/* --- Transferência em lote --- */
+
+export interface TransferenciaRowResult {
+  nrProsp: number;
+  nmCliente: string;
+  status: "OK" | "ERRO" | "NAO_ENVIADO";
+  detalhe: string;
+}
+
+/** Inicia o job que MOVE várias propostas da mesma fila (1 chamada por proposta). */
+export async function startTransferirLote(input: {
+  nrWf: number;
+  nrStatusAtual: number;
+  proxStatus: number;
+  dsObserv: string;
+  itens: Array<{
+    nrProsp: number;
+    nrCpf: string;
+    nmCliente: string;
+    cdProd: number;
+    nrContra: number | null;
+  }>;
+}): Promise<{
+  jobId: string;
+  total: number;
+  destino: { proxStatus: number; dsStatus: string };
+  env: string;
+}> {
+  const res = await fetch("/api/propostas-transferir-lote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return lerResposta(res, "Falha ao iniciar a transferência em lote");
+}
+
+export interface TransferenciaStreamHandlers {
+  onSnapshot?: (d: {
+    total: number;
+    processed: number;
+    success: number;
+    error: number;
+    naoEnviado?: number;
+    results: TransferenciaRowResult[];
+    done: boolean;
+  }) => void;
+  onRow?: (row: TransferenciaRowResult) => void;
+  onProgress?: (p: {
+    processed: number;
+    total: number;
+    success: number;
+    error: number;
+    naoEnviado?: number;
+  }) => void;
+  onSessaoExpirada?: (d: { message: string }) => void;
+  onDone?: (d: unknown) => void;
+  onError?: (e: Event) => void;
+}
+
+/** Abre o SSE da transferência em lote. Retorna função para fechar. */
+export function streamTransferenciaLote(
+  jobId: string,
+  handlers: TransferenciaStreamHandlers,
+): () => void {
+  const es = new EventSource(`/api/propostas-transferir-lote/stream/${jobId}`);
+
+  const on = (name: string, cb?: (d: any) => void) => {
+    if (!cb) return;
+    es.addEventListener(name, (ev) => {
+      try {
+        cb(JSON.parse((ev as MessageEvent).data));
+      } catch {
+        /* evento malformado não derruba o stream */
+      }
+    });
+  };
+
+  on("snapshot", handlers.onSnapshot);
+  on("row", handlers.onRow);
+  on("progress", handlers.onProgress);
+  on("sessao-expirada", handlers.onSessaoExpirada);
+  on("done", (d) => {
+    handlers.onDone?.(d);
+    es.close();
+  });
+  if (handlers.onError) es.onerror = handlers.onError;
+
+  return () => es.close();
+}
+
+/* --- Personas (base local) --- */
+
+export interface PersonaOverride {
+  documento: string;
+  tpPessoa: string;
+  tomador: boolean;
+}
+
+/** Exceções de persona do ambiente (a regra PF=tomador é implícita). */
+export async function getPersonas(): Promise<{ env: string; overrides: PersonaOverride[] }> {
+  const res = await fetch("/api/personas");
+  return lerResposta(res, "Falha ao consultar as personas");
+}
+
+/** Define a persona de um cliente (PJ promovida a tomadora, PF despromovida). */
+export async function salvarPersona(input: {
+  documento: string;
+  tpPessoa: "F" | "J";
+  tomador: boolean;
+}): Promise<{ env: string; ok: boolean }> {
+  const res = await fetch("/api/personas", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return lerResposta(res, "Falha ao salvar a persona");
+}
+
 /** MOVE a proposta de fila (transfStatus — efeito real no workflow). */
 export async function transferirProposta(input: {
   nrProsp: number;

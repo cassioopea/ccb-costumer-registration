@@ -8,7 +8,18 @@ import {
   emissaoRowSchema,
   type CalcProspCalculo,
 } from "@cadastro-lote/shared";
-import { registrarEvento, somarValoresRegistrados } from "./db.js";
+import {
+  ajustePersonasTomadores,
+  definirPersona,
+  listarPersonas,
+  registrarEvento,
+  somarValoresRegistrados,
+} from "./db.js";
+import {
+  getTransferenciaEmitter,
+  getTransferenciaJob,
+  startTransferenciaJob,
+} from "./transferencia-job.js";
 import { env } from "./env.js";
 import { parseEmissoesXlsx } from "./emissoes.js";
 import {
@@ -768,14 +779,22 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     };
 
     /* ---------- Bloco executivo: FUNIL ---------- */
-    // Tomadores: contagem global da base (não filtra por convênio — com filtro
-    // ativo o degrau fica null para não comparar bananas com laranjas).
+    // Tomadores = PERSONA tomadora, não a base inteira: pessoas físicas
+    // (regra automática) + PJs promovidas − PFs despromovidas (exceções na
+    // base local). Com filtro de convênio ativo o degrau fica null (o número
+    // é global; comparar com um recorte distorceria o funil).
     let tomadores: number | null = null;
     if (convenio === undefined) {
       try {
-        const r = await listarClientes(session.token, { page: 0, size: 1 });
+        const r = await listarClientes(session.token, { page: 0, size: 1, tipoPessoa: "F" });
         if (r.httpStatus === 401) return responder401(reply, session.id);
-        if (r.httpStatus >= 200 && r.httpStatus < 300) tomadores = r.page.totalElements;
+        if (r.httpStatus >= 200 && r.httpStatus < 300 && r.page.totalElements !== null) {
+          const ajuste = ajustePersonasTomadores();
+          tomadores = Math.max(
+            0,
+            r.page.totalElements + ajuste.pjTomadoras - ajuste.pfNaoTomadoras,
+          );
+        }
       } catch {
         tomadores = null;
       }
@@ -979,6 +998,111 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
       ok: true,
       destino: { proxStatus: destino.proxStatus, dsStatus: destino.dsStatus },
     });
+  });
+
+  /**
+   * Transferência EM LOTE — move várias propostas da MESMA fila para o mesmo
+   * destino (uma chamada transfStatus por proposta, via job com progresso).
+   * O destino é revalidado uma única vez contra o workflow.
+   */
+  app.post("/api/propostas-transferir-lote", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = transferirLoteBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.code(400).send({
+        error: `Requisição inválida${issue ? `: ${issue.path.join(".")} — ${issue.message}` : "."}`,
+      });
+    }
+    const b = parsed.data;
+
+    const permitidas = await consultarStatusTransf(session.token, b.nrWf, b.nrStatusAtual);
+    if (permitidas.httpStatus === 401) return responder401(reply, session.id);
+    const destino = permitidas.transicoes.find((t) => t.proxStatus === b.proxStatus);
+    if (!destino) {
+      return reply.code(422).send({
+        error:
+          `O workflow não permite mover do status ${b.nrStatusAtual} para ${b.proxStatus}. ` +
+          "Recarregue a fila — as propostas podem ter mudado de etapa.",
+      });
+    }
+    if (destino.exigeObservacao && !b.dsObserv.trim()) {
+      return reply.code(422).send({
+        error: `A transição para "${destino.dsStatus}" exige observação.`,
+      });
+    }
+
+    const jobId = startTransferenciaJob({
+      items: b.itens.map((i) => ({ ...i, nrContra: i.nrContra ?? 0 })),
+      nrWf: b.nrWf,
+      nrStatusAtual: b.nrStatusAtual,
+      proxStatus: b.proxStatus,
+      dsObserv: b.dsObserv.trim(),
+      token: session.token,
+      sessionId: session.id,
+      username: session.username,
+    });
+
+    app.log.info(
+      `Transferência em LOTE iniciada: ${b.itens.length} proposta(s) ` +
+        `${b.nrStatusAtual}→${b.proxStatus} — ambiente ${env.SINQIA_ENV.toUpperCase()}`,
+    );
+    return reply.send({
+      jobId,
+      total: b.itens.length,
+      destino: { proxStatus: destino.proxStatus, dsStatus: destino.dsStatus },
+      env: env.SINQIA_ENV,
+    });
+  });
+
+  // SSE de progresso da transferência em lote.
+  app.get("/api/propostas-transferir-lote/stream/:jobId", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const { jobId } = req.params as { jobId: string };
+    const job = getTransferenciaJob(jobId);
+    if (!job) return reply.code(404).send({ error: "Job não encontrado." });
+    if (job.sessionId !== session.id) {
+      return reply.code(403).send({ error: "Esta transferência pertence a outra sessão." });
+    }
+    streamJob(req, reply, job, getTransferenciaEmitter(jobId));
+  });
+
+  /* ------------------- Personas (base local) ------------------- */
+
+  /** Exceções de persona do ambiente ativo (a regra PF=tomador é implícita). */
+  app.get("/api/personas", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    try {
+      return reply.send({ env: env.SINQIA_ENV, overrides: listarPersonas() });
+    } catch (e) {
+      return reply.code(500).send({ error: (e as Error).message });
+    }
+  });
+
+  /** Define a persona de um cliente (grava só o desvio da regra). */
+  app.post("/api/personas", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = personaBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
+    }
+    const { documento, tpPessoa, tomador } = parsed.data;
+    try {
+      definirPersona(documento, tpPessoa, tomador, session.username);
+      registrarEvento("persona_definida", session.username, { documento: `...${documento.slice(-4)}`, tpPessoa, tomador });
+      return reply.send({ env: env.SINQIA_ENV, ok: true });
+    } catch (e) {
+      return reply.code(500).send({ error: (e as Error).message });
+    }
   });
 }
 
@@ -1204,6 +1328,33 @@ const transferirBodySchema = z.object({
   nmCliente: z.string().max(120).default(""),
   cdProd: z.number().int(),
   nrContra: z.number().int().nullable().optional(),
+});
+
+/** Body do POST /api/propostas-transferir-lote. */
+const transferirLoteBodySchema = z.object({
+  nrWf: z.number().int(),
+  nrStatusAtual: z.number().int(),
+  proxStatus: z.number().int(),
+  dsObserv: z.string().max(500).default(""),
+  itens: z
+    .array(
+      z.object({
+        nrProsp: z.number().int().positive(),
+        nrCpf: z.string().min(11).max(14),
+        nmCliente: z.string().max(120).default(""),
+        cdProd: z.number().int(),
+        nrContra: z.number().int().nullable().optional(),
+      }),
+    )
+    .min(1, "Selecione ao menos uma proposta.")
+    .max(400, "No máximo 400 propostas por lote."),
+});
+
+/** Body do POST /api/personas. */
+const personaBodySchema = z.object({
+  documento: z.string().regex(/^\d{11}(\d{3})?$/, "Documento deve ter 11 ou 14 dígitos."),
+  tpPessoa: z.enum(["F", "J"]),
+  tomador: z.boolean(),
 });
 
 /** Body do POST /api/propostas/criar-uma (proposta individual). */
