@@ -6,7 +6,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { StatDestaque } from "@/components/StatDestaque";
-import { LineChart, type SerieLinha } from "@/components/ui/line-chart";
 import { CORES_SERIES } from "@/lib/esteira";
 import type { ValorOriginadoResumo } from "@/lib/api";
 import { formatBRL } from "@/lib/format";
@@ -72,76 +71,16 @@ export function ValorOriginado({ valor }: { valor: ValorOriginadoResumo }) {
           />
         </div>
 
-        <div className="reveal reveal-delay-3 grid items-start gap-8 lg:grid-cols-2">
-          {/* Tendência (linha) e composição do mês (barras) lado a lado. */}
-          <div>
-            <h3 className="text-subheading text-foreground">Tendência mensal</h3>
-            <p className="mb-4 text-caption text-muted-foreground">
-              Evolução por convênio — passe o mouse para os valores.
-            </p>
-            <LinhaMensal porMes={valor.porMes} />
-          </div>
-          <div>
-            <h3 className="text-subheading text-foreground">Composição do mês</h3>
-            <p className="mb-4 text-caption text-muted-foreground">
-              Quanto cada convênio pesou, empilhado por mês.
-            </p>
-            <BarrasMensais porMes={valor.porMes} />
-          </div>
+        <div className="reveal reveal-delay-3">
+          <h3 className="text-subheading text-foreground">Originado no tempo</h3>
+          <p className="mb-4 text-caption text-muted-foreground">
+            Por mês, empilhado por convênio.
+          </p>
+          <BarrasMensais porMes={valor.porMes} />
         </div>
       </CardContent>
     </Card>
   );
-}
-
-/**
- * Evolução mensal do valor originado, uma LINHA por convênio. Compacto para
- * BRL no eixo Y (R$ 1,2 mi); o tooltip do gráfico dá o valor cheio.
- */
-function LinhaMensal({ porMes }: { porMes: ValorOriginadoResumo["porMes"] }) {
-  if (porMes.length === 0) {
-    return (
-      <p className="text-body text-muted-foreground">
-        Nenhum contrato efetivado no recorte ainda.
-      </p>
-    );
-  }
-
-  const rotuloMes = (mes: string) => `${mes.slice(4, 6)}/${mes.slice(2, 4)}`;
-  const labels = porMes.map((m) => rotuloMes(m.mes));
-
-  // Uma série por convênio; valor 0 no mês sem dado (linha não some, encosta no piso).
-  const ordem: Array<{ chave: string; nmConv: string; cor: string }> = [];
-  const indice = new Map<string, number>();
-  for (const m of porMes) {
-    for (const s of m.series) {
-      const chave = String(s.cdConv ?? "sem");
-      if (!indice.has(chave)) {
-        indice.set(chave, ordem.length);
-        ordem.push({
-          chave,
-          nmConv: s.nmConv || `Convênio ${s.cdConv ?? "—"}`,
-          cor: CORES_SERIES[ordem.length % CORES_SERIES.length],
-        });
-      }
-    }
-  }
-  const series: SerieLinha[] = ordem.map((c) => ({
-    nome: c.nmConv,
-    cor: c.cor,
-    valores: porMes.map(
-      (m) => m.series.find((s) => String(s.cdConv ?? "sem") === c.chave)?.total ?? 0,
-    ),
-  }));
-
-  return <LineChart labels={labels} series={series} formatarValor={brlCompacto} altura={280} />;
-}
-
-/** BRL compacto para o eixo Y: R$ 1,2 mi / R$ 340 mil / R$ 900. */
-function brlCompacto(v: number): string {
-  if (v >= 1_000_000) return `R$ ${(v / 1_000_000).toFixed(1).replace(".", ",")} mi`;
-  if (v >= 1_000) return `R$ ${Math.round(v / 1_000)} mil`;
-  return formatBRL(v);
 }
 
 /** Barras mensais empilhadas por convênio — mostra a COMPOSIÇÃO de cada mês. */
