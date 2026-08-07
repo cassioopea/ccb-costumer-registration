@@ -332,6 +332,27 @@ export function PainelPropostas({
     [filtros],
   );
 
+  /**
+   * A fila agrupada por CONVÊNIO — é ele que separa o "bolo" de propostas.
+   * Grupos maiores primeiro; dentro do grupo, a ordem original (recentes).
+   */
+  const gruposPorConvenio = useMemo(() => {
+    const mapa = new Map<
+      string,
+      { cdConv: number | null; nmConv: string; somaValor: number; itens: PropostaPainel[] }
+    >();
+    for (const p of propostas) {
+      const chave = String(p.cdConv ?? "sem");
+      if (!mapa.has(chave)) {
+        mapa.set(chave, { cdConv: p.cdConv, nmConv: p.nmConv, somaValor: 0, itens: [] });
+      }
+      const g = mapa.get(chave)!;
+      g.itens.push(p);
+      g.somaValor += p.vlSolic ?? 0;
+    }
+    return [...mapa.values()].sort((a, b) => b.itens.length - a.itens.length);
+  }, [propostas]);
+
   /** Abre o dialog de transferência e busca os destinos permitidos. */
   async function abrirMover(p: PropostaPainel) {
     if (p.nrStatus === null || p.nrWf === null) return;
@@ -546,7 +567,8 @@ export function PainelPropostas({
                 {propostas.length > 0 ? (
                   <span className="tabular-nums">
                     <span className="font-medium text-foreground">{propostas.length}</span>{" "}
-                    proposta(s) carregada(s) nesta etapa, mais recentes primeiro
+                    proposta(s) nesta etapa, agrupadas por convênio
+                    {gruposPorConvenio.length > 1 ? ` (${gruposPorConvenio.length})` : ""}
                     {cursor ? " — há mais para carregar" : ""}
                     {filtrosAtivos > 0 && (
                       <span className="text-warning-foreground">
@@ -719,7 +741,26 @@ export function PainelPropostas({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {propostas.map((p) => {
+                {gruposPorConvenio.map((g) => (
+                  <Fragment key={`conv-${g.cdConv ?? "sem"}`}>
+                    {/* Cabeçalho do grupo — o convênio separa o "bolo" de propostas */}
+                    <TableRow className="bg-muted/60 hover:bg-muted/60">
+                      <TableCell colSpan={10} className="py-2">
+                        <span className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                          <span className="text-caption font-medium uppercase tracking-label text-muted-foreground">
+                            Convênio
+                          </span>
+                          <span className="text-body font-semibold">
+                            <span className="tabular-nums">{g.cdConv ?? "—"}</span>
+                            {g.nmConv ? ` — ${g.nmConv}` : ""}
+                          </span>
+                          <span className="text-caption text-muted-foreground tabular-nums">
+                            {g.itens.length} proposta(s) · {formatBRL(g.somaValor)}
+                          </span>
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                    {g.itens.map((p) => {
                   const aberta = expandidas.has(p.nrProsp);
                   const hist = historicos.get(p.nrProsp);
                   return (
@@ -845,7 +886,9 @@ export function PainelPropostas({
                       )}
                     </Fragment>
                   );
-                })}
+                    })}
+                  </Fragment>
+                ))}
               </TableBody>
             </Table>
           )}
