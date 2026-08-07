@@ -72,12 +72,22 @@ export function ValorOriginado({ valor }: { valor: ValorOriginadoResumo }) {
           />
         </div>
 
-        <div className="reveal reveal-delay-3">
-          <h3 className="text-subheading text-foreground">Originado no tempo</h3>
-          <p className="mb-4 text-caption text-muted-foreground">
-            Evolução mensal por convênio — passe o mouse para os valores.
-          </p>
-          <LinhaMensal porMes={valor.porMes} />
+        <div className="reveal reveal-delay-3 grid items-start gap-8 lg:grid-cols-2">
+          {/* Tendência (linha) e composição do mês (barras) lado a lado. */}
+          <div>
+            <h3 className="text-subheading text-foreground">Tendência mensal</h3>
+            <p className="mb-4 text-caption text-muted-foreground">
+              Evolução por convênio — passe o mouse para os valores.
+            </p>
+            <LinhaMensal porMes={valor.porMes} />
+          </div>
+          <div>
+            <h3 className="text-subheading text-foreground">Composição do mês</h3>
+            <p className="mb-4 text-caption text-muted-foreground">
+              Quanto cada convênio pesou, empilhado por mês.
+            </p>
+            <BarrasMensais porMes={valor.porMes} />
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -132,4 +142,72 @@ function brlCompacto(v: number): string {
   if (v >= 1_000_000) return `R$ ${(v / 1_000_000).toFixed(1).replace(".", ",")} mi`;
   if (v >= 1_000) return `R$ ${Math.round(v / 1_000)} mil`;
   return formatBRL(v);
+}
+
+/** Barras mensais empilhadas por convênio — mostra a COMPOSIÇÃO de cada mês. */
+function BarrasMensais({ porMes }: { porMes: ValorOriginadoResumo["porMes"] }) {
+  if (porMes.length === 0) {
+    return (
+      <p className="text-body text-muted-foreground">
+        Nenhum contrato efetivado no recorte ainda.
+      </p>
+    );
+  }
+
+  const maxMes = Math.max(...porMes.map((m) => m.series.reduce((a, s) => a + s.total, 0)));
+  // Cor por convênio, estável e na MESMA ordem da linha (consistência visual).
+  const convenios = new Map<string, { nmConv: string; cor: string }>();
+  for (const m of porMes) {
+    for (const s of m.series) {
+      const chave = String(s.cdConv ?? "sem");
+      if (!convenios.has(chave)) {
+        convenios.set(chave, {
+          nmConv: s.nmConv || `Convênio ${s.cdConv ?? "—"}`,
+          cor: CORES_SERIES[convenios.size % CORES_SERIES.length],
+        });
+      }
+    }
+  }
+  const rotuloMes = (mes: string) => `${mes.slice(4, 6)}/${mes.slice(2, 4)}`;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex h-64 items-end gap-3">
+        {porMes.map((m) => {
+          const totalMes = m.series.reduce((a, s) => a + s.total, 0);
+          return (
+            <div key={m.mes} className="flex h-full flex-1 flex-col justify-end gap-1">
+              <div
+                className="flex w-full flex-col-reverse overflow-hidden rounded-t-md"
+                style={{ height: `${maxMes > 0 ? Math.max(3, (totalMes / maxMes) * 100) : 0}%` }}
+                title={`${rotuloMes(m.mes)} — ${formatBRL(totalMes)}`}
+              >
+                {m.series.map((s) => (
+                  <div
+                    key={String(s.cdConv ?? "sem")}
+                    style={{
+                      height: `${totalMes > 0 ? (s.total / totalMes) * 100 : 0}%`,
+                      backgroundColor: convenios.get(String(s.cdConv ?? "sem"))!.cor,
+                    }}
+                    title={`${s.nmConv || s.cdConv} — ${formatBRL(s.total)}`}
+                  />
+                ))}
+              </div>
+              <div className="text-center text-caption text-muted-foreground tabular-nums">
+                {rotuloMes(m.mes)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <ul className="flex flex-wrap gap-x-4 gap-y-1">
+        {[...convenios.values()].map((c) => (
+          <li key={c.nmConv} className="flex items-center gap-1.5 text-caption text-muted-foreground">
+            <span aria-hidden className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.cor }} />
+            <span className="max-w-56 truncate">{c.nmConv}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
