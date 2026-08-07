@@ -22,8 +22,12 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
   (`#3D0727`, o bordô oficial). Header/sidebar = wine-900.
 - **Hover de ação primária**: `--primary-hover` (wine-700) — hover SEMPRE muda a
   cor, nunca `opacity` (opacity lava a marca).
-- **Neutros**: cinzas com temperatura leve (matiz ~60 nas superfícies), nunca o
-  `gray` puro do Tailwind.
+- **Paleta estendida** (hex oficiais das apresentações Opea): `--wine-500`
+  (#EC185A, rosa vivo) é o **accent de DADOS** — números em destaque e gráficos,
+  nunca ação (ação é vinho) e no máximo um por grupo; `--laranja-500` (#FD6F01)
+  marca "requer atenção" nos gráficos. O fundo da aplicação é o **paper rosado**
+  da marca (`--background` com matiz ~350), não branco puro.
+- **Neutros**: cinzas com temperatura leve, nunca o `gray` puro do Tailwind.
 - **Semânticas** (`--success`, `--warning`, `--destructive`, `--info`): só para
   ESTADO (criada, divergente, erro, pendente). Nunca decoração. `--warning-foreground`
   é escuro de propósito — textos de divergência assentam sobre fundo claro.
@@ -66,6 +70,9 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
 ### Movimento
 
 - Transições de 150–200ms (`duration-150`/`duration-200`), só em hover/focus/expansão.
+- **Entrada de conteúdo** (exceção deliberada, padrão das apresentações Opea):
+  classes `.reveal` + `.reveal-delay-1..4` — sobe suave 1x com `--ease-brand`,
+  escalonado. Só na chegada de seções/stats; nunca em loop, nunca em tabela.
 - `prefers-reduced-motion` é respeitado globalmente (regra em `@layer base`) — inclusive
   em `scrollIntoView` (checar `matchMedia` antes de `behavior: "smooth"`).
 - Animação decorativa é proibida. Loading usa `Skeleton` com a forma do conteúdo;
@@ -106,6 +113,11 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
   card, dialog, progress, skeleton.
 - `RateInput` — taxa com sufixo (% a.m.), alinhada à direita, tabular-nums.
 - `PipelineSteps` — indicador passivo de etapas do fluxo (não é wizard).
+- `StatDestaque` — número institucional (anatomia do "Nossos números" Opea):
+  categoria em caixa alta → número display com unidade menor → rodapé.
+- **Categorias semânticas da esteira** (`lib/esteira.ts`) — status técnicos do
+  workflow agrupados em 6 categorias com cor de estado fixa e definição de uma
+  linha; dashboards leem por categoria, nunca por código cru.
 - `ResumoOperacao` — painel vivo sticky, na superfície escura da marca
   (`bg-panel` + `.panel-dark`), que consolida o que está sendo criado (linhas,
   somas, parâmetros, status) + o CTA da fase atual. Elemento assinatura das

@@ -72,6 +72,8 @@
 
   --color-panel: var(--panel);
   --color-panel-foreground: var(--panel-foreground);
+  --color-wine-500: var(--wine-500);
+  --color-laranja: var(--laranja-500);
 
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
@@ -145,8 +147,18 @@
   --wine-700: oklch(0.32 0.117 349);
   --wine-600: oklch(0.4 0.14 349);
   --wine-50: oklch(0.97 0.012 350);
+  /*
+   * Paleta ESTENDIDA da marca (hex oficiais do material de apresentação Opea):
+   * o rosa vivo é o accent de DADOS (números em destaque, gráficos) — nunca de
+   * ação (ação é vinho); o laranja marca "requer atenção" nos gráficos.
+   */
+  --wine-500: #ec185a;
+  --laranja-500: #fd6f01;
+  /** Easing da marca (apresentações Opea) — usado nas animações de entrada. */
+  --ease-brand: cubic-bezier(0.16, 0.8, 0.24, 1);
 
-  --background: oklch(0.985 0.003 60);
+  /* Fundo "paper" rosado da marca (era um branco-quente neutro). */
+  --background: oklch(0.973 0.006 350);
   --foreground: oklch(0.22 0.015 280);
 
   --card: oklch(1 0 0);
@@ -309,6 +321,25 @@
     --destructive: oklch(0.78 0.16 22);
     --destructive-foreground: oklch(0.2 0.06 22);
     color: var(--panel-foreground);
+  }
+
+  /*
+   * Animação de ENTRADA (padrão das apresentações Opea): sobe suave 1x com o
+   * easing da marca, escalonável por delay. Só para orientar a chegada de
+   * conteúdo — nunca em loop, nunca decorativa contínua. prefers-reduced-motion
+   * zera a duração pela regra global e o estado final se aplica na hora.
+   */
+  .reveal {
+    opacity: 0;
+    animation: reveal-up 480ms var(--ease-brand) forwards;
+  }
+  .reveal-delay-1 { animation-delay: 70ms; }
+  .reveal-delay-2 { animation-delay: 140ms; }
+  .reveal-delay-3 { animation-delay: 210ms; }
+  .reveal-delay-4 { animation-delay: 280ms; }
+  @keyframes reveal-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
   }
 
   /*
