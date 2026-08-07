@@ -6,6 +6,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { StatDestaque } from "@/components/StatDestaque";
+import { LineChart, type SerieLinha } from "@/components/ui/line-chart";
 import { CORES_SERIES } from "@/lib/esteira";
 import type { ValorOriginadoResumo } from "@/lib/api";
 import { formatBRL } from "@/lib/format";
@@ -74,17 +75,20 @@ export function ValorOriginado({ valor }: { valor: ValorOriginadoResumo }) {
         <div className="reveal reveal-delay-3">
           <h3 className="text-subheading text-foreground">Originado no tempo</h3>
           <p className="mb-4 text-caption text-muted-foreground">
-            Por mês, empilhado por convênio.
+            Evolução mensal por convênio — passe o mouse para os valores.
           </p>
-          <BarrasMensais porMes={valor.porMes} />
+          <LinhaMensal porMes={valor.porMes} />
         </div>
       </CardContent>
     </Card>
   );
 }
 
-/** Barras mensais empilhadas por convênio — SVG-free, divs proporcionais. */
-function BarrasMensais({ porMes }: { porMes: ValorOriginadoResumo["porMes"] }) {
+/**
+ * Evolução mensal do valor originado, uma LINHA por convênio. Compacto para
+ * BRL no eixo Y (R$ 1,2 mi); o tooltip do gráfico dá o valor cheio.
+ */
+function LinhaMensal({ porMes }: { porMes: ValorOriginadoResumo["porMes"] }) {
   if (porMes.length === 0) {
     return (
       <p className="text-body text-muted-foreground">
@@ -93,64 +97,39 @@ function BarrasMensais({ porMes }: { porMes: ValorOriginadoResumo["porMes"] }) {
     );
   }
 
-  const maxMes = Math.max(...porMes.map((m) => m.series.reduce((a, s) => a + s.total, 0)));
-  // Cor por convênio, estável dentro do gráfico.
-  const convenios = new Map<string, { nmConv: string; cor: string }>();
+  const rotuloMes = (mes: string) => `${mes.slice(4, 6)}/${mes.slice(2, 4)}`;
+  const labels = porMes.map((m) => rotuloMes(m.mes));
+
+  // Uma série por convênio; valor 0 no mês sem dado (linha não some, encosta no piso).
+  const ordem: Array<{ chave: string; nmConv: string; cor: string }> = [];
+  const indice = new Map<string, number>();
   for (const m of porMes) {
     for (const s of m.series) {
       const chave = String(s.cdConv ?? "sem");
-      if (!convenios.has(chave)) {
-        convenios.set(chave, {
+      if (!indice.has(chave)) {
+        indice.set(chave, ordem.length);
+        ordem.push({
+          chave,
           nmConv: s.nmConv || `Convênio ${s.cdConv ?? "—"}`,
-          cor: CORES_SERIES[convenios.size % CORES_SERIES.length],
+          cor: CORES_SERIES[ordem.length % CORES_SERIES.length],
         });
       }
     }
   }
-  const rotuloMes = (mes: string) => `${mes.slice(4, 6)}/${mes.slice(2, 4)}`;
+  const series: SerieLinha[] = ordem.map((c) => ({
+    nome: c.nmConv,
+    cor: c.cor,
+    valores: porMes.map(
+      (m) => m.series.find((s) => String(s.cdConv ?? "sem") === c.chave)?.total ?? 0,
+    ),
+  }));
 
-  return (
-    <div className="space-y-3">
-      <div className="flex h-40 items-end gap-4">
-        {porMes.map((m) => {
-          const totalMes = m.series.reduce((a, s) => a + s.total, 0);
-          return (
-            <div key={m.mes} className="flex h-full flex-1 flex-col justify-end gap-1">
-              <div
-                className="flex w-full flex-col-reverse overflow-hidden rounded-t-md"
-                style={{ height: `${maxMes > 0 ? Math.max(3, (totalMes / maxMes) * 100) : 0}%` }}
-                title={`${rotuloMes(m.mes)} — ${formatBRL(totalMes)}`}
-              >
-                {m.series.map((s) => (
-                  <div
-                    key={String(s.cdConv ?? "sem")}
-                    style={{
-                      height: `${totalMes > 0 ? (s.total / totalMes) * 100 : 0}%`,
-                      backgroundColor: convenios.get(String(s.cdConv ?? "sem"))!.cor,
-                    }}
-                    title={`${s.nmConv || s.cdConv} — ${formatBRL(s.total)}`}
-                  />
-                ))}
-              </div>
-              <div className="text-center text-caption text-muted-foreground tabular-nums">
-                {rotuloMes(m.mes)}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <ul className="flex flex-wrap gap-x-4 gap-y-1">
-        {[...convenios.entries()].map(([chave, c]) => (
-          <li key={chave} className="flex items-center gap-1.5 text-caption text-muted-foreground">
-            <span
-              aria-hidden
-              className="h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: c.cor }}
-            />
-            <span className="max-w-56 truncate">{c.nmConv}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+  return <LineChart labels={labels} series={series} formatarValor={brlCompacto} altura={280} />;
+}
+
+/** BRL compacto para o eixo Y: R$ 1,2 mi / R$ 340 mil / R$ 900. */
+function brlCompacto(v: number): string {
+  if (v >= 1_000_000) return `R$ ${(v / 1_000_000).toFixed(1).replace(".", ",")} mi`;
+  if (v >= 1_000) return `R$ ${Math.round(v / 1_000)} mil`;
+  return formatBRL(v);
 }

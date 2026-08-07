@@ -120,6 +120,10 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
 - **Categorias semânticas da esteira** (`lib/esteira.ts`) — status técnicos do
   workflow agrupados em 6 categorias com cor de estado fixa e definição de uma
   linha; dashboards leem por categoria, nunca por código cru.
+- **Gráficos** — SVG puro / CSS, SEM biblioteca (donut, barras, `ui/line-chart`
+  com área+hover+tooltip). Séries por convênio usam `CORES_SERIES`; estado usa
+  as cores de categoria. Só considerar uma lib (Recharts, não MUI X) se surgir
+  demanda de muitos gráficos interativos.
 - `ResumoOperacao` — painel vivo sticky, na superfície escura da marca
   (`bg-panel` + `.panel-dark`), que consolida o que está sendo criado (linhas,
   somas, parâmetros, status) + o CTA da fase atual. Elemento assinatura das
