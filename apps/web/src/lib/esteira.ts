@@ -1,22 +1,13 @@
+import { categoriaDaEtapa, type CategoriaEtapa } from "@cadastro-lote/shared";
 import type { FilaWf } from "./api";
 
 /**
- * Taxonomia SEMÂNTICA das etapas do workflow — o dashboard lê por categoria,
- * não por status técnico. Poucas categorias, cada uma com cor fixa de estado
- * e definição de uma linha (padrão aprendido da esteira de referência).
- *
- * O mapa por código cobre o workflow Opea conhecido (e-mail "Fluxo Workflow",
- * promovido a PROD em 2026-08-06); o fallback por palavra-chave garante que
- * etapas novas ganhem uma categoria razoável sem mudança de código.
+ * Camada VISUAL da taxonomia de categorias — a lógica (códigos + fallback)
+ * vive no shared (a API usa a mesma para agregar o dashboard); aqui ficam as
+ * cores de estado, labels e definições de uma linha.
  */
 
-export type CategoriaEtapa =
-  | "andamento"
-  | "aguardando"
-  | "atencao"
-  | "concluida"
-  | "negada"
-  | "cancelada";
+export { categoriaDaEtapa, type CategoriaEtapa };
 
 export interface CategoriaInfo {
   label: string;
@@ -79,34 +70,6 @@ export const ORDEM_CATEGORIAS: CategoriaEtapa[] = [
   "cancelada",
 ];
 
-const POR_CODIGO: Record<number, CategoriaEtapa> = {
-  20005: "andamento", // Início de operação
-  20010: "andamento", // Simulação
-  20013: "andamento", // Aprovada (Ibratan) — transita
-  20015: "andamento", // Formalização
-  20040: "andamento", // Operação para despacho
-  20051: "andamento", // Contrato Assinado — o motor encadeia sozinho
-  20016: "aguardando", // Finalizado Portal (aguardando formalização)
-  20050: "aguardando", // Contrato em Assinatura
-  20052: "aguardando", // Aprovado para Desembolso
-  20020: "atencao", // Risco operação
-  20030: "atencao", // Documentos pendentes
-  20014: "negada", // Negada (Ibratan)
-  20053: "concluida", // Contrato Finalizado no Portal
-  20056: "cancelada", // Cancelado
-};
-
-export function categoriaDaEtapa(nrStatus: number | null, dsStatus: string): CategoriaEtapa {
-  if (nrStatus !== null && POR_CODIGO[nrStatus]) return POR_CODIGO[nrStatus];
-  const ds = dsStatus.toLowerCase();
-  if (/cancelad/.test(ds)) return "cancelada";
-  if (/negad|reprovad/.test(ds)) return "negada";
-  if (/finalizado no portal|conclu/.test(ds)) return "concluida";
-  if (/pendent|risco/.test(ds)) return "atencao";
-  if (/assinatura|desembolso|formaliza/.test(ds)) return "aguardando";
-  return "andamento";
-}
-
 /** Soma as contagens das filas por categoria. */
 export function contagemPorCategoria(filas: FilaWf[]): Record<CategoriaEtapa, number> {
   const contagem = Object.fromEntries(
@@ -117,3 +80,14 @@ export function contagemPorCategoria(filas: FilaWf[]): Record<CategoriaEtapa, nu
   }
   return contagem;
 }
+
+/** Cores de SÉRIE para segmentar por convênio nos gráficos (não são estado). */
+export const CORES_SERIES = [
+  "var(--wine-500)",
+  "var(--info)",
+  "var(--success)",
+  "var(--laranja-500)",
+  "var(--warning)",
+  "var(--wine-600)",
+  "var(--muted-foreground)",
+];

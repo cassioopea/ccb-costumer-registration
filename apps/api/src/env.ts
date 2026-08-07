@@ -105,6 +105,8 @@ const envSchema = z.object({
    */
   SINQIA_NR_INST: z.coerce.number().int().default(1309),
   SINQIA_NR_AGEN: z.coerce.number().int().default(19),
+  /** Base local (SQLite embutido) — métricas, eventos e futuras aprovações. */
+  SQLITE_PATH: z.string().default("./data/esteira.db"),
   PORT: z.coerce.number().int().positive().default(3333),
   WEB_ORIGIN: z.string().default("http://localhost:5173"),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),

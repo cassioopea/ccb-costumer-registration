@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { dateInt, emissaoRowSchema, type CalcProspCalculo } from "@cadastro-lote/shared";
+import {
+  aprovadaNoFunil,
+  categoriaDaEtapa,
+  dateInt,
+  emissaoRowSchema,
+  type CalcProspCalculo,
+} from "@cadastro-lote/shared";
+import { registrarEvento, somarValoresRegistrados } from "./db.js";
 import { env } from "./env.js";
 import { parseEmissoesXlsx } from "./emissoes.js";
 import {
@@ -25,6 +32,7 @@ import {
   consultarPropostaPainel,
   consultarStatusTransf,
   consultarStatusWf,
+  listarClientes,
   listarConvenios,
   listarFiliais,
   listarProdutos,
@@ -333,6 +341,7 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
       forcarDuplicadas,
       token: session.token,
       sessionId: session.id,
+      username: session.username,
     });
 
     app.log.info(
@@ -498,6 +507,7 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
         { linha: 1, nome: retido.nome, cpf: retido.cpf, calculo: retido.calculo },
         params,
         forcarDuplicada,
+        { usuario: session.username, origem: "individual" },
       );
       // Criada com sucesso: descarta o cálculo retido para impedir reenvio
       // acidental do MESMO calcId (nova proposta exige novo cálculo).
@@ -580,6 +590,16 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     }
     const convenio = q.data.convenio;
 
+    // Cache curto por ambiente+convênio: a varredura + históricos custam
+    // dezenas de chamadas; o botão de recarregar passa forcar=1.
+    const chaveCache = `${env.SINQIA_ENV}|${convenio ?? "todos"}`;
+    if (!q.data.forcar) {
+      const emCache = cacheVisaoGeral.get(chaveCache);
+      if (emCache && Date.now() - emCache.ts < CACHE_VISAO_MS) {
+        return reply.send(emCache.payload);
+      }
+    }
+
     const claims = extrairInstAgen(session.token);
     const wf = await consultarStatusWf(session.token, {
       nrInst: claims.nrInst ?? env.SINQIA_NR_INST,
@@ -598,10 +618,25 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     const etapaEncerrada = (ds: string) => /cancelad|negad|finalizado no portal/i.test(ds);
 
     // Teto de chamadas da varredura — proteção contra bases gigantes.
-    const MAX_CONSULTAS = 25;
+    const MAX_CONSULTAS = 30;
     const TAMANHO_PAGINA = 200;
     let consultasUsadas = 0;
     let parcial = false;
+
+    /** Retrato mínimo de cada proposta varrida — insumo de valor/funil/SLA. */
+    interface Varrida {
+      nrProsp: number;
+      nrStatus: number | null;
+      dsStatus: string;
+      vlSolic: number | null;
+      dtSolic: number | null;
+      dtEntrad: number | null;
+      hrEntrad: number | null;
+      cdConv: number | null;
+      nmConv: string;
+      cdProd: number | null;
+    }
+    const varridas: Varrida[] = [];
 
     const filasAgregadas = [];
     for (const f of ordenadas) {
@@ -615,12 +650,6 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
 
       if (f.qtFilhos === 0) {
         filasAgregadas.push({ ...base, noFiltro: 0, atrasadas: 0 });
-        continue;
-      }
-      // Sem filtro de convênio, etapa encerrada dispensa varredura: a contagem
-      // global serve e SLA não se aplica.
-      if (encerrada && convenio === undefined) {
-        filasAgregadas.push({ ...base, noFiltro: f.qtFilhos, atrasadas: 0 });
         continue;
       }
       if (consultasUsadas >= MAX_CONSULTAS) {
@@ -652,6 +681,18 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
           if (vistos.has(p.nrProsp)) continue;
           vistos.add(p.nrProsp);
           if (!encerrada && horasDesde(p.dtEntrad, p.hrEntrad) > SLA_HORAS) atrasadas++;
+          varridas.push({
+            nrProsp: p.nrProsp,
+            nrStatus: p.nrStatus,
+            dsStatus: p.dsStatus,
+            vlSolic: p.vlSolic,
+            dtSolic: p.dtSolic,
+            dtEntrad: p.dtEntrad,
+            hrEntrad: p.hrEntrad,
+            cdConv: p.cdConv,
+            nmConv: p.nmConv,
+            cdProd: p.cdProd,
+          });
         }
 
         const ultima = pagina.propostas[pagina.propostas.length - 1];
@@ -668,14 +709,148 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     }
 
     const totalAtrasadas = filasAgregadas.reduce((acc, f) => acc + (f.atrasadas ?? 0), 0);
-    return reply.send({
+
+    /* ---------- Bloco executivo: VALOR (efetivadas = etapa concluída) ---------- */
+    const efetivadas = varridas.filter(
+      (s) => categoriaDaEtapa(s.nrStatus, s.dsStatus) === "concluida",
+    );
+    const mesReferencia = (s: Varrida) => mesDe(s.dtSolic ?? s.dtEntrad);
+    const agora = new Date();
+    const mesAtual = `${agora.getFullYear()}${String(agora.getMonth() + 1).padStart(2, "0")}`;
+    const dataAnterior = new Date(agora.getFullYear(), agora.getMonth() - 1, 1);
+    const mesAnterior = `${dataAnterior.getFullYear()}${String(dataAnterior.getMonth() + 1).padStart(2, "0")}`;
+
+    const somaDoMes = (mes: string) =>
+      efetivadas
+        .filter((s) => mesReferencia(s) === mes)
+        .reduce((acc, s) => acc + (s.vlSolic ?? 0), 0);
+
+    const tickets = efetivadas
+      .map((s) => s.vlSolic ?? 0)
+      .filter((v) => v > 0)
+      .sort((a, b) => a - b);
+
+    // Barras mensais (últimos 6 meses com dado), empilhadas por convênio.
+    const porMesMapa = new Map<string, Map<string, { cdConv: number | null; nmConv: string; total: number }>>();
+    for (const s of efetivadas) {
+      const mes = mesReferencia(s);
+      if (!mes) continue;
+      if (!porMesMapa.has(mes)) porMesMapa.set(mes, new Map());
+      const chave = String(s.cdConv ?? "sem");
+      const grupo = porMesMapa.get(mes)!;
+      if (!grupo.has(chave)) grupo.set(chave, { cdConv: s.cdConv, nmConv: s.nmConv, total: 0 });
+      grupo.get(chave)!.total += s.vlSolic ?? 0;
+    }
+    const porMes = [...porMesMapa.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .slice(-6)
+      .map(([mes, grupos]) => ({ mes, series: [...grupos.values()] }));
+
+    // Líquido/financiado exatos: só do que a FERRAMENTA criou (base local).
+    let liquido: { somaLiquid: number; somaFinan: number; encontrados: number } | null = null;
+    try {
+      liquido = somarValoresRegistrados(efetivadas.map((s) => s.nrProsp));
+    } catch {
+      liquido = null;
+    }
+
+    const valor = {
+      moeda: "vlSolic (valor solicitado)",
+      originadoMesAtual: somaDoMes(mesAtual),
+      originadoMesAnterior: somaDoMes(mesAnterior),
+      ticketMedio:
+        tickets.length > 0 ? tickets.reduce((a, b) => a + b, 0) / tickets.length : null,
+      ticketMediana: mediana(tickets),
+      contratos: efetivadas.length,
+      liquidoLiberado: liquido && liquido.encontrados > 0 ? liquido.somaLiquid : null,
+      liquidoCobertura: liquido ? liquido.encontrados : 0,
+      porMes,
+    };
+
+    /* ---------- Bloco executivo: FUNIL ---------- */
+    // Tomadores: contagem global da base (não filtra por convênio — com filtro
+    // ativo o degrau fica null para não comparar bananas com laranjas).
+    let tomadores: number | null = null;
+    if (convenio === undefined) {
+      try {
+        const r = await listarClientes(session.token, { page: 0, size: 1 });
+        if (r.httpStatus === 401) return responder401(reply, session.id);
+        if (r.httpStatus >= 200 && r.httpStatus < 300) tomadores = r.page.totalElements;
+      } catch {
+        tomadores = null;
+      }
+    }
+    const funil = {
+      tomadores,
+      propostas: varridas.length,
+      aprovadas: varridas.filter((s) => aprovadaNoFunil(s.nrStatus, s.dsStatus)).length,
+      efetivadas: efetivadas.length,
+    };
+
+    /* ---------- Bloco executivo: VELOCIDADE (histórico das efetivadas) ---------- */
+    const CAP_HISTORICOS = 40;
+    const amostra = efetivadas.slice(0, CAP_HISTORICOS);
+    const ciclosDias: number[] = [];
+    const etapaSomas = new Map<string, { somaHoras: number; n: number }>();
+    for (const s of amostra) {
+      const h = await consultarHistoricoProposta(session.token, s.nrProsp);
+      if (h.httpStatus === 401) return responder401(reply, session.id);
+      const eventos = h.historicos
+        .map((x) => ({ ...x, t: parseDtIn(x.dtIn) }))
+        .filter((x): x is typeof x & { t: number } => x.t !== null)
+        .sort((a, b) => a.nrSeq - b.nrSeq);
+      if (eventos.length >= 2) {
+        ciclosDias.push((eventos[eventos.length - 1].t - eventos[0].t) / 86_400_000);
+        for (let i = 0; i < eventos.length - 1; i++) {
+          const duracaoH = (eventos[i + 1].t - eventos[i].t) / 3_600_000;
+          if (duracaoH < 0) continue;
+          const chave = eventos[i].dsStatus || "—";
+          const acc = etapaSomas.get(chave) ?? { somaHoras: 0, n: 0 };
+          acc.somaHoras += duracaoH;
+          acc.n++;
+          etapaSomas.set(chave, acc);
+        }
+      }
+    }
+    // Throughput: efetivadas por semana (entrada na etapa final), últimas 8.
+    const porSemana = new Map<string, number>();
+    for (const s of efetivadas) {
+      const chave = inicioSemana(s.dtEntrad);
+      if (!chave) continue;
+      porSemana.set(chave, (porSemana.get(chave) ?? 0) + 1);
+    }
+    const velocidade = {
+      base: amostra.length,
+      capAtingido: efetivadas.length > amostra.length,
+      cicloMedioDias:
+        ciclosDias.length > 0
+          ? ciclosDias.reduce((a, b) => a + b, 0) / ciclosDias.length
+          : null,
+      cicloMedianaDias: mediana([...ciclosDias].sort((a, b) => a - b)),
+      tempoPorEtapa: [...etapaSomas.entries()]
+        .map(([dsStatus, acc]) => ({ dsStatus, mediaHoras: acc.somaHoras / acc.n, n: acc.n }))
+        .sort((a, b) => b.mediaHoras - a.mediaHoras)
+        .slice(0, 8),
+      throughputSemanas: [...porSemana.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .slice(-8)
+        .map(([semana, total]) => ({ semana, total })),
+    };
+
+    const payload = {
       env: env.SINQIA_ENV,
       convenio: convenio ?? null,
       slaHoras: SLA_HORAS,
       parcial,
       totalAtrasadas,
       filas: filasAgregadas,
-    });
+      valor,
+      funil,
+      velocidade,
+      geradoEm: new Date().toISOString(),
+    };
+    cacheVisaoGeral.set(chaveCache, { ts: Date.now(), payload });
+    return reply.send(payload);
   });
 
   /** Filas do workflow com contagem por status (dashboard da esteira). */
@@ -780,6 +955,18 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
       `Transferência de status: proposta ${b.nrProsp} ${b.nrStatusAtual}→${b.proxStatus} ` +
         `(${res.ok ? "OK" : "FALHOU"}) — ambiente ${env.SINQIA_ENV.toUpperCase()}`,
     );
+    // Trilha de eventos da base local (logs; base das futuras aprovações).
+    try {
+      registrarEvento("transferencia_status", session.username, {
+        nrProsp: b.nrProsp,
+        de: b.nrStatusAtual,
+        para: b.proxStatus,
+        ok: res.ok,
+        dsObserv: b.dsObserv,
+      });
+    } catch {
+      /* apoio, nunca derruba o fluxo */
+    }
 
     if (!res.ok) {
       return reply.code(502).send({
@@ -818,7 +1005,50 @@ function horasDesde(dtEntrad: number | null, hrEntrad: number | null): number {
 /** Query do GET /api/propostas/visao-geral. */
 const visaoGeralQuerySchema = z.object({
   convenio: z.coerce.number().int().optional(),
+  /** 1 = ignora o cache (botão de recarregar do dashboard). */
+  forcar: z.coerce.boolean().optional(),
 });
+
+/** Cache curto da visão geral — a varredura + históricos custam dezenas de chamadas. */
+const cacheVisaoGeral = new Map<string, { ts: number; payload: unknown }>();
+const CACHE_VISAO_MS = 3 * 60_000;
+
+/** "AAAAMMDD" (número) → "AAAAMM"; null quando não dá para saber. */
+function mesDe(data: number | null): string | null {
+  if (!data) return null;
+  const s = String(data);
+  return s.length === 8 ? s.slice(0, 6) : null;
+}
+
+/** Mediana de um array JÁ ORDENADO; null quando vazio. */
+function mediana(ordenado: number[]): number | null {
+  if (ordenado.length === 0) return null;
+  const meio = Math.floor(ordenado.length / 2);
+  return ordenado.length % 2 === 1
+    ? ordenado[meio]
+    : (ordenado[meio - 1] + ordenado[meio]) / 2;
+}
+
+/** "dd/mm/aaaa hh:mm" (dtIn do histórico) → epoch ms; null se não parsear. */
+function parseDtIn(dtIn: string): number | null {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/.exec(dtIn.trim());
+  if (!m) return null;
+  const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), Number(m[4]), Number(m[5]));
+  return Number.isNaN(d.getTime()) ? null : d.getTime();
+}
+
+/** Segunda-feira da semana de uma data AAAAMMDD → "AAAA-MM-DD" (chave ordenável). */
+function inicioSemana(data: number | null): string | null {
+  if (!data) return null;
+  const s = String(data);
+  if (s.length !== 8) return null;
+  const d = new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
+  if (Number.isNaN(d.getTime())) return null;
+  const diaSemana = (d.getDay() + 6) % 7; // 0 = segunda
+  d.setDate(d.getDate() - diaSemana);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 /** Cursor inicial do painel: agora, olhando para trás (mais recentes primeiro). */
 function cursorAgora(): { dtConsulta: string; hrConsulta: string; idSentido: "ANT" } {

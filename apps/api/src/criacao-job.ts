@@ -11,6 +11,7 @@ import {
   buildPropostaPayload,
   type PropostaLoteParamsCriacao,
 } from "./proposta-builder.js";
+import { registrarEvento, registrarPropostaCriada } from "./db.js";
 import { destroySession } from "./session.js";
 
 /**
@@ -81,6 +82,8 @@ interface CriacaoJobInput {
   forcarDuplicadas: boolean;
   token: string;
   sessionId: string;
+  /** Operador logado — vai para a trilha de eventos da base local. */
+  username: string;
 }
 
 /** Compara valores monetários em centavos inteiros (mesma regra da conferência). */
@@ -188,7 +191,10 @@ async function processJob(id: string, input: CriacaoJobInput) {
 
     let result: CriacaoRowResult;
     try {
-      result = await criarUma(input.token, item, input.params, input.forcarDuplicadas);
+      result = await criarUma(input.token, item, input.params, input.forcarDuplicadas, {
+        usuario: input.username,
+        origem: "lote",
+      });
     } catch (e) {
       if (e instanceof SessaoExpiradaError) {
         destroySession(input.sessionId);
@@ -242,6 +248,12 @@ async function processJob(id: string, input: CriacaoJobInput) {
   emit(id, "done", snapshot(state));
 }
 
+/** Quem pediu a criação — vai para a base local (métricas + trilha de eventos). */
+export interface ContextoCriacao {
+  usuario: string;
+  origem: "lote" | "individual";
+}
+
 /**
  * Cria UMA proposta: busca o cliente → guarda de duplicidade → monta → envia.
  * Exportada: a proposta individual usa exatamente o mesmo caminho do lote
@@ -252,6 +264,7 @@ export async function criarUma(
   item: CriacaoItem,
   params: PropostaLoteParamsCriacao,
   forcarDuplicadas: boolean,
+  contexto?: ContextoCriacao,
 ): Promise<CriacaoRowResult> {
   const base = {
     linha: item.linha,
@@ -324,6 +337,34 @@ export async function criarUma(
   // principal.vlConces — registra no relatório para conferência.
   if (res.analysis.ok && (item.calculo.vlTac ?? 0) > 0) {
     mensagens.push(`Sucesso | TAC de R$ ${item.calculo.vlTac!.toFixed(2)} incluído (vlConces)`);
+  }
+
+  // Base local: os valores EXATOS do momento da criação (a listagem da Sinqia
+  // não os devolve depois). Falha aqui não pode derrubar a criação.
+  if (res.analysis.ok && res.nrProsp) {
+    try {
+      registrarPropostaCriada({
+        nrProsp: Number(res.nrProsp),
+        cpf: item.cpf,
+        nome: busca.dsNome || item.nome,
+        cdConv: params.cdConven ?? null,
+        cdProd: params.cdProd ?? null,
+        vlFinan: item.calculo.vlContra ?? null,
+        vlLiquid: item.calculo.vlLiquid ?? null,
+        vlTac: item.calculo.vlTac ?? null,
+        vlPresta: item.calculo.vlPresta ?? null,
+        qtPrest: item.calculo.qtPrest ?? null,
+        origem: contexto?.origem ?? "lote",
+      });
+      registrarEvento("proposta_criada", contexto?.usuario ?? "", {
+        nrProsp: res.nrProsp,
+        cdProd: params.cdProd,
+        cdConv: params.cdConven,
+        origem: contexto?.origem ?? "lote",
+      });
+    } catch {
+      /* base local é apoio — a Sinqia é a fonte da verdade */
+    }
   }
 
   return {

@@ -551,6 +551,46 @@ export interface VisaoGeralFila extends FilaWf {
   atrasadas: number | null;
 }
 
+export interface SerieValorMes {
+  cdConv: number | null;
+  nmConv: string;
+  total: number;
+}
+
+export interface ValorOriginadoResumo {
+  /** De onde sai o R$ — hoje, vlSolic (valor solicitado). */
+  moeda: string;
+  originadoMesAtual: number;
+  originadoMesAnterior: number;
+  ticketMedio: number | null;
+  ticketMediana: number | null;
+  /** Quantos contratos efetivados sustentam os números (denominador). */
+  contratos: number;
+  /** Soma do líquido REGISTRADO localmente (só criações pela ferramenta). */
+  liquidoLiberado: number | null;
+  liquidoCobertura: number;
+  porMes: Array<{ mes: string; series: SerieValorMes[] }>;
+}
+
+export interface FunilResumo {
+  /** null quando o filtro de convênio está ativo (degrau não comparável). */
+  tomadores: number | null;
+  propostas: number;
+  /** Aproximação por estado atual (≥ aprovado p/ desembolso). */
+  aprovadas: number;
+  efetivadas: number;
+}
+
+export interface VelocidadeResumo {
+  /** Quantas efetivadas entraram no cálculo (amostra do histórico). */
+  base: number;
+  capAtingido: boolean;
+  cicloMedioDias: number | null;
+  cicloMedianaDias: number | null;
+  tempoPorEtapa: Array<{ dsStatus: string; mediaHoras: number; n: number }>;
+  throughputSemanas: Array<{ semana: string; total: number }>;
+}
+
 export interface VisaoGeralResponse {
   env: string;
   convenio: number | null;
@@ -559,12 +599,22 @@ export interface VisaoGeralResponse {
   parcial: boolean;
   totalAtrasadas: number;
   filas: VisaoGeralFila[];
+  valor: ValorOriginadoResumo;
+  funil: FunilResumo;
+  velocidade: VelocidadeResumo;
+  geradoEm: string;
 }
 
 /** Dashboard agregado da esteira — filtrável por convênio, com SLA por etapa. */
-export async function getVisaoGeralEsteira(convenio?: number): Promise<VisaoGeralResponse> {
-  const qs = convenio !== undefined ? `?convenio=${convenio}` : "";
-  const res = await fetch(`/api/propostas/visao-geral${qs}`);
+export async function getVisaoGeralEsteira(
+  convenio?: number,
+  forcar = false,
+): Promise<VisaoGeralResponse> {
+  const qs = new URLSearchParams();
+  if (convenio !== undefined) qs.set("convenio", String(convenio));
+  if (forcar) qs.set("forcar", "1");
+  const sufixo = qs.toString() ? `?${qs}` : "";
+  const res = await fetch(`/api/propostas/visao-geral${sufixo}`);
   return lerResposta(res, "Falha ao consultar a visão geral da esteira");
 }
 

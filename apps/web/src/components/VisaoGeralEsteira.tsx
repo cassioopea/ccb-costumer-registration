@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Loader2, RefreshCw, XCircle } from "lucide-react";
+import { useMemo } from "react";
+import { AlertTriangle } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -7,8 +7,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatDestaque } from "@/components/StatDestaque";
 import {
@@ -18,70 +16,23 @@ import {
   contagemPorCategoria,
   type CategoriaEtapa,
 } from "@/lib/esteira";
-import {
-  getLookups,
-  getVisaoGeralEsteira,
-  type LookupOption,
-  type VisaoGeralResponse,
-} from "@/lib/api";
-import { SessaoExpiradaError } from "@/lib/session";
+import type { VisaoGeralResponse } from "@/lib/api";
 
 /**
- * Visão geral da esteira — o dashboard da página Início: stats no padrão
- * "Nossos números", donut por categoria semântica, gargalos por etapa e a
- * régua de SLA (atrasadas = paradas há mais de slaHoras na mesma etapa).
- * Filtrável por convênio: a API varre as filas proposta a proposta.
+ * Saúde da esteira — camada OPERACIONAL do dashboard do Início: stats por
+ * categoria, donut e gargalos (fila/contagem). Os dados chegam prontos do
+ * Início, que também governa o filtro de convênio global.
  */
 export function VisaoGeralEsteira({
-  ativa,
+  dados,
+  erro,
   onAbrirFila,
 }: {
-  ativa: boolean;
-  /**
-   * Clique num gargalo abre a fila daquela etapa no Painel de propostas,
-   * levando junto o convênio filtrado aqui (null = todos).
-   */
-  onAbrirFila?: (nrStatus: number, convenio: number | null) => void;
+  dados: VisaoGeralResponse | null;
+  erro: string | null;
+  /** Clique num gargalo abre a fila daquela etapa no Painel de propostas. */
+  onAbrirFila?: (nrStatus: number) => void;
 }) {
-  const [dados, setDados] = useState<VisaoGeralResponse | null>(null);
-  const [carregando, setCarregando] = useState(false);
-  const [erro, setErro] = useState<string | null>(null);
-  /** "" = todos os convênios. */
-  const [convenio, setConvenio] = useState("");
-  const [convenios, setConvenios] = useState<LookupOption[]>([]);
-
-  const jaAtivou = useRef(false);
-  useEffect(() => {
-    if (!ativa || jaAtivou.current) return;
-    jaAtivou.current = true;
-    void carregar("");
-    // Convênios do select — conveniência; o dashboard funciona sem eles.
-    void getLookups(31)
-      .then((r) => setConvenios(r.convenios))
-      .catch(() => setConvenios([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- só na 1ª ativação
-  }, [ativa]);
-
-  async function carregar(convenioAtual?: string) {
-    if (carregando) return;
-    setCarregando(true);
-    setErro(null);
-    try {
-      const alvo = (convenioAtual ?? convenio).trim();
-      const res = await getVisaoGeralEsteira(alvo === "" ? undefined : Number(alvo));
-      setDados(res);
-    } catch (e) {
-      if (!(e instanceof SessaoExpiradaError)) setErro((e as Error).message);
-    } finally {
-      setCarregando(false);
-    }
-  }
-
-  const trocarConvenio = (novo: string) => {
-    setConvenio(novo);
-    void carregar(novo);
-  };
-
   /** Contagens por categoria respeitando o filtro (noFiltro; cai no global se null). */
   const porCategoria = useMemo(
     () =>
@@ -111,75 +62,17 @@ export function VisaoGeralEsteira({
   return (
     <Card className="reveal">
       <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-caption font-medium uppercase tracking-label text-wine-500">
-              Visão geral
-            </div>
-            <CardTitle>Saúde da esteira</CardTitle>
-            <CardDescription>
-              {erro
-                ? `Não foi possível carregar: ${erro}`
-                : dados?.parcial
-                  ? "Base grande — a varredura foi parcial; contagens podem estar incompletas."
-                  : "Contagens ao vivo do workflow de propostas."}
-            </CardDescription>
-            {/* Convênio filtrado ganha destaque — os números abaixo são só dele */}
-            {convenio && (
-              <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-lg border border-primary/30 bg-accent px-3 py-1.5">
-                <span className="text-caption font-medium uppercase tracking-label text-muted-foreground">
-                  Convênio
-                </span>
-                <span className="truncate text-subheading text-accent-foreground">
-                  <span className="tabular-nums">{convenio}</span>
-                  {(() => {
-                    const nome = convenios.find((c) => String(c.codigo) === convenio)?.descricao;
-                    return nome ? ` — ${nome}` : "";
-                  })()}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => trocarConvenio("")}
-                  title="Limpar o filtro de convênio"
-                  className="focus-ring text-muted-foreground hover:text-foreground"
-                >
-                  <XCircle className="h-4 w-4" />
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {convenios.length > 0 && (
-              <Select
-                aria-label="Filtrar por convênio"
-                value={convenio}
-                onChange={(e) => trocarConvenio(e.target.value)}
-                disabled={carregando}
-                className="w-56"
-              >
-                <option value="">Todos os convênios</option>
-                {convenios.map((c) => (
-                  <option key={c.codigo} value={String(c.codigo)}>
-                    {c.codigo} — {c.descricao}
-                  </option>
-                ))}
-              </Select>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void carregar()}
-              disabled={carregando}
-              title="Recarrega as contagens da esteira"
-            >
-              {carregando ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
+        <div className="text-caption font-medium uppercase tracking-label text-wine-500">
+          Fluxo
         </div>
+        <CardTitle>Saúde da esteira</CardTitle>
+        <CardDescription>
+          {erro
+            ? `Não foi possível carregar: ${erro}`
+            : dados?.parcial
+              ? "Base grande — a varredura foi parcial; contagens podem estar incompletas."
+              : "Onde cada proposta está agora — contagens ao vivo do workflow."}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-8">
         {dados === null ? (
@@ -223,23 +116,22 @@ export function VisaoGeralEsteira({
               <div className="reveal reveal-delay-2">
                 <h3 className="text-subheading text-foreground">Propostas por categoria</h3>
                 <p className="mb-4 text-caption text-muted-foreground">
-                  Distribuição de tudo que está no workflow
-                  {convenio ? " — convênio filtrado" : ""}.
+                  Distribuição de tudo que está no workflow.
                 </p>
                 <DonutCategorias porCategoria={porCategoria} />
               </div>
 
-              {/* Gargalos — onde as propostas estão paradas */}
+              {/* Gargalos — onde as propostas estão paradas (FILA, não duração) */}
               <div className="reveal reveal-delay-3">
                 <h3 className="text-subheading text-foreground">Onde está travando</h3>
                 <p className="mb-4 text-caption text-muted-foreground">
-                  Propostas paradas por etapa, maiores primeiro
+                  Quantas propostas estão paradas em cada etapa agora
                   {onAbrirFila ? " — clique para abrir a fila" : ""}.
                 </p>
                 <div className="space-y-2">
                   {gargalos.length === 0 && (
                     <p className="text-body text-muted-foreground">
-                      Nenhuma proposta no workflow{convenio ? " deste convênio" : ""}.
+                      Nenhuma proposta no workflow neste recorte.
                     </p>
                   )}
                   {gargalos.map((f) => {
@@ -248,12 +140,7 @@ export function VisaoGeralEsteira({
                       <button
                         key={f.nrStatus}
                         type="button"
-                        onClick={() =>
-                          onAbrirFila?.(
-                            f.nrStatus,
-                            convenio.trim() === "" ? null : Number(convenio),
-                          )
-                        }
+                        onClick={() => onAbrirFila?.(f.nrStatus)}
                         disabled={!onAbrirFila}
                         title={`${f.dsStatus} — ${cat.label}.${
                           f.atrasadas ? ` ${f.atrasadas} acima do SLA de ${slaHoras} h.` : ""
@@ -275,14 +162,7 @@ export function VisaoGeralEsteira({
                         <span className="w-10 shrink-0 text-right text-body font-medium tabular-nums">
                           {f.contagem}
                         </span>
-                        <span
-                          className="flex w-14 shrink-0 items-center justify-end gap-1 text-right text-caption tabular-nums"
-                          title={
-                            f.atrasadas
-                              ? `${f.atrasadas} proposta(s) acima do SLA de ${slaHoras} h`
-                              : undefined
-                          }
-                        >
+                        <span className="flex w-14 shrink-0 items-center justify-end gap-1 text-right text-caption tabular-nums">
                           {f.atrasadas ? (
                             <>
                               <AlertTriangle className="h-3 w-3 text-laranja" />

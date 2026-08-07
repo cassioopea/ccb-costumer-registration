@@ -1,10 +1,14 @@
+import { useEffect, useRef, useState } from "react";
 import {
   FilePlus2,
   FileSpreadsheet,
   LayoutList,
   ListChecks,
+  Loader2,
+  RefreshCw,
   Upload,
   UserPlus,
+  XCircle,
 } from "lucide-react";
 import {
   Card,
@@ -14,14 +18,25 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { VisaoGeralEsteira } from "@/components/VisaoGeralEsteira";
+import { ValorOriginado } from "@/components/ValorOriginado";
+import { VelocidadeEsteira } from "@/components/VelocidadeEsteira";
+import { FunilConversao } from "@/components/FunilConversao";
 import { useSession } from "@/lib/session";
+import {
+  getLookups,
+  getVisaoGeralEsteira,
+  type LookupOption,
+  type VisaoGeralResponse,
+} from "@/lib/api";
+import { SessaoExpiradaError } from "@/lib/session";
 import type { TelaClientes, TelaPropostas } from "@/App";
 
 /**
- * Início — a homepage do sistema: saudação, o dashboard da esteira (Visão
- * geral) e os cards de navegação para os módulos. O operador lê a saúde da
- * operação aqui e parte para a tela certa.
+ * Início — a homepage do sistema: saudação, o dashboard da esteira em quatro
+ * camadas (fluxo, valor, velocidade e conversão) sob um filtro GLOBAL de
+ * convênio, e os cards de navegação para os módulos.
  */
 export function Inicio({
   ativa,
@@ -43,23 +58,139 @@ export function Inicio({
     year: "numeric",
   });
 
+  const [dados, setDados] = useState<VisaoGeralResponse | null>(null);
+  const [carregando, setCarregando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  /** Filtro GLOBAL do dashboard ("" = todos os convênios). */
+  const [convenio, setConvenio] = useState("");
+  const [convenios, setConvenios] = useState<LookupOption[]>([]);
+
+  const jaAtivou = useRef(false);
+  useEffect(() => {
+    if (!ativa || jaAtivou.current) return;
+    jaAtivou.current = true;
+    void carregar("", false);
+    void getLookups(31)
+      .then((r) => setConvenios(r.convenios))
+      .catch(() => setConvenios([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só na 1ª ativação
+  }, [ativa]);
+
+  async function carregar(convenioAtual?: string, forcar = false) {
+    if (carregando) return;
+    setCarregando(true);
+    setErro(null);
+    try {
+      const alvo = (convenioAtual ?? convenio).trim();
+      const res = await getVisaoGeralEsteira(
+        alvo === "" ? undefined : Number(alvo),
+        forcar,
+      );
+      setDados(res);
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setErro((e as Error).message);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  const trocarConvenio = (novo: string) => {
+    setConvenio(novo);
+    void carregar(novo, false);
+  };
+
+  const convenioNumero = convenio.trim() === "" ? null : Number(convenio);
+  const nomeConvenio = convenios.find((c) => String(c.codigo) === convenio)?.descricao;
+
   return (
     <div className="space-y-6">
-      <div>
-        <div className="mb-3 text-caption text-muted-foreground">{hoje}</div>
-        <h1 className="text-display text-foreground">
-          Olá, {session?.username ?? "operador"}
-        </h1>
-        <p className="mt-1 text-body text-muted-foreground">
-          A saúde da originação em um olhar — e os caminhos para agir.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="mb-3 text-caption text-muted-foreground">{hoje}</div>
+          <h1 className="text-display text-foreground">
+            Olá, {session?.username ?? "operador"}
+          </h1>
+          <p className="mt-1 text-body text-muted-foreground">
+            A saúde da originação em quatro camadas — fluxo, valor, velocidade e
+            conversão.
+          </p>
+        </div>
+        {/* Filtro GLOBAL: governa todos os blocos do dashboard */}
+        <div className="flex shrink-0 items-center gap-2">
+          {convenios.length > 0 && (
+            <Select
+              aria-label="Filtrar o dashboard por convênio"
+              value={convenio}
+              onChange={(e) => trocarConvenio(e.target.value)}
+              disabled={carregando}
+              className="w-56"
+            >
+              <option value="">Todos os convênios</option>
+              {convenios.map((c) => (
+                <option key={c.codigo} value={String(c.codigo)}>
+                  {c.codigo} — {c.descricao}
+                </option>
+              ))}
+            </Select>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void carregar(undefined, true)}
+            disabled={carregando}
+            title="Recarrega o dashboard (ignora o cache)"
+          >
+            {carregando ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
       </div>
 
-      <VisaoGeralEsteira ativa={ativa} onAbrirFila={onAbrirFila} />
+      {/* Convênio filtrado ganha destaque — todos os números abaixo são só dele */}
+      {convenio && (
+        <div className="inline-flex max-w-full items-center gap-2 rounded-lg border border-primary/30 bg-accent px-3 py-1.5">
+          <span className="text-caption font-medium uppercase tracking-label text-muted-foreground">
+            Convênio
+          </span>
+          <span className="truncate text-subheading text-accent-foreground">
+            <span className="tabular-nums">{convenio}</span>
+            {nomeConvenio ? ` — ${nomeConvenio}` : ""}
+          </span>
+          <button
+            type="button"
+            onClick={() => trocarConvenio("")}
+            title="Limpar o filtro de convênio"
+            className="focus-ring text-muted-foreground hover:text-foreground"
+          >
+            <XCircle className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Camada 1 — fluxo (operacional) */}
+      <VisaoGeralEsteira
+        dados={dados}
+        erro={erro}
+        onAbrirFila={(nrStatus) => onAbrirFila(nrStatus, convenioNumero)}
+      />
+
+      {/* Camada 2 — valor */}
+      {dados && <ValorOriginado valor={dados.valor} />}
+
+      {/* Camadas 3 e 4 — velocidade e conversão, lado a lado */}
+      {dados && (
+        <div className="grid items-start gap-6 lg:grid-cols-2">
+          <VelocidadeEsteira velocidade={dados.velocidade} />
+          <FunilConversao funil={dados.funil} convenioFiltrado={convenioNumero !== null} />
+        </div>
+      )}
 
       {/* Navegação para os módulos — chega-se às telas a partir daqui */}
       <div className="grid items-stretch gap-6 lg:grid-cols-2">
-        <Card className="reveal reveal-delay-2">
+        <Card className="reveal reveal-delay-3">
           <CardHeader>
             <CardTitle>Propostas</CardTitle>
             <CardDescription>
@@ -83,7 +214,7 @@ export function Inicio({
           </CardContent>
         </Card>
 
-        <Card className="reveal reveal-delay-3">
+        <Card className="reveal reveal-delay-4">
           <CardHeader>
             <CardTitle>Tomadores</CardTitle>
             <CardDescription>

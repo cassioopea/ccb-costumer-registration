@@ -43,3 +43,6 @@ exemplos/calcprosp_response_referencia.json
 # uploads temporários do backend
 apps/api/uploads/
 apps/api/tmp/
+
+# Base local da aplicação (SQLite) — dados reais, nunca no repo
+apps/api/data/

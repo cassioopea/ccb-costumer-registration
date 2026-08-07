@@ -7,3 +7,4 @@ export * from "./form-campos.js";
 export * from "./exemplos.js";
 export * from "./proposta.schema.js";
 export * from "./emissoes.schema.js";
+export * from "./esteira-categorias.js";
