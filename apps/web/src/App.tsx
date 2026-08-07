@@ -37,8 +37,11 @@ function Shell() {
   const [modulo, setModulo] = useState<Modulo>("inicio");
   const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
   const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("painel-propostas");
-  /** Fila pedida pelo Início (gargalo clicado) — o painel consome e limpa. */
-  const [filaExterna, setFilaExterna] = useState<number | null>(null);
+  /** Pedido do Início (gargalo clicado): fila + convênio — o painel consome e limpa. */
+  const [filaExterna, setFilaExterna] = useState<{
+    nrStatus: number;
+    convenio: number | null;
+  } | null>(null);
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -69,8 +72,8 @@ function Shell() {
               setTelaPropostas(tela);
               setModulo("propostas");
             }}
-            onAbrirFila={(nrStatus) => {
-              setFilaExterna(nrStatus);
+            onAbrirFila={(nrStatus, convenio) => {
+              setFilaExterna({ nrStatus, convenio });
               setTelaPropostas("painel-propostas");
               setModulo("propostas");
             }}

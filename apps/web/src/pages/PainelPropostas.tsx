@@ -72,9 +72,18 @@ interface FiltrosForm {
   /** ISO yyyy-mm-dd (input date). */
   dtIni: string;
   dtFim: string;
+  /** Código do convênio (cdConvProd). */
+  convenio: string;
 }
 
-const FILTROS_INICIAIS: FiltrosForm = { nrPropos: "", cpf: "", nome: "", dtIni: "", dtFim: "" };
+const FILTROS_INICIAIS: FiltrosForm = {
+  nrPropos: "",
+  cpf: "",
+  nome: "",
+  dtIni: "",
+  dtFim: "",
+  convenio: "",
+};
 
 const isoParaStr = (iso: string) => iso.replace(/-/g, "");
 
@@ -146,8 +155,11 @@ export function PainelPropostas({
   ativa: boolean;
   /** Navega para as sub-páginas do módulo (lote/proposta individual). */
   onNavegar?: (tela: "lote-propostas" | "proposta-individual") => void;
-  /** Fila pedida de fora (gargalo clicado no Início) — selecionada ao chegar. */
-  filaExterna?: number | null;
+  /**
+   * Fila pedida de fora (gargalo clicado no Início) — selecionada ao chegar,
+   * carregando junto o convênio filtrado no dashboard (null = todos).
+   */
+  filaExterna?: { nrStatus: number; convenio: number | null } | null;
   onFilaExternaConsumida?: () => void;
 }) {
   const [filas, setFilas] = useState<FilaWf[] | null>(null);
@@ -184,19 +196,35 @@ export function PainelPropostas({
   /** Mensagem de sucesso da última transferência. */
   const [info, setInfo] = useState<string | null>(null);
 
+  /** Aplica o pedido do Início: fila selecionada + convênio herdado do dashboard. */
+  const aplicarFiltrosExternos = (convenio: number | null): FiltrosForm => {
+    const novos: FiltrosForm = {
+      ...FILTROS_INICIAIS,
+      convenio: convenio !== null ? String(convenio) : "",
+    };
+    setFiltros(novos);
+    if (convenio !== null) setMostrarFiltros(true); // o filtro herdado fica visível
+    return novos;
+  };
+
   const jaAtivou = useRef(false);
   useEffect(() => {
     if (!ativa || jaAtivou.current) return;
     jaAtivou.current = true;
     // Carrega as etapas e abre a fila pedida pelo Início — ou a primeira com propostas.
     void carregarFilas().then((lista) => {
-      const pedida =
-        filaExterna !== null ? lista?.find((f) => f.nrStatus === filaExterna) : undefined;
+      const pedida = filaExterna
+        ? lista?.find((f) => f.nrStatus === filaExterna.nrStatus)
+        : undefined;
       const primeira = pedida ?? lista?.find((f) => f.qtFilhos > 0) ?? lista?.[0];
-      if (filaExterna !== null) onFilaExternaConsumida?.();
+      let filtrosBase: FiltrosForm | undefined;
+      if (filaExterna) {
+        filtrosBase = aplicarFiltrosExternos(filaExterna.convenio);
+        onFilaExternaConsumida?.();
+      }
       if (primeira) {
         setFilaSelecionada(primeira.nrStatus);
-        void buscar(primeira.nrStatus);
+        void buscar(primeira.nrStatus, filtrosBase);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- só na 1ª ativação
@@ -204,9 +232,10 @@ export function PainelPropostas({
 
   /** Painel já ativo e o Início pediu outra fila: troca na hora. */
   useEffect(() => {
-    if (filaExterna === null || !jaAtivou.current) return;
-    setFilaSelecionada(filaExterna);
-    void buscar(filaExterna);
+    if (!filaExterna || !jaAtivou.current) return;
+    const filtrosBase = aplicarFiltrosExternos(filaExterna.convenio);
+    setFilaSelecionada(filaExterna.nrStatus);
+    void buscar(filaExterna.nrStatus, filtrosBase);
     onFilaExternaConsumida?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reage só ao pedido externo
   }, [filaExterna]);
@@ -232,19 +261,25 @@ export function PainelPropostas({
   }
 
   /** Monta os filtros efetivos a partir do formulário + fila selecionada. */
-  function filtrosEfetivos(status: number | null): PainelFiltros {
+  function filtrosEfetivos(status: number | null, base?: FiltrosForm): PainelFiltros {
+    const f = base ?? filtros;
+    const convenio = Number(f.convenio.trim());
     return {
-      nrPropos: filtros.nrPropos.trim() || undefined,
-      nrCPFCNPJ: filtros.cpf.replace(/\D/g, "") || undefined,
-      nmClient: filtros.nome.trim() || undefined,
-      dtPerIni: filtros.dtIni ? isoParaStr(filtros.dtIni) : undefined,
-      dtPerFim: filtros.dtFim ? isoParaStr(filtros.dtFim) : undefined,
+      nrPropos: f.nrPropos.trim() || undefined,
+      nrCPFCNPJ: f.cpf.replace(/\D/g, "") || undefined,
+      nmClient: f.nome.trim() || undefined,
+      dtPerIni: f.dtIni ? isoParaStr(f.dtIni) : undefined,
+      dtPerFim: f.dtFim ? isoParaStr(f.dtFim) : undefined,
       nrStatus: status ?? undefined,
+      cdConvProd: f.convenio.trim() !== "" && Number.isFinite(convenio) ? convenio : undefined,
     };
   }
 
-  /** Busca do zero (nova consulta) com a etapa indicada — status é obrigatório. */
-  async function buscar(status: number | null) {
+  /**
+   * Busca do zero (nova consulta) com a etapa indicada — status é obrigatório.
+   * `filtrosBase` cobre o caso de filtros recém-aplicados (state ainda velho).
+   */
+  async function buscar(status: number | null, filtrosBase?: FiltrosForm) {
     if (carregando || status === null) return;
     setCarregando(true);
     setErro(null);
@@ -252,7 +287,7 @@ export function PainelPropostas({
     setCursor(null);
     setExpandidas(new Set());
     try {
-      const res = await painelPropostas({ filtros: filtrosEfetivos(status) });
+      const res = await painelPropostas({ filtros: filtrosEfetivos(status, filtrosBase) });
       setPropostas(res.propostas);
       setCursor(res.proximoCursor);
     } catch (e) {
@@ -639,6 +674,19 @@ export function PainelPropostas({
                   inputMode="numeric"
                   className="tabular-nums"
                   onChange={(e) => setFiltros((f) => ({ ...f, cpf: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
+                />
+              </div>
+              <div className="w-36 space-y-1">
+                <Label htmlFor="pf-conv" className="text-caption">
+                  Convênio (código)
+                </Label>
+                <Input
+                  id="pf-conv"
+                  value={filtros.convenio}
+                  inputMode="numeric"
+                  className="tabular-nums"
+                  onChange={(e) => setFiltros((f) => ({ ...f, convenio: e.target.value }))}
                   onKeyDown={(e) => e.key === "Enter" && void buscar(filaSelecionada)}
                 />
               </div>

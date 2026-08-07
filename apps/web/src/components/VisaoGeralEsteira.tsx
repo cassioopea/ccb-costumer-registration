@@ -37,8 +37,11 @@ export function VisaoGeralEsteira({
   onAbrirFila,
 }: {
   ativa: boolean;
-  /** Clique num gargalo abre a fila daquela etapa no Painel de propostas. */
-  onAbrirFila?: (nrStatus: number) => void;
+  /**
+   * Clique num gargalo abre a fila daquela etapa no Painel de propostas,
+   * levando junto o convênio filtrado aqui (null = todos).
+   */
+  onAbrirFila?: (nrStatus: number, convenio: number | null) => void;
 }) {
   const [dados, setDados] = useState<VisaoGeralResponse | null>(null);
   const [carregando, setCarregando] = useState(false);
@@ -245,7 +248,12 @@ export function VisaoGeralEsteira({
                       <button
                         key={f.nrStatus}
                         type="button"
-                        onClick={() => onAbrirFila?.(f.nrStatus)}
+                        onClick={() =>
+                          onAbrirFila?.(
+                            f.nrStatus,
+                            convenio.trim() === "" ? null : Number(convenio),
+                          )
+                        }
                         disabled={!onAbrirFila}
                         title={`${f.dsStatus} — ${cat.label}.${
                           f.atrasadas ? ` ${f.atrasadas} acima do SLA de ${slaHoras} h.` : ""

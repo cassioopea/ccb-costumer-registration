@@ -32,8 +32,8 @@ export function Inicio({
   ativa: boolean;
   onIrClientes: (tela: TelaClientes) => void;
   onIrPropostas: (tela: TelaPropostas) => void;
-  /** Gargalo clicado na Visão geral → abre a fila no Painel de propostas. */
-  onAbrirFila: (nrStatus: number) => void;
+  /** Gargalo clicado na Visão geral → abre a fila no Painel, com o convênio junto. */
+  onAbrirFila: (nrStatus: number, convenio: number | null) => void;
 }) {
   const { session } = useSession();
   const hoje = new Date().toLocaleDateString("pt-BR", {

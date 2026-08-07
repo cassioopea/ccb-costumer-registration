@@ -509,6 +509,8 @@ export interface PainelFiltros {
   dtPerFim?: string;
   nrStatus?: number;
   cdProdut?: number;
+  /** Convênio de produção (cdConvProd). */
+  cdConvProd?: number;
 }
 
 /** Listagem geral de propostas (todas, com filtros e cursor de paginação). */

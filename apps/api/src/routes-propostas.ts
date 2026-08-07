@@ -944,6 +944,7 @@ const painelBodySchema = z.object({
       dtPerFim: z.string().regex(/^\d{8}$/).optional(),
       nrStatus: z.number().int().optional(),
       cdProdut: z.number().int().optional(),
+      cdConvProd: z.number().int().optional(),
     })
     .default({}),
   size: z.number().int().min(1).max(200).default(100),
