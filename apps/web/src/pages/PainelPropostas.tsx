@@ -54,7 +54,6 @@ import {
   painelPropostas,
   startTransferirLote,
   streamTransferenciaLote,
-  transferirProposta,
   type FilaWf,
   type HistoricoPropostaItem,
   type PainelCursor,
@@ -207,14 +206,6 @@ export function PainelPropostas({
   const [loteFalhas, setLoteFalhas] = useState<TransferenciaRowResult[]>([]);
   const [loteConcluido, setLoteConcluido] = useState(false);
 
-  /* --- Mover de fila (Fase 2 — efeito real no workflow) --- */
-  const [moverAlvo, setMoverAlvo] = useState<PropostaPainel | null>(null);
-  const [transicoes, setTransicoes] = useState<TransicaoStatus[] | null>(null);
-  const [destino, setDestino] = useState<number | null>(null);
-  const [observacao, setObservacao] = useState("");
-  const [moverConfirmText, setMoverConfirmText] = useState("");
-  const [movendo, setMovendo] = useState(false);
-  const [moverErro, setMoverErro] = useState<string | null>(null);
   /** Mensagem de sucesso da última transferência. */
   const [info, setInfo] = useState<string | null>(null);
 
@@ -522,66 +513,6 @@ export function PainelPropostas({
     }
     return [...mapa.values()].sort((a, b) => b.itens.length - a.itens.length);
   }, [propostas]);
-
-  /** Abre o dialog de transferência e busca os destinos permitidos. */
-  async function abrirMover(p: PropostaPainel) {
-    if (p.nrStatus === null || p.nrWf === null) return;
-    setMoverAlvo(p);
-    setTransicoes(null);
-    setDestino(null);
-    setObservacao("");
-    setMoverConfirmText("");
-    setMoverErro(null);
-    try {
-      const res = await getTransicoesProposta(p.nrWf, p.nrStatus);
-      setTransicoes(res.transicoes);
-    } catch (e) {
-      if (!(e instanceof SessaoExpiradaError)) setMoverErro((e as Error).message);
-      setTransicoes([]);
-    }
-  }
-
-  const transicaoEscolhida = transicoes?.find((t) => t.proxStatus === destino) ?? null;
-  const observacaoOk = !transicaoEscolhida?.exigeObservacao || observacao.trim() !== "";
-  const confirmacaoMoverOk = !IS_PROD || moverConfirmText.trim().toUpperCase() === "MOVER";
-  const podeMover =
-    !!moverAlvo && !!transicaoEscolhida && observacaoOk && confirmacaoMoverOk && !movendo;
-
-  /** Executa a transferência e recarrega a esteira + a fila atual. */
-  async function confirmarMover() {
-    if (!moverAlvo || !transicaoEscolhida || !podeMover) return;
-    setMovendo(true);
-    setMoverErro(null);
-    try {
-      const res = await transferirProposta({
-        nrProsp: moverAlvo.nrProsp,
-        nrWf: moverAlvo.nrWf!,
-        nrStatusAtual: moverAlvo.nrStatus!,
-        proxStatus: transicaoEscolhida.proxStatus,
-        dsObserv: observacao.trim(),
-        nrCpf: moverAlvo.nrCpfCnpj,
-        nmCliente: moverAlvo.nmClient,
-        cdProd: moverAlvo.cdProd ?? 0,
-        nrContra: moverAlvo.nrContra,
-      });
-      setInfo(
-        `Proposta ${moverAlvo.nrProsp} movida para "${nomeEtapa(res.destino.dsStatus)}".`,
-      );
-      // Histórico daquela proposta mudou — invalida o cache dela.
-      setHistoricos((prev) => {
-        const next = new Map(prev);
-        next.delete(moverAlvo.nrProsp);
-        return next;
-      });
-      setMoverAlvo(null);
-      void carregarFilas();
-      void buscar(filaSelecionada);
-    } catch (e) {
-      if (!(e instanceof SessaoExpiradaError)) setMoverErro((e as Error).message);
-    } finally {
-      setMovendo(false);
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -940,7 +871,7 @@ export function PainelPropostas({
                   <TableHead className="text-right">Entrada</TableHead>
                   <TableHead className="text-right">SLA</TableHead>
                   <TableHead className="text-right">Contrato</TableHead>
-                  <TableHead>Ações</TableHead>
+                  <TableHead>Histórico</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1040,30 +971,19 @@ export function PainelPropostas({
                           {p.nrContra ?? "—"}
                         </TableCell>
                         <TableCell>
-                          <span className="flex items-center gap-3">
-                            <button
-                              type="button"
-                              onClick={() => void toggleHistorico(p.nrProsp)}
-                              className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
-                            >
-                              {aberta ? (
-                                <ChevronDown className="h-3 w-3" />
-                              ) : (
-                                <ChevronRight className="h-3 w-3" />
-                              )}
-                              histórico
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void abrirMover(p)}
-                              disabled={p.nrStatus === null || p.nrWf === null}
-                              title="Move a proposta para outra etapa do workflow"
-                              className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline disabled:opacity-50"
-                            >
-                              <ArrowRight className="h-3 w-3" />
-                              mover
-                            </button>
-                          </span>
+                          {/* Mover mora no lote: marque o checkbox e use o CTA. */}
+                          <button
+                            type="button"
+                            onClick={() => void toggleHistorico(p.nrProsp)}
+                            className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
+                          >
+                            {aberta ? (
+                              <ChevronDown className="h-3 w-3" />
+                            ) : (
+                              <ChevronRight className="h-3 w-3" />
+                            )}
+                            histórico
+                          </button>
                         </TableCell>
                       </TableRow>
                       {aberta && (
@@ -1297,129 +1217,6 @@ export function PainelPropostas({
         </DialogContent>
       </Dialog>
 
-      {/* Mover de fila — fricção deliberada: efeito real no workflow */}
-      <Dialog open={moverAlvo !== null} onOpenChange={(o) => !o && setMoverAlvo(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}>
-              <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
-              Mover proposta {moverAlvo?.nrProsp}
-            </DialogTitle>
-            <DialogDescription>
-              <strong>{moverAlvo?.nmClient || "—"}</strong> está em{" "}
-              <strong>{moverAlvo ? nomeEtapa(moverAlvo.dsStatus) : "—"}</strong> em{" "}
-              <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>. Os destinos abaixo
-              são os que o workflow permite; a ferramenta não desfaz o movimento.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3">
-            {moverErro && (
-              <p className="flex items-start gap-1.5 text-caption text-destructive">
-                <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                {moverErro}
-              </p>
-            )}
-
-            {transicoes === null ? (
-              <div className="space-y-2">
-                <Skeleton className="h-9 w-full" />
-                <Skeleton className="h-9 w-full" />
-              </div>
-            ) : transicoes.length === 0 ? (
-              <p className="text-body text-muted-foreground">
-                O workflow não permite mover a proposta a partir desta etapa.
-              </p>
-            ) : (
-              <div className="space-y-1" role="radiogroup" aria-label="Etapa de destino">
-                {transicoes.map((t) => (
-                  <label
-                    key={t.proxStatus}
-                    className={cn(
-                      "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-body transition-colors duration-150",
-                      destino === t.proxStatus
-                        ? "border-primary bg-accent"
-                        : "border-border hover:border-primary/50",
-                    )}
-                  >
-                    <input
-                      type="radio"
-                      name="destino-transferencia"
-                      className="focus-ring h-4 w-4 accent-[var(--primary)]"
-                      checked={destino === t.proxStatus}
-                      onChange={() => setDestino(t.proxStatus)}
-                    />
-                    <PontoCategoria nrStatus={t.proxStatus} dsStatus={t.dsStatus} />
-                    <span className="flex-1 font-medium">{nomeEtapa(t.dsStatus)}</span>
-                    {t.exigeObservacao && (
-                      <span className="text-caption text-muted-foreground">
-                        exige observação
-                      </span>
-                    )}
-                  </label>
-                ))}
-              </div>
-            )}
-
-            {transicoes && transicoes.length > 0 && (
-              <div className="space-y-1">
-                <Label htmlFor="mover-obs" className="text-caption">
-                  Observação
-                  {transicaoEscolhida?.exigeObservacao ? (
-                    <span className="text-destructive"> (obrigatória)</span>
-                  ) : (
-                    " (opcional)"
-                  )}
-                </Label>
-                <Input
-                  id="mover-obs"
-                  value={observacao}
-                  maxLength={500}
-                  placeholder="Ex.: Contrato assinado"
-                  onChange={(e) => setObservacao(e.target.value)}
-                />
-                <p className="text-caption text-muted-foreground">
-                  A observação fica registrada no histórico da proposta.
-                </p>
-              </div>
-            )}
-
-            {IS_PROD && transicoes && transicoes.length > 0 && (
-              <div className="space-y-1">
-                <Label htmlFor="mover-confirma" className="text-caption">
-                  Digite <strong>MOVER</strong> para liberar:
-                </Label>
-                <Input
-                  id="mover-confirma"
-                  value={moverConfirmText}
-                  onChange={(e) => setMoverConfirmText(e.target.value)}
-                  placeholder="MOVER"
-                />
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setMoverAlvo(null)} disabled={movendo}>
-              Cancelar
-            </Button>
-            <Button
-              variant={IS_PROD ? "destructive" : "default"}
-              onClick={() => void confirmarMover()}
-              disabled={!podeMover}
-            >
-              {movendo ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <ArrowRight className="h-4 w-4" />
-              )}
-              {transicaoEscolhida
-                ? `Mover para ${nomeEtapa(transicaoEscolhida.dsStatus)}`
-                : "Mover"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
