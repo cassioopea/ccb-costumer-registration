@@ -92,18 +92,30 @@ function variantDoStatus(ds: string): "success" | "warning" | "destructive" | "s
   return "secondary";
 }
 
-/** Dias corridos desde a entrada no status atual (dtEntrad AAAAMMDD). */
-function diasNaEtapa(dtEntrad: number | null): number | null {
+/** Horas corridas desde a entrada no status atual (dtEntrad AAAAMMDD + hrEntrad HHMM). */
+function horasNaEtapa(dtEntrad: number | null, hrEntrad: number | null): number | null {
   if (!dtEntrad) return null;
   const s = String(dtEntrad);
   if (s.length !== 8) return null;
-  const d = new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
+  const hr = String(hrEntrad ?? 0).padStart(4, "0");
+  const d = new Date(
+    Number(s.slice(0, 4)),
+    Number(s.slice(4, 6)) - 1,
+    Number(s.slice(6, 8)),
+    Number(hr.slice(0, 2)),
+    Number(hr.slice(2, 4)),
+  );
   if (Number.isNaN(d.getTime())) return null;
-  return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86_400_000));
+  return Math.max(0, (Date.now() - d.getTime()) / 3_600_000);
 }
 
-/** A partir de quantos dias parado a proposta ganha a marca de atenção. */
-const SLA_DIAS_ATENCAO = 2;
+/** Régua de SLA: acima disso na mesma etapa, a proposta entra em atenção. */
+const SLA_HORAS_ATENCAO = 72;
+
+/** Até a régua conta em horas ("36 h"); acima dela, em dias ("4 d"). */
+function labelSla(horas: number): string {
+  return horas <= SLA_HORAS_ATENCAO ? `${Math.floor(horas)} h` : `${Math.floor(horas / 24)} d`;
+}
 
 export function PainelPropostas({
   ativa,
@@ -676,7 +688,7 @@ export function PainelPropostas({
                   <TableHead className="text-right">Valor</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Entrada</TableHead>
-                  <TableHead className="text-right">Na etapa</TableHead>
+                  <TableHead className="text-right">SLA</TableHead>
                   <TableHead className="text-right">Contrato</TableHead>
                   <TableHead>Ações</TableHead>
                 </TableRow>
@@ -717,24 +729,24 @@ export function PainelPropostas({
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right">
                           {(() => {
-                            const dias = diasNaEtapa(p.dtEntrad);
-                            if (dias === null)
+                            const horas = horasNaEtapa(p.dtEntrad, p.hrEntrad);
+                            if (horas === null)
                               return <span className="text-muted-foreground">—</span>;
-                            const acima = dias >= SLA_DIAS_ATENCAO;
+                            const acima = horas > SLA_HORAS_ATENCAO;
                             return (
                               <span
                                 className={cn(
                                   "inline-flex items-center gap-1 tabular-nums",
-                                  acima && "font-medium text-warning-foreground",
+                                  acima && "font-medium text-laranja",
                                 )}
                                 title={
                                   acima
-                                    ? `Parada há ${dias} dia(s) — acima da régua de atenção (${SLA_DIAS_ATENCAO} dias)`
-                                    : undefined
+                                    ? `Parada há ${Math.floor(horas)} h — acima do SLA de ${SLA_HORAS_ATENCAO} h`
+                                    : `${Math.floor(horas)} h nesta etapa (régua: ${SLA_HORAS_ATENCAO} h)`
                                 }
                               >
-                                {dias === 0 ? "hoje" : `${dias} d`}
-                                {acima && <AlertTriangle className="h-3.5 w-3.5 text-warning" />}
+                                {labelSla(horas)}
+                                {acima && <AlertTriangle className="h-3.5 w-3.5" />}
                               </span>
                             );
                           })()}

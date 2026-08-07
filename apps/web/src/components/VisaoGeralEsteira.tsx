@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -8,6 +8,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatDestaque } from "@/components/StatDestaque";
 import {
@@ -17,13 +18,19 @@ import {
   contagemPorCategoria,
   type CategoriaEtapa,
 } from "@/lib/esteira";
-import { getFilasPropostas, type FilaWf } from "@/lib/api";
+import {
+  getLookups,
+  getVisaoGeralEsteira,
+  type LookupOption,
+  type VisaoGeralResponse,
+} from "@/lib/api";
 import { SessaoExpiradaError } from "@/lib/session";
 
 /**
  * Visão geral da esteira — o dashboard da página Início: stats no padrão
- * "Nossos números", donut por categoria semântica e gargalos por etapa.
- * Carrega as filas sozinho na primeira ativação (somente leitura).
+ * "Nossos números", donut por categoria semântica, gargalos por etapa e a
+ * régua de SLA (atrasadas = paradas há mais de slaHoras na mesma etapa).
+ * Filtrável por convênio: a API varre as filas proposta a proposta.
  */
 export function VisaoGeralEsteira({
   ativa,
@@ -33,49 +40,70 @@ export function VisaoGeralEsteira({
   /** Clique num gargalo abre a fila daquela etapa no Painel de propostas. */
   onAbrirFila?: (nrStatus: number) => void;
 }) {
-  const [filas, setFilas] = useState<FilaWf[] | null>(null);
+  const [dados, setDados] = useState<VisaoGeralResponse | null>(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  /** "" = todos os convênios. */
+  const [convenio, setConvenio] = useState("");
+  const [convenios, setConvenios] = useState<LookupOption[]>([]);
 
   const jaAtivou = useRef(false);
   useEffect(() => {
     if (!ativa || jaAtivou.current) return;
     jaAtivou.current = true;
-    void carregar();
+    void carregar("");
+    // Convênios do select — conveniência; o dashboard funciona sem eles.
+    void getLookups(31)
+      .then((r) => setConvenios(r.convenios))
+      .catch(() => setConvenios([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- só na 1ª ativação
   }, [ativa]);
 
-  async function carregar() {
+  async function carregar(convenioAtual?: string) {
     if (carregando) return;
     setCarregando(true);
     setErro(null);
     try {
-      const res = await getFilasPropostas();
-      setFilas([...res.filas].sort((a, b) => a.nrStatus - b.nrStatus));
+      const alvo = (convenioAtual ?? convenio).trim();
+      const res = await getVisaoGeralEsteira(alvo === "" ? undefined : Number(alvo));
+      setDados(res);
     } catch (e) {
       if (!(e instanceof SessaoExpiradaError)) setErro((e as Error).message);
-      setFilas((prev) => prev ?? []);
     } finally {
       setCarregando(false);
     }
   }
 
-  const porCategoria = useMemo(() => contagemPorCategoria(filas ?? []), [filas]);
+  const trocarConvenio = (novo: string) => {
+    setConvenio(novo);
+    void carregar(novo);
+  };
+
+  /** Contagens por categoria respeitando o filtro (noFiltro; cai no global se null). */
+  const porCategoria = useMemo(
+    () =>
+      contagemPorCategoria(
+        (dados?.filas ?? []).map((f) => ({ ...f, qtFilhos: f.noFiltro ?? f.qtFilhos })),
+      ),
+    [dados],
+  );
   const ativasNoFluxo =
     porCategoria.andamento + porCategoria.aguardando + porCategoria.atencao;
 
   /** Etapas com propostas paradas, maiores primeiro — "onde está travando". */
   const gargalos = useMemo(
     () =>
-      (filas ?? [])
-        .filter((f) => f.qtFilhos > 0)
-        .sort((a, b) => b.qtFilhos - a.qtFilhos)
+      (dados?.filas ?? [])
+        .map((f) => ({ ...f, contagem: f.noFiltro ?? f.qtFilhos }))
+        .filter((f) => f.contagem > 0)
+        .sort((a, b) => b.contagem - a.contagem)
         .slice(0, 8),
-    [filas],
+    [dados],
   );
-  const maxGargalo = gargalos[0]?.qtFilhos ?? 0;
+  const maxGargalo = gargalos[0]?.contagem ?? 0;
 
   const nomeEtapa = (ds: string) => ds.replace(/\s*\(.*\)\s*$/, "");
+  const slaHoras = dados?.slaHoras ?? 72;
 
   return (
     <Card className="reveal">
@@ -88,27 +116,47 @@ export function VisaoGeralEsteira({
             <CardTitle>Saúde da esteira</CardTitle>
             <CardDescription>
               {erro
-                ? `Não foi possível carregar as filas: ${erro}`
-                : "Contagens ao vivo do workflow de propostas."}
+                ? `Não foi possível carregar: ${erro}`
+                : dados?.parcial
+                  ? "Base grande — a varredura foi parcial; contagens podem estar incompletas."
+                  : "Contagens ao vivo do workflow de propostas."}
             </CardDescription>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void carregar()}
-            disabled={carregando}
-            title="Recarrega as contagens da esteira"
-          >
-            {carregando ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
+          <div className="flex shrink-0 items-center gap-2">
+            {convenios.length > 0 && (
+              <Select
+                aria-label="Filtrar por convênio"
+                value={convenio}
+                onChange={(e) => trocarConvenio(e.target.value)}
+                disabled={carregando}
+                className="w-56"
+              >
+                <option value="">Todos os convênios</option>
+                {convenios.map((c) => (
+                  <option key={c.codigo} value={String(c.codigo)}>
+                    {c.codigo} — {c.descricao}
+                  </option>
+                ))}
+              </Select>
             )}
-          </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void carregar()}
+              disabled={carregando}
+              title="Recarrega as contagens da esteira"
+            >
+              {carregando ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-8">
-        {filas === null ? (
+        {dados === null ? (
           <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
             {Array.from({ length: 4 }, (_, i) => (
               <Skeleton key={i} className="h-20 w-full" />
@@ -127,14 +175,14 @@ export function VisaoGeralEsteira({
                 className="reveal reveal-delay-2"
                 categoria="Aguardando ação"
                 valor={porCategoria.aguardando}
-                acento
                 rodape="formalização, assinatura e desembolso"
               />
               <StatDestaque
                 className="reveal reveal-delay-3"
-                categoria="Requer atenção"
-                valor={porCategoria.atencao}
-                rodape="risco apontado ou documentos pendentes"
+                categoria="Atrasadas"
+                valor={dados.totalAtrasadas}
+                acento
+                rodape={`paradas há mais de ${slaHoras} h na mesma etapa`}
               />
               <StatDestaque
                 className="reveal reveal-delay-4"
@@ -149,7 +197,8 @@ export function VisaoGeralEsteira({
               <div className="reveal reveal-delay-2">
                 <h3 className="text-subheading text-foreground">Propostas por categoria</h3>
                 <p className="mb-4 text-caption text-muted-foreground">
-                  Distribuição de tudo que está no workflow.
+                  Distribuição de tudo que está no workflow
+                  {convenio ? " — convênio filtrado" : ""}.
                 </p>
                 <DonutCategorias porCategoria={porCategoria} />
               </div>
@@ -164,7 +213,7 @@ export function VisaoGeralEsteira({
                 <div className="space-y-2">
                   {gargalos.length === 0 && (
                     <p className="text-body text-muted-foreground">
-                      Nenhuma proposta no workflow deste ambiente.
+                      Nenhuma proposta no workflow{convenio ? " deste convênio" : ""}.
                     </p>
                   )}
                   {gargalos.map((f) => {
@@ -175,7 +224,9 @@ export function VisaoGeralEsteira({
                         type="button"
                         onClick={() => onAbrirFila?.(f.nrStatus)}
                         disabled={!onAbrirFila}
-                        title={`${f.dsStatus} — ${cat.label}.${onAbrirFila ? " Clique para ver a fila." : ""}`}
+                        title={`${f.dsStatus} — ${cat.label}.${
+                          f.atrasadas ? ` ${f.atrasadas} acima do SLA de ${slaHoras} h.` : ""
+                        }${onAbrirFila ? " Clique para ver a fila." : ""}`}
                         className="focus-ring group flex w-full items-center gap-3 rounded-md px-1 py-0.5 text-left"
                       >
                         <span className="w-44 shrink-0 truncate text-caption text-muted-foreground group-hover:text-foreground">
@@ -185,18 +236,39 @@ export function VisaoGeralEsteira({
                           <span
                             className="block h-full rounded-sm transition-all duration-200"
                             style={{
-                              width: `${maxGargalo > 0 ? Math.max(4, (f.qtFilhos / maxGargalo) * 100) : 0}%`,
+                              width: `${maxGargalo > 0 ? Math.max(4, (f.contagem / maxGargalo) * 100) : 0}%`,
                               backgroundColor: cat.cor,
                             }}
                           />
                         </span>
                         <span className="w-10 shrink-0 text-right text-body font-medium tabular-nums">
-                          {f.qtFilhos}
+                          {f.contagem}
+                        </span>
+                        <span
+                          className="flex w-14 shrink-0 items-center justify-end gap-1 text-right text-caption tabular-nums"
+                          title={
+                            f.atrasadas
+                              ? `${f.atrasadas} proposta(s) acima do SLA de ${slaHoras} h`
+                              : undefined
+                          }
+                        >
+                          {f.atrasadas ? (
+                            <>
+                              <AlertTriangle className="h-3 w-3 text-laranja" />
+                              <span className="text-laranja">{f.atrasadas}</span>
+                            </>
+                          ) : null}
                         </span>
                       </button>
                     );
                   })}
                 </div>
+                {gargalos.some((f) => (f.atrasadas ?? 0) > 0) && (
+                  <p className="mt-3 text-caption text-muted-foreground">
+                    <AlertTriangle className="mr-1 inline h-3 w-3 text-laranja" />
+                    propostas paradas na etapa há mais de {slaHoras} h.
+                  </p>
+                )}
               </div>
             </div>
           </>

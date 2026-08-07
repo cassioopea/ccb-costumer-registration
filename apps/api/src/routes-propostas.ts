@@ -562,6 +562,122 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     });
   });
 
+  /**
+   * VISÃO GERAL agregada (dashboard do Início): varre as filas do workflow
+   * proposta a proposta pelo consultarPropostaPainel — o que permite filtrar
+   * por convênio (cdConvProd, que o consultarStatusWf não tem) e contabilizar
+   * o SLA real (atrasadas = paradas há mais de SLA_HORAS na etapa).
+   */
+  app.get("/api/propostas/visao-geral", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const q = visaoGeralQuerySchema.safeParse(req.query ?? {});
+    if (!q.success) {
+      return reply
+        .code(400)
+        .send({ error: q.error.issues[0]?.message ?? "Parâmetros inválidos." });
+    }
+    const convenio = q.data.convenio;
+
+    const claims = extrairInstAgen(session.token);
+    const wf = await consultarStatusWf(session.token, {
+      nrInst: claims.nrInst ?? env.SINQIA_NR_INST,
+      nrAgen: claims.nrAgen ?? env.SINQIA_NR_AGEN,
+      nmLogin: session.username,
+    });
+    if (wf.httpStatus === 401) return responder401(reply, session.id);
+    if (wf.httpStatus >= 400) {
+      return reply
+        .code(502)
+        .send({ error: `A Sinqia respondeu HTTP ${wf.httpStatus} nas filas do workflow.` });
+    }
+
+    const ordenadas = [...wf.filas].sort((a, b) => a.nrStatus - b.nrStatus);
+    /** Etapas encerradas não entram na régua de SLA (nada "atrasa" nelas). */
+    const etapaEncerrada = (ds: string) => /cancelad|negad|finalizado no portal/i.test(ds);
+
+    // Teto de chamadas da varredura — proteção contra bases gigantes.
+    const MAX_CONSULTAS = 25;
+    const TAMANHO_PAGINA = 200;
+    let consultasUsadas = 0;
+    let parcial = false;
+
+    const filasAgregadas = [];
+    for (const f of ordenadas) {
+      const encerrada = etapaEncerrada(f.dsStatus);
+      const base = {
+        nrWf: f.nrWf,
+        nrStatus: f.nrStatus,
+        dsStatus: f.dsStatus,
+        qtFilhos: f.qtFilhos,
+      };
+
+      if (f.qtFilhos === 0) {
+        filasAgregadas.push({ ...base, noFiltro: 0, atrasadas: 0 });
+        continue;
+      }
+      // Sem filtro de convênio, etapa encerrada dispensa varredura: a contagem
+      // global serve e SLA não se aplica.
+      if (encerrada && convenio === undefined) {
+        filasAgregadas.push({ ...base, noFiltro: f.qtFilhos, atrasadas: 0 });
+        continue;
+      }
+      if (consultasUsadas >= MAX_CONSULTAS) {
+        parcial = true;
+        filasAgregadas.push({ ...base, noFiltro: null, atrasadas: null });
+        continue;
+      }
+
+      const vistos = new Set<number>();
+      let atrasadas = 0;
+      let cursor = cursorAgora() as {
+        dtConsulta: string;
+        hrConsulta: string;
+        idSentido: "POS" | "ANT";
+      };
+
+      while (consultasUsadas < MAX_CONSULTAS) {
+        consultasUsadas++;
+        const pagina = await consultarPropostaPainel(
+          session.token,
+          { nrStatus: f.nrStatus, cdConvProd: convenio },
+          cursor,
+          TAMANHO_PAGINA,
+        );
+        if (pagina.httpStatus === 401) return responder401(reply, session.id);
+        if (pagina.httpStatus >= 400) break;
+
+        for (const p of pagina.propostas) {
+          if (vistos.has(p.nrProsp)) continue;
+          vistos.add(p.nrProsp);
+          if (!encerrada && horasDesde(p.dtEntrad, p.hrEntrad) > SLA_HORAS) atrasadas++;
+        }
+
+        const ultima = pagina.propostas[pagina.propostas.length - 1];
+        if (pagina.propostas.length < TAMANHO_PAGINA || !ultima?.dtEntrad) break;
+        cursor = {
+          dtConsulta: String(ultima.dtEntrad),
+          hrConsulta: `${String(ultima.hrEntrad ?? 0).padStart(4, "0")}00`,
+          idSentido: "ANT",
+        };
+      }
+      if (consultasUsadas >= MAX_CONSULTAS) parcial = true;
+
+      filasAgregadas.push({ ...base, noFiltro: vistos.size, atrasadas });
+    }
+
+    const totalAtrasadas = filasAgregadas.reduce((acc, f) => acc + (f.atrasadas ?? 0), 0);
+    return reply.send({
+      env: env.SINQIA_ENV,
+      convenio: convenio ?? null,
+      slaHoras: SLA_HORAS,
+      parcial,
+      totalAtrasadas,
+      filas: filasAgregadas,
+    });
+  });
+
   /** Filas do workflow com contagem por status (dashboard da esteira). */
   app.get("/api/propostas/filas", async (req, reply) => {
     const session = exigirSessao(req, reply);
@@ -678,6 +794,31 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     });
   });
 }
+
+/** Régua de SLA: acima disso na mesma etapa, a proposta conta como atrasada. */
+const SLA_HORAS = 72;
+
+/** Horas corridas desde a entrada no status (dtEntrad AAAAMMDD + hrEntrad HHMM). */
+function horasDesde(dtEntrad: number | null, hrEntrad: number | null): number {
+  if (!dtEntrad) return 0;
+  const s = String(dtEntrad);
+  if (s.length !== 8) return 0;
+  const hr = String(hrEntrad ?? 0).padStart(4, "0");
+  const d = new Date(
+    Number(s.slice(0, 4)),
+    Number(s.slice(4, 6)) - 1,
+    Number(s.slice(6, 8)),
+    Number(hr.slice(0, 2)),
+    Number(hr.slice(2, 4)),
+  );
+  if (Number.isNaN(d.getTime())) return 0;
+  return Math.max(0, (Date.now() - d.getTime()) / 3_600_000);
+}
+
+/** Query do GET /api/propostas/visao-geral. */
+const visaoGeralQuerySchema = z.object({
+  convenio: z.coerce.number().int().optional(),
+});
 
 /** Cursor inicial do painel: agora, olhando para trás (mais recentes primeiro). */
 function cursorAgora(): { dtConsulta: string; hrConsulta: string; idSentido: "ANT" } {

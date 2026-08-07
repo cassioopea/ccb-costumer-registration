@@ -486,6 +486,8 @@ export interface PainelFiltros {
   dtPerFim?: string;
   nrStatus?: number;
   cdProdut?: number;
+  /** Convênio de produção — o filtro que o Portal envia em cdConvProd. */
+  cdConvProd?: number;
 }
 
 /** Cursor de paginação do painel: data/hora de referência + sentido. */
@@ -522,7 +524,7 @@ export async function consultarPropostaPainel(
     nrStatus: filtros.nrStatus ?? null,
     nrCPFCNPJ: filtros.nrCPFCNPJ ?? "",
     idSituac: null,
-    cdConvProd: null,
+    cdConvProd: filtros.cdConvProd ?? null,
     cdFilialProd: null,
     cdAgenteProducao: null,
     cdConvConsig: null,

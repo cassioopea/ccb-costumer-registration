@@ -542,6 +542,30 @@ export async function getFilasPropostas(): Promise<{ env: string; filas: FilaWf[
   return lerResposta(res, "Falha ao consultar as filas do workflow");
 }
 
+export interface VisaoGeralFila extends FilaWf {
+  /** Contagem respeitando o filtro de convênio (null = varredura estourou o teto). */
+  noFiltro: number | null;
+  /** Propostas paradas na etapa acima da régua de SLA (null = não varrida). */
+  atrasadas: number | null;
+}
+
+export interface VisaoGeralResponse {
+  env: string;
+  convenio: number | null;
+  slaHoras: number;
+  /** true = a varredura bateu no teto de consultas; contagens podem faltar. */
+  parcial: boolean;
+  totalAtrasadas: number;
+  filas: VisaoGeralFila[];
+}
+
+/** Dashboard agregado da esteira — filtrável por convênio, com SLA por etapa. */
+export async function getVisaoGeralEsteira(convenio?: number): Promise<VisaoGeralResponse> {
+  const qs = convenio !== undefined ? `?convenio=${convenio}` : "";
+  const res = await fetch(`/api/propostas/visao-geral${qs}`);
+  return lerResposta(res, "Falha ao consultar a visão geral da esteira");
+}
+
 export interface HistoricoPropostaItem {
   nrSeq: number;
   dtIn: string;
