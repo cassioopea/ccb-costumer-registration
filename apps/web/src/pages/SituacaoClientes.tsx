@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { matchCliente, SITUACOES, situacaoLabel } from "@cadastro-lote/shared";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { FichaCliente } from "@/components/FichaCliente";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Card,
@@ -212,13 +213,6 @@ export function SituacaoClientes({
     }
   }
 
-  /** Ação por linha: abre a modal de situação SÓ com este cliente. */
-  function alterarSituacaoDe(c: ClienteResumo) {
-    if (c.nrCliente === null) return;
-    setSelecionados(new Map([[c.nrCliente, c]]));
-    setAlterarConfirmText("");
-    setAlterarOpen(true);
-  }
 
   /* ---------------------------------------------------------------- */
   /* Filtro local: número do cliente, nome ou CPF/CNPJ                 */
@@ -737,26 +731,13 @@ export function SituacaoClientes({
                                   <FileSearch className="h-3.5 w-3.5" />
                                   Propostas
                                 </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-7 px-2 text-caption"
-                                  onClick={() => alterarSituacaoDe(c)}
-                                  disabled={c.nrCliente === null || busy}
-                                  title="Selecionar só este cliente para alterar a situação"
-                                >
-                                  <ListChecks className="h-3.5 w-3.5" />
-                                  Situação
-                                </Button>
                               </div>
                             </TableCell>
                           </TableRow>
                           {expanded.has(chave) && (
                             <TableRow>
-                              <TableCell colSpan={8} className="bg-[var(--muted)]/40">
-                                <pre className="max-h-64 overflow-auto text-xs">
-                                  {JSON.stringify(c.raw, null, 2)}
-                                </pre>
+                              <TableCell colSpan={8} className="bg-muted/40">
+                                <FichaCliente raw={c.raw} />
                               </TableCell>
                             </TableRow>
                           )}

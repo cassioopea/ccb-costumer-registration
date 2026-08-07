@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { CATEGORIAS, categoriaDaEtapa } from "@/lib/esteira";
 import { cn } from "@/lib/utils";
 import {
   getFilasPropostas,
@@ -84,12 +85,31 @@ function formatHora(hr: number | null): string {
   return `${s.slice(0, 2)}:${s.slice(2, 4)}`;
 }
 
-/** Cor do badge por família de status — estado, nunca decoração. */
-function variantDoStatus(ds: string): "success" | "warning" | "destructive" | "secondary" {
-  if (/cancelad|negad/i.test(ds)) return "destructive";
-  if (/assinado|aprovado|desembols|finalizado/i.test(ds)) return "success";
-  if (/pendent|assinatura|risco/i.test(ds)) return "warning";
-  return "secondary";
+/** Pílula de status com a cor da CATEGORIA — a mesma do dashboard e da esteira. */
+function StatusPill({ nrStatus, dsStatus }: { nrStatus: number | null; dsStatus: string }) {
+  const cat = CATEGORIAS[categoriaDaEtapa(nrStatus, dsStatus)];
+  return (
+    <Badge
+      className="border-transparent"
+      style={{ backgroundColor: cat.cor, color: cat.corTexto }}
+      title={`${cat.label} — status ${nrStatus ?? "—"}`}
+    >
+      {dsStatus || "—"}
+    </Badge>
+  );
+}
+
+/** Bolinha da categoria — legenda mínima usada em listas e no histórico. */
+function PontoCategoria({ nrStatus, dsStatus }: { nrStatus: number | null; dsStatus: string }) {
+  const cat = CATEGORIAS[categoriaDaEtapa(nrStatus, dsStatus)];
+  return (
+    <span
+      aria-hidden
+      title={cat.label}
+      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+      style={{ backgroundColor: cat.cor }}
+    />
+  );
 }
 
 /** Horas corridas desde a entrada no status atual (dtEntrad AAAAMMDD + hrEntrad HHMM). */
@@ -468,6 +488,7 @@ export function PainelPropostas({
             <ol className="flex items-stretch gap-0 overflow-x-auto pb-1" aria-label="Etapas da esteira">
               {filasVisiveis.map((f, i) => {
                 const ativa = filaSelecionada === f.nrStatus;
+                const cat = CATEGORIAS[categoriaDaEtapa(f.nrStatus, f.dsStatus)];
                 return (
                   <li key={f.nrStatus} className="flex shrink-0 items-center">
                     {i > 0 && <span aria-hidden className="mx-1 h-px w-4 shrink-0 bg-border" />}
@@ -475,9 +496,9 @@ export function PainelPropostas({
                       type="button"
                       onClick={() => selecionarFila(f.nrStatus)}
                       aria-current={ativa ? "true" : undefined}
-                      title={`${f.dsStatus} — status ${f.nrStatus} (workflow ${f.nrWf})`}
+                      title={`${f.dsStatus} — ${cat.label} (status ${f.nrStatus})`}
                       className={cn(
-                        "focus-ring flex h-full w-40 flex-col justify-between rounded-lg border px-3 py-2 text-left transition-colors duration-150",
+                        "focus-ring flex h-full w-40 flex-col justify-between gap-1 rounded-lg border px-3 py-2 text-left transition-colors duration-150",
                         ativa
                           ? "border-primary bg-accent"
                           : "border-border hover:border-primary/50",
@@ -486,17 +507,21 @@ export function PainelPropostas({
                     >
                       <span
                         className={cn(
-                          "text-caption leading-tight",
+                          "flex items-start gap-1.5 text-caption leading-tight",
                           ativa ? "font-semibold text-accent-foreground" : "text-muted-foreground",
                         )}
                       >
+                        {/* Cor da categoria — a mesma do dashboard */}
+                        <span
+                          aria-hidden
+                          className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full"
+                          style={{ backgroundColor: cat.cor }}
+                        />
                         {nomeEtapa(f.dsStatus)}
                       </span>
                       <span
-                        className={cn(
-                          "text-title tabular-nums",
-                          ativa ? "text-primary" : "text-foreground",
-                        )}
+                        className="text-title tabular-nums"
+                        style={{ color: f.qtFilhos > 0 ? cat.cor : undefined }}
                       >
                         {f.qtFilhos}
                       </span>
@@ -720,9 +745,7 @@ export function PainelPropostas({
                           {formatBRL(p.vlSolic)}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={variantDoStatus(p.dsStatus)} title={`Status ${p.nrStatus ?? "—"}`}>
-                            {p.dsStatus || "—"}
-                          </Badge>
+                          <StatusPill nrStatus={p.nrStatus} dsStatus={p.dsStatus} />
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">
                           {formatDataAAAAMMDD(p.dtEntrad)} {formatHora(p.hrEntrad)}
@@ -803,6 +826,7 @@ export function PainelPropostas({
                                     <span className="tabular-nums text-muted-foreground">
                                       {h.dtIn}
                                     </span>
+                                    <PontoCategoria nrStatus={h.nrStatus} dsStatus={h.dsStatus} />
                                     <span className="font-medium">{h.dsStatus}</span>
                                     <span className="text-muted-foreground">
                                       por {h.nmUsr || "—"}
@@ -889,6 +913,7 @@ export function PainelPropostas({
                       checked={destino === t.proxStatus}
                       onChange={() => setDestino(t.proxStatus)}
                     />
+                    <PontoCategoria nrStatus={t.proxStatus} dsStatus={t.dsStatus} />
                     <span className="flex-1 font-medium">{nomeEtapa(t.dsStatus)}</span>
                     {t.exigeObservacao && (
                       <span className="text-caption text-muted-foreground">

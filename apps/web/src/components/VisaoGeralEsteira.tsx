@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw, XCircle } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -109,7 +109,7 @@ export function VisaoGeralEsteira({
     <Card className="reveal">
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <div className="text-caption font-medium uppercase tracking-label text-wine-500">
               Visão geral
             </div>
@@ -121,6 +121,29 @@ export function VisaoGeralEsteira({
                   ? "Base grande — a varredura foi parcial; contagens podem estar incompletas."
                   : "Contagens ao vivo do workflow de propostas."}
             </CardDescription>
+            {/* Convênio filtrado ganha destaque — os números abaixo são só dele */}
+            {convenio && (
+              <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-lg border border-primary/30 bg-accent px-3 py-1.5">
+                <span className="text-caption font-medium uppercase tracking-label text-muted-foreground">
+                  Convênio
+                </span>
+                <span className="truncate text-subheading text-accent-foreground">
+                  <span className="tabular-nums">{convenio}</span>
+                  {(() => {
+                    const nome = convenios.find((c) => String(c.codigo) === convenio)?.descricao;
+                    return nome ? ` — ${nome}` : "";
+                  })()}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => trocarConvenio("")}
+                  title="Limpar o filtro de convênio"
+                  className="focus-ring text-muted-foreground hover:text-foreground"
+                >
+                  <XCircle className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {convenios.length > 0 && (
