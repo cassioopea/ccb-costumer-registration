@@ -314,7 +314,7 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
   return (
     <div className="space-y-6">
       {/* Breadcrumb + título + etapas do fluxo */}
-      <div className="space-y-4">
+      <div className="reveal space-y-4">
         <div>
           <Breadcrumb
             paginaPrincipal="Base de tomadores"
@@ -351,7 +351,7 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
       {/* 1/3 upload + 2/3 controles — mesmo layout do lote de propostas. */}
       <div className="grid items-start gap-6 lg:grid-cols-3">
         {/* Upload */}
-        <Card className="lg:col-span-1">
+        <Card className="reveal reveal-delay-1 lg:col-span-1">
           <CardHeader>
             <CardTitle>Arquivo do lote</CardTitle>
             <CardDescription>
@@ -406,7 +406,7 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
         </Card>
 
         {/* Controles do request — compartilhados com o cadastro individual. */}
-        <Card className="lg:col-span-2">
+        <Card className="reveal reveal-delay-2 lg:col-span-2">
           <CardHeader>
             <CardTitle>Controles do lote</CardTitle>
             <CardDescription>

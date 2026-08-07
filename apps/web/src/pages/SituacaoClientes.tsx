@@ -330,7 +330,7 @@ export function SituacaoClientes({
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="reveal flex flex-wrap items-end justify-between gap-4">
         <div>
           <Breadcrumb paginaPrincipal="Tomadores" atual="Base de tomadores" />
           <h1 className="text-display text-foreground">Base de tomadores</h1>
@@ -492,7 +492,7 @@ export function SituacaoClientes({
       )}
 
       {/* Lista + filtro — o card é o hub da página */}
-      <Card>
+      <Card className="reveal reveal-delay-1">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

@@ -451,7 +451,7 @@ export function PainelPropostas({
   return (
     <div className="space-y-6">
       {/* Breadcrumb + título + CTAs de criação */}
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="reveal flex flex-wrap items-end justify-between gap-4">
         <div>
           <Breadcrumb paginaPrincipal="Propostas" atual="Painel de propostas" />
           <h1 className="text-display text-foreground">Painel de propostas</h1>
@@ -499,7 +499,7 @@ export function PainelPropostas({
       )}
 
       {/* Etapas da esteira — o fluxo inteiro, com contagem por etapa */}
-      <Card>
+      <Card className="reveal reveal-delay-1">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -591,7 +591,7 @@ export function PainelPropostas({
       </Card>
 
       {/* Listagem — a tabela é a protagonista; filtros recolhíveis no header */}
-      <Card>
+      <Card className="reveal reveal-delay-2">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>

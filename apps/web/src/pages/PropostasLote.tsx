@@ -714,7 +714,7 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
   return (
     <div className="space-y-6">
       {/* Breadcrumb + título + etapas do fluxo */}
-      <div className="space-y-4">
+      <div className="reveal space-y-4">
         <div>
           <Breadcrumb
             paginaPrincipal="Painel de propostas"
@@ -740,7 +740,7 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
       {/* 1/3 upload + 2/3 parâmetros — o formulário precisa de mais respiro. */}
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Upload */}
-        <Card className="lg:col-span-1">
+        <Card className="reveal reveal-delay-1 lg:col-span-1">
           <CardHeader>
             <CardTitle>Planilha de emissões</CardTitle>
             <CardDescription>
@@ -816,7 +816,7 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
         </Card>
 
         {/* Parâmetros do lote (fora do Excel) */}
-        <Card className="lg:col-span-2">
+        <Card className="reveal reveal-delay-2 lg:col-span-2">
           <CardHeader>
             <div className="flex items-start justify-between gap-2">
               <div>

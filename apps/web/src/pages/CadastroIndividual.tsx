@@ -232,7 +232,7 @@ export function CadastroIndividual({
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="reveal">
         <Breadcrumb
           paginaPrincipal="Base de tomadores"
           onVoltar={onVoltar}
@@ -274,7 +274,7 @@ export function CadastroIndividual({
       )}
 
       {/* Cabeçalho de estado: tipo detectado + atalhos */}
-      <Card>
+      <Card className="reveal reveal-delay-1">
         <CardContent className="flex flex-wrap items-center gap-3 py-4">
           <span className="text-sm">
             Tipo detectado:{" "}
@@ -305,7 +305,7 @@ export function CadastroIndividual({
       </Card>
 
       {/* Consulta de obrigatórios + controles lado a lado — compactos. */}
-      <div className="grid items-start gap-6 lg:grid-cols-2">
+      <div className="reveal reveal-delay-2 grid items-start gap-6 lg:grid-cols-2">
       {/* Campos obrigatórios da Sinqia */}
       <Card>
         <CardHeader>
@@ -422,7 +422,7 @@ export function CadastroIndividual({
         const errosNaSecao = doSecao.filter((c) => errosPorCampo.has(c.path)).length;
 
         return (
-          <Card key={secao.id}>
+          <Card key={secao.id} className="reveal">
             <CardHeader>
               <button
                 type="button"

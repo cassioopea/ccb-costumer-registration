@@ -92,7 +92,7 @@ export function Login() {
 
       {/* Formulário */}
       <div className="flex items-center justify-center bg-background px-6 py-12">
-        <div className="w-full max-w-sm space-y-8">
+        <div className="reveal w-full max-w-sm space-y-8">
           <OpeaLogo className="h-7 w-auto text-[var(--primary)] lg:hidden" />
 
           <div className="space-y-2">

@@ -394,7 +394,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
   return (
     <div className="space-y-6">
       {/* Breadcrumb + título + etapas do fluxo */}
-      <div className="space-y-4">
+      <div className="reveal space-y-4">
         <div>
           <Breadcrumb
             paginaPrincipal="Painel de propostas"
@@ -420,7 +420,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
       {/* 1/3 cliente + 2/3 parâmetros — mesmo layout das telas de lote. */}
       <div className="grid items-start gap-6 lg:grid-cols-3">
         {/* Cliente */}
-        <Card className="lg:col-span-1">
+        <Card className="reveal reveal-delay-1 lg:col-span-1">
           <CardHeader>
             <CardTitle>Tomador</CardTitle>
             <CardDescription>
@@ -510,7 +510,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
         </Card>
 
         {/* Parâmetros — mesmos campos e listas do lote */}
-        <Card className="lg:col-span-2">
+        <Card className="reveal reveal-delay-2 lg:col-span-2">
           <CardHeader>
             <div className="flex items-start justify-between gap-2">
               <div>
