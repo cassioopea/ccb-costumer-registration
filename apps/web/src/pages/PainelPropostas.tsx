@@ -692,7 +692,7 @@ export function PainelPropostas({
               </div>
               <div className="min-w-48 flex-1 space-y-1">
                 <Label htmlFor="pf-nome" className="text-caption">
-                  Nome do cliente
+                  Nome do tomador
                 </Label>
                 <Input
                   id="pf-nome"
@@ -777,7 +777,7 @@ export function PainelPropostas({
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-20 text-right">Nº</TableHead>
-                  <TableHead>Cliente</TableHead>
+                  <TableHead>Tomador</TableHead>
                   <TableHead>CPF/CNPJ</TableHead>
                   <TableHead>Produto</TableHead>
                   <TableHead className="text-right">Valor</TableHead>

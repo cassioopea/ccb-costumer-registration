@@ -11,6 +11,7 @@ import { PropostaIndividual } from "@/pages/PropostaIndividual";
 import { PainelPropostas } from "@/pages/PainelPropostas";
 import { Login } from "@/pages/Login";
 import { SessionProvider, useSession } from "@/lib/session";
+import type { ClienteResumo } from "@cadastro-lote/shared";
 
 /**
  * Esteira de Originação — dois módulos, cada um com uma PÁGINA PRINCIPAL
@@ -42,6 +43,8 @@ function Shell() {
     nrStatus: number;
     convenio: number | null;
   } | null>(null);
+  /** Tomador da Base enviado para EDIÇÃO no Cadastro Individual. */
+  const [clienteEdicao, setClienteEdicao] = useState<ClienteResumo | null>(null);
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -83,10 +86,18 @@ function Shell() {
           <SituacaoClientes
             ativa={modulo === "clientes" && telaClientes === "situacao"}
             onNavegar={setTelaClientes}
+            onEditar={(c) => {
+              setClienteEdicao(c);
+              setTelaClientes("individual");
+            }}
           />
         </div>
         <div className={modulo === "clientes" && telaClientes === "individual" ? undefined : "hidden"}>
-          <CadastroIndividual onVoltar={() => setTelaClientes("situacao")} />
+          <CadastroIndividual
+            onVoltar={() => setTelaClientes("situacao")}
+            edicao={clienteEdicao}
+            onEdicaoConsumida={() => setClienteEdicao(null)}
+          />
         </div>
         <div className={modulo === "clientes" && telaClientes === "cadastro" ? undefined : "hidden"}>
           <CadastroLote onVoltar={() => setTelaClientes("situacao")} />

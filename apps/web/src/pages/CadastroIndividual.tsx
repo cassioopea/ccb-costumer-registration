@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -21,8 +21,10 @@ import {
   secoesVisiveis,
   tipoPorDocumento,
   type CampoForm,
+  type ClienteResumo,
   type SecaoId,
 } from "@cadastro-lote/shared";
+import { rawParaCampos } from "@/lib/edicao-cliente";
 import {
   Card,
   CardContent,
@@ -53,11 +55,25 @@ import {
   type CamposObrigatoriosResponse,
 } from "@/lib/api";
 import { SessaoExpiradaError } from "@/lib/session";
-import { ControlesLote, sanitizeControl, useControlesLote } from "@/components/ControlesLote";
+import {
+  CONTROL_INICIAL,
+  ControlesLote,
+  sanitizeControl,
+  useControlesLote,
+} from "@/components/ControlesLote";
 
 type Fase = "editando" | "validando" | "enviando";
 
-export function CadastroIndividual({ onVoltar }: { onVoltar?: () => void }) {
+export function CadastroIndividual({
+  onVoltar,
+  edicao = null,
+  onEdicaoConsumida,
+}: {
+  onVoltar?: () => void;
+  /** Tomador vindo da Base para EDIÇÃO — pré-preenche e arma idAcao "AL". */
+  edicao?: ClienteResumo | null;
+  onEdicaoConsumida?: () => void;
+}) {
   /** Estado do formulário: mapa achatado, igual a uma linha de CSV. */
   const [campos, setCampos] = useState<Record<string, string>>({});
   const [fase, setFase] = useState<Fase>("editando");
@@ -168,10 +184,41 @@ export function CadastroIndividual({ onVoltar }: { onVoltar?: () => void }) {
     setErro(null);
   };
 
+  /** Tomador em edição (banner + verbo dos CTAs). null = cadastro novo. */
+  const [edicaoInfo, setEdicaoInfo] = useState<{
+    nome: string;
+    documento: string;
+    nrCliente: number | null;
+  } | null>(null);
+  const editando = control.idAcao === "AL" && edicaoInfo !== null;
+
+  /**
+   * Chegou um tomador da Base para editar: pré-preenche com o que a listagem
+   * traz, arma a ação AL e consulta os campos obrigatórios — os faltantes
+   * ficam marcados com * para guiar o complemento do cadastro.
+   */
+  useEffect(() => {
+    if (!edicao) return;
+    setCampos(rawParaCampos(edicao));
+    setEdicaoInfo({
+      nome: edicao.nome,
+      documento: edicao.documento,
+      nrCliente: edicao.nrCliente,
+    });
+    setControl((c) => ({ ...c, idAcao: "AL" }));
+    setResultado(null);
+    setErro(null);
+    if (!obrig && !obrigCarregando) void consultarObrigatorios();
+    onEdicaoConsumida?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reage só ao pedido de edição
+  }, [edicao]);
+
   const limpar = () => {
     setCampos({});
     setResultado(null);
     setErro(null);
+    setEdicaoInfo(null);
+    setControl({ ...CONTROL_INICIAL });
   };
 
   const toggleSecao = (id: SecaoId) =>
@@ -187,7 +234,7 @@ export function CadastroIndividual({ onVoltar }: { onVoltar?: () => void }) {
     <div className="space-y-6">
       <div>
         <Breadcrumb
-          paginaPrincipal="Base de clientes"
+          paginaPrincipal="Base de tomadores"
           onVoltar={onVoltar}
           atual="Cadastro individual"
         />
@@ -202,6 +249,27 @@ export function CadastroIndividual({ onVoltar }: { onVoltar?: () => void }) {
         <div className="flex items-start gap-2 rounded-lg border border-[var(--destructive)] bg-[var(--destructive)]/10 px-4 py-3 text-sm text-[var(--destructive)]">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{erro}</span>
+        </div>
+      )}
+
+      {/* Modo edição — vindo da Base de tomadores */}
+      {editando && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3">
+          <span className="text-body text-accent-foreground">
+            Editando o cadastro de{" "}
+            <strong>{edicaoInfo!.nome || edicaoInfo!.documento}</strong>
+            {edicaoInfo!.nrCliente !== null && (
+              <>
+                {" "}
+                (nrCliente <span className="tabular-nums">{edicaoInfo!.nrCliente}</span>)
+              </>
+            )}{" "}
+            — a ação <code>AL</code> (alterar) será enviada. Complete os campos marcados
+            com <span className="text-destructive">*</span>.
+          </span>
+          <Button variant="ghost" size="sm" onClick={limpar}>
+            Cancelar edição
+          </Button>
         </div>
       )}
 
@@ -412,7 +480,7 @@ export function CadastroIndividual({ onVoltar }: { onVoltar?: () => void }) {
           ) : (
             <UserPlus className="h-4 w-4" />
           )}
-          Cadastrar
+          {editando ? "Salvar alterações" : "Cadastrar"}
         </Button>
         {tipo === "?" && (
           <span className="text-sm text-muted-foreground">
@@ -501,12 +569,13 @@ export function CadastroIndividual({ onVoltar }: { onVoltar?: () => void }) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-[var(--destructive)]">
               <AlertTriangle className="h-5 w-5" />
-              Confirmar cadastro em PRODUÇÃO
+              Confirmar {editando ? "alteração" : "cadastro"} em PRODUÇÃO
             </DialogTitle>
             <DialogDescription>
-              Você está prestes a cadastrar <strong>{campos.dsNome || "este cliente"}</strong> (
-              {campos.nrCpfCnpj}) em <strong>PRODUÇÃO</strong>. Esta ação é real e não pode ser
-              desfeita pela ferramenta. Confirma?
+              Você está prestes a {editando ? "alterar o cadastro de" : "cadastrar"}{" "}
+              <strong>{campos.dsNome || "este tomador"}</strong> ({campos.nrCpfCnpj}) em{" "}
+              <strong>PRODUÇÃO</strong>. Esta ação é real e não pode ser desfeita pela
+              ferramenta. Confirma?
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

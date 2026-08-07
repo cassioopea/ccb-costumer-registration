@@ -85,16 +85,16 @@ export function Inicio({
 
         <Card className="reveal reveal-delay-3">
           <CardHeader>
-            <CardTitle>Clientes</CardTitle>
+            <CardTitle>Tomadores</CardTitle>
             <CardDescription>
-              Consulte a base de tomadores, altere situações e cadastre novos clientes —
-              individualmente ou por arquivo.
+              Consulte a base de tomadores, edite cadastros, altere situações e cadastre
+              novos — individualmente ou por arquivo.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2">
             <Button onClick={() => onIrClientes("situacao")}>
               <ListChecks className="h-4 w-4" />
-              Base de clientes
+              Base de tomadores
             </Button>
             <Button variant="outline" onClick={() => onIrClientes("individual")}>
               <UserPlus className="h-4 w-4" />

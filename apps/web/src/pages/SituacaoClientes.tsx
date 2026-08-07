@@ -9,6 +9,7 @@ import {
   FileSearch,
   ListChecks,
   Loader2,
+  Pencil,
   RefreshCw,
   Search,
   Upload,
@@ -81,10 +82,13 @@ const MAX_LINHAS_VISIVEIS = 200;
 export function SituacaoClientes({
   ativa = true,
   onNavegar,
+  onEditar,
 }: {
   ativa?: boolean;
   /** Navega para as sub-páginas do módulo (cadastro individual/em lote). */
   onNavegar?: (tela: "individual" | "cadastro") => void;
+  /** Abre o Cadastro Individual pré-preenchido para EDITAR este tomador. */
+  onEditar?: (cliente: ClienteResumo) => void;
 }) {
   const [tipoPessoa, setTipoPessoa] = useState("");
   const [filtro, setFiltro] = useState("");
@@ -328,11 +332,12 @@ export function SituacaoClientes({
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <Breadcrumb paginaPrincipal="Clientes" atual="Base de clientes" />
-          <h1 className="text-display text-foreground">Base de clientes</h1>
+          <Breadcrumb paginaPrincipal="Tomadores" atual="Base de tomadores" />
+          <h1 className="text-display text-foreground">Base de tomadores</h1>
           <p className="mt-1 text-body text-muted-foreground">
-            A base carrega automaticamente. Em cada cliente: consulte as propostas
-            criadas ou altere a situação — e cadastre novos tomadores pelos botões ao lado.
+            A base carrega automaticamente. Em cada tomador: consulte as propostas,
+            edite ou complete o cadastro, altere a situação — e cadastre novos pelos
+            botões ao lado.
           </p>
         </div>
         {onNavegar && (
@@ -355,7 +360,7 @@ export function SituacaoClientes({
           <span>
             A sessão expira em <strong>{formatarRestante(restanteSessao)}</strong> e não há
             renovação automática. Uma alteração em lote iniciada agora pode ser interrompida — os
-            clientes restantes ficariam como <strong>NÃO ENVIADO</strong>. Saia e entre novamente
+            tomadores restantes ficariam como <strong>NÃO ENVIADO</strong>. Saia e entre novamente
             antes de executar.
           </span>
         </div>
@@ -491,12 +496,12 @@ export function SituacaoClientes({
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle>Clientes</CardTitle>
+              <CardTitle>Tomadores</CardTitle>
               <CardDescription>
                 {base ? (
                   <span className="tabular-nums">
                     <span className="font-medium text-foreground">{base.items.length}</span>{" "}
-                    cliente(s) carregado(s)
+                    tomador(es) carregado(s)
                     {base.totalElements !== null && base.totalElements !== base.items.length
                       ? ` — a Sinqia informa ${base.totalElements} no total`
                       : ""}{" "}
@@ -559,8 +564,8 @@ export function SituacaoClientes({
                 disabled={!podeAlterar}
                 title={
                   totalSelecionados === 0
-                    ? "Selecione clientes na tabela para habilitar"
-                    : "Altera a situação dos clientes selecionados"
+                    ? "Selecione tomadores na tabela para habilitar"
+                    : "Altera a situação dos tomadores selecionados"
                 }
               >
                 {phase === "alterando" ? (
@@ -585,7 +590,7 @@ export function SituacaoClientes({
         </CardHeader>
         {!base ? (
           <CardContent>
-            <div className="space-y-2 py-2" role="status" aria-label="Carregando a base de clientes">
+            <div className="space-y-2 py-2" role="status" aria-label="Carregando a base de tomadores">
               <Skeleton className="h-9 w-full" />
               {Array.from({ length: 8 }, (_, i) => (
                 <Skeleton key={i} className="h-8 w-full" />
@@ -595,7 +600,7 @@ export function SituacaoClientes({
         ) : (
           <CardContent className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="sit-filtro">Filtrar por número do cliente, nome ou CPF/CNPJ</Label>
+              <Label htmlFor="sit-filtro">Filtrar por número do tomador, nome ou CPF/CNPJ</Label>
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -607,7 +612,7 @@ export function SituacaoClientes({
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                {filtrados.length} resultado(s). O número do cliente casa exato; nome e documento
+                {filtrados.length} resultado(s). O número do tomador casa exato; nome e documento
                 casam por parte do texto (CPF/CNPJ pode ser digitado com ou sem máscara).
               </p>
             </div>
@@ -634,7 +639,7 @@ export function SituacaoClientes({
 
             {filtrados.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                Nenhum cliente encontrado para este filtro.
+                Nenhum tomador encontrado para este filtro.
               </p>
             ) : (
               <>
@@ -726,11 +731,24 @@ export function SituacaoClientes({
                                   className="h-7 px-2 text-caption"
                                   onClick={() => void abrirPropostas(c)}
                                   disabled={busy}
-                                  title="Consultar as propostas deste cliente na Sinqia"
+                                  title="Consultar as propostas deste tomador na Sinqia"
                                 >
                                   <FileSearch className="h-3.5 w-3.5" />
                                   Propostas
                                 </Button>
+                                {onEditar && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 px-2 text-caption"
+                                    onClick={() => onEditar(c)}
+                                    disabled={busy || !c.documento}
+                                    title="Editar o cadastro — completa os campos faltantes (ação AL)"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                    Editar
+                                  </Button>
+                                )}
                               </div>
                             </TableCell>
                           </TableRow>
@@ -764,7 +782,7 @@ export function SituacaoClientes({
           <DialogHeader>
             <DialogTitle className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}>
               <ListChecks className="h-5 w-5" />
-              Alterar situação de {totalSelecionados} cliente(s)
+              Alterar situação de {totalSelecionados} tomador(es)
             </DialogTitle>
             <DialogDescription>
               Em <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong> — a alteração é real e
@@ -850,7 +868,7 @@ export function SituacaoClientes({
               onClick={() => void executarAlteracao()}
               disabled={!podeAlterar || !confirmacaoAlterarOk}
             >
-              Alterar {totalSelecionados} cliente(s) para {situacaoLabel(cdSituacao)}
+              Alterar {totalSelecionados} tomador(es) para {situacaoLabel(cdSituacao)}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -900,7 +918,7 @@ export function SituacaoClientes({
             </div>
           ) : propostas.length === 0 ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
-              Este cliente ainda não tem nenhuma proposta na Sinqia.
+              Este tomador ainda não tem nenhuma proposta na Sinqia.
             </p>
           ) : (
             <Table>

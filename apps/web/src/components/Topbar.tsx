@@ -73,7 +73,7 @@ export type Modulo = "inicio" | "clientes" | "propostas";
 
 const MODULOS: Array<{ id: Modulo; label: string }> = [
   { id: "inicio", label: "Início" },
-  { id: "clientes", label: "Clientes" },
+  { id: "clientes", label: "Tomadores" },
   { id: "propostas", label: "Propostas" },
 ];
 

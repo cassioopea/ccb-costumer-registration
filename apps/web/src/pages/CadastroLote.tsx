@@ -317,11 +317,11 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
       <div className="space-y-4">
         <div>
           <Breadcrumb
-            paginaPrincipal="Base de clientes"
+            paginaPrincipal="Base de tomadores"
             onVoltar={onVoltar}
             atual="Cadastro em lote"
           />
-          <h1 className="text-display text-foreground">Cadastro em lote de clientes</h1>
+          <h1 className="text-display text-foreground">Cadastro em lote de tomadores</h1>
           <p className="mt-1 text-body text-muted-foreground">
             Importe tomadores de CCB para a API Sinqia (BJ21M05). Requer VPN da Opea ativa.
           </p>

@@ -304,7 +304,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
 
   const itensResumo: ItemResumo[] = [
     {
-      rotulo: "Cliente",
+      rotulo: "Tomador",
       valor: cliente?.encontrado ? (
         <span className="inline-block max-w-48 truncate align-bottom" title={cliente.nome}>
           {cliente.nome || formatCpf(cpfDigits)}
@@ -422,7 +422,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
         {/* Cliente */}
         <Card className="lg:col-span-1">
           <CardHeader>
-            <CardTitle>Cliente</CardTitle>
+            <CardTitle>Tomador</CardTitle>
             <CardDescription>
               A busca por CPF é somente leitura e traz o nrClient do ambiente ativo.
             </CardDescription>
@@ -463,8 +463,8 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
               <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-caption text-destructive">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
-                  CPF não cadastrado neste ambiente — cadastre o cliente antes (módulo
-                  Clientes).
+                  CPF não cadastrado neste ambiente — cadastre o tomador antes (módulo
+                  Tomadores).
                 </span>
               </div>
             )}

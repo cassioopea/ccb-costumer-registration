@@ -40,6 +40,20 @@ const ROTULOS: Record<string, string> = {
   cdGrupo: "Grupo (código)",
 };
 
+/**
+ * Campos que a TABELA já mostra (nº, nome, documento, tipo, situação) — a
+ * ficha expandida só traz o que é NOVO; repetir a linha é ruído.
+ */
+const JA_NA_TABELA = new Set([
+  "nrCliente",
+  "nmCliente",
+  "dsNome",
+  "nrCpfCnpj",
+  "tpPessoa",
+  "cdSituacao",
+  "dsSituacao",
+]);
+
 /** camelCase → "Camel case" para campos fora do mapa. */
 function rotuloDe(chave: string): string {
   if (ROTULOS[chave]) return ROTULOS[chave];
@@ -52,7 +66,7 @@ function formatarValor(chave: string, valor: unknown): string {
   if (chave === "tpPessoa") return s === "F" ? "Física (F)" : s === "J" ? "Jurídica (J)" : s;
   if (chave === "cdSituacao") {
     const n = Number(s);
-    return Number.isFinite(n) ? `${n} — ${situacaoLabel(n)}` : s;
+    return Number.isFinite(n) ? situacaoLabel(n) : s;
   }
   if (chave === "nrCpfCnpj") {
     const d = s.replace(/\D/g, "");
@@ -85,9 +99,10 @@ export function FichaCliente({ raw }: { raw: unknown }) {
     );
   }
 
-  // Só campos simples e preenchidos; conhecidos primeiro, na ordem do mapa.
+  // Só campos simples, preenchidos e que a tabela NÃO mostra; conhecidos primeiro.
   const simples = Object.entries(obj).filter(
-    ([, v]) =>
+    ([k, v]) =>
+      !JA_NA_TABELA.has(k) &&
       (typeof v === "string" || typeof v === "number" || typeof v === "boolean") &&
       String(v).trim() !== "",
   );
@@ -103,6 +118,11 @@ export function FichaCliente({ raw }: { raw: unknown }) {
 
   return (
     <div className="space-y-3 py-1">
+      {simples.length === 0 && (
+        <p className="text-caption text-muted-foreground">
+          Nenhum dado além dos exibidos na tabela.
+        </p>
+      )}
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 md:grid-cols-3 lg:grid-cols-4">
         {simples.map(([chave, valor]) => (
           <div key={chave} className="min-w-0">
