@@ -69,9 +69,10 @@ function SessionChip() {
 }
 
 /** Módulos da esteira — a topbar navega entre eles (estilo AppShell do backoffice). */
-export type Modulo = "clientes" | "propostas";
+export type Modulo = "inicio" | "clientes" | "propostas";
 
 const MODULOS: Array<{ id: Modulo; label: string }> = [
+  { id: "inicio", label: "Início" },
   { id: "clientes", label: "Clientes" },
   { id: "propostas", label: "Propostas" },
 ];

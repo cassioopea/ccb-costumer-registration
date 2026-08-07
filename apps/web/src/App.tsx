@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Topbar, type Modulo } from "@/components/Topbar";
 import { SessionExpiredDialog } from "@/components/SessionExpiredDialog";
+import { Inicio } from "@/pages/Inicio";
 import { CadastroIndividual } from "@/pages/CadastroIndividual";
 import { CadastroLote } from "@/pages/CadastroLote";
 import { SituacaoClientes } from "@/pages/SituacaoClientes";
@@ -32,9 +33,12 @@ export default function App() {
 
 function Shell() {
   const { session, carregando } = useSession();
-  const [modulo, setModulo] = useState<Modulo>("clientes");
+  // Início é a homepage: o operador lê a saúde da esteira e parte para os módulos.
+  const [modulo, setModulo] = useState<Modulo>("inicio");
   const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
   const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("painel-propostas");
+  /** Fila pedida pelo Início (gargalo clicado) — o painel consome e limpa. */
+  const [filaExterna, setFilaExterna] = useState<number | null>(null);
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -54,6 +58,24 @@ function Shell() {
       <main className="mx-auto w-full max-w-shell flex-1 px-8 py-10">
         {/* Mantém todas montadas: navegar não perde arquivo selecionado,
             base carregada, seleção nem lote em andamento. */}
+        <div className={modulo === "inicio" ? undefined : "hidden"}>
+          <Inicio
+            ativa={modulo === "inicio"}
+            onIrClientes={(tela) => {
+              setTelaClientes(tela);
+              setModulo("clientes");
+            }}
+            onIrPropostas={(tela) => {
+              setTelaPropostas(tela);
+              setModulo("propostas");
+            }}
+            onAbrirFila={(nrStatus) => {
+              setFilaExterna(nrStatus);
+              setTelaPropostas("painel-propostas");
+              setModulo("propostas");
+            }}
+          />
+        </div>
         <div className={modulo === "clientes" && telaClientes === "situacao" ? undefined : "hidden"}>
           <SituacaoClientes
             ativa={modulo === "clientes" && telaClientes === "situacao"}
@@ -74,6 +96,8 @@ function Shell() {
           <PainelPropostas
             ativa={modulo === "propostas" && telaPropostas === "painel-propostas"}
             onNavegar={setTelaPropostas}
+            filaExterna={filaExterna}
+            onFilaExternaConsumida={() => setFilaExterna(null)}
           />
         </div>
         <div

@@ -45,13 +45,6 @@ import {
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
 import { Breadcrumb } from "@/components/Breadcrumb";
-import { StatDestaque } from "@/components/StatDestaque";
-import {
-  CATEGORIAS,
-  ORDEM_CATEGORIAS,
-  categoriaDaEtapa,
-  contagemPorCategoria,
-} from "@/lib/esteira";
 import { cn } from "@/lib/utils";
 import {
   getFilasPropostas,
@@ -99,88 +92,6 @@ function variantDoStatus(ds: string): "success" | "warning" | "destructive" | "s
   return "secondary";
 }
 
-/**
- * Donut das categorias em SVG puro (sem biblioteca): um anel por categoria com
- * a cor de estado, total no centro, legenda com contagem e definição no title.
- */
-function DonutCategorias({
-  porCategoria,
-}: {
-  porCategoria: Record<import("@/lib/esteira").CategoriaEtapa, number>;
-}) {
-  const total = ORDEM_CATEGORIAS.reduce((acc, c) => acc + porCategoria[c], 0);
-  const R = 54;
-  const C = 2 * Math.PI * R;
-  let acumulado = 0;
-
-  return (
-    <div className="flex flex-wrap items-center gap-6">
-      <svg
-        width="150"
-        height="150"
-        viewBox="0 0 150 150"
-        role="img"
-        aria-label={`Distribuição de ${total} propostas por categoria`}
-        className="shrink-0"
-      >
-        <circle cx="75" cy="75" r={R} fill="none" stroke="var(--border)" strokeWidth="16" />
-        <g transform="rotate(-90 75 75)">
-          {ORDEM_CATEGORIAS.filter((c) => porCategoria[c] > 0).map((c) => {
-            const fracao = total > 0 ? porCategoria[c] / total : 0;
-            const seg = (
-              <circle
-                key={c}
-                cx="75"
-                cy="75"
-                r={R}
-                fill="none"
-                stroke={CATEGORIAS[c].cor}
-                strokeWidth="16"
-                strokeDasharray={`${fracao * C} ${C}`}
-                strokeDashoffset={-acumulado * C}
-              />
-            );
-            acumulado += fracao;
-            return seg;
-          })}
-        </g>
-        <text
-          x="75"
-          y="72"
-          textAnchor="middle"
-          className="fill-[var(--foreground)] font-display text-title tabular-nums"
-        >
-          {total}
-        </text>
-        <text x="75" y="92" textAnchor="middle" className="fill-[var(--muted-foreground)] text-caption">
-          propostas
-        </text>
-      </svg>
-
-      <ul className="min-w-44 flex-1 space-y-1.5">
-        {ORDEM_CATEGORIAS.map((c) => (
-          <li
-            key={c}
-            title={CATEGORIAS[c].definicao}
-            className="flex items-center gap-2 text-body"
-          >
-            <span
-              aria-hidden
-              className="h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: CATEGORIAS[c].cor }}
-            />
-            <span className="flex-1 truncate">{CATEGORIAS[c].label}</span>
-            <span className="font-medium tabular-nums">{porCategoria[c]}</span>
-            <span className="w-11 text-right text-caption text-muted-foreground tabular-nums">
-              {total > 0 ? `${Math.round((porCategoria[c] / total) * 100)}%` : "—"}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** Dias corridos desde a entrada no status atual (dtEntrad AAAAMMDD). */
 function diasNaEtapa(dtEntrad: number | null): number | null {
   if (!dtEntrad) return null;
@@ -197,10 +108,15 @@ const SLA_DIAS_ATENCAO = 2;
 export function PainelPropostas({
   ativa,
   onNavegar,
+  filaExterna = null,
+  onFilaExternaConsumida,
 }: {
   ativa: boolean;
   /** Navega para as sub-páginas do módulo (lote/proposta individual). */
   onNavegar?: (tela: "lote-propostas" | "proposta-individual") => void;
+  /** Fila pedida de fora (gargalo clicado no Início) — selecionada ao chegar. */
+  filaExterna?: number | null;
+  onFilaExternaConsumida?: () => void;
 }) {
   const [filas, setFilas] = useState<FilaWf[] | null>(null);
   const [carregandoFilas, setCarregandoFilas] = useState(false);
@@ -240,9 +156,12 @@ export function PainelPropostas({
   useEffect(() => {
     if (!ativa || jaAtivou.current) return;
     jaAtivou.current = true;
-    // Carrega as etapas e já abre a primeira com propostas dentro.
+    // Carrega as etapas e abre a fila pedida pelo Início — ou a primeira com propostas.
     void carregarFilas().then((lista) => {
-      const primeira = lista?.find((f) => f.qtFilhos > 0) ?? lista?.[0];
+      const pedida =
+        filaExterna !== null ? lista?.find((f) => f.nrStatus === filaExterna) : undefined;
+      const primeira = pedida ?? lista?.find((f) => f.qtFilhos > 0) ?? lista?.[0];
+      if (filaExterna !== null) onFilaExternaConsumida?.();
       if (primeira) {
         setFilaSelecionada(primeira.nrStatus);
         void buscar(primeira.nrStatus);
@@ -250,6 +169,15 @@ export function PainelPropostas({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- só na 1ª ativação
   }, [ativa]);
+
+  /** Painel já ativo e o Início pediu outra fila: troca na hora. */
+  useEffect(() => {
+    if (filaExterna === null || !jaAtivou.current) return;
+    setFilaSelecionada(filaExterna);
+    void buscar(filaExterna);
+    onFilaExternaConsumida?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reage só ao pedido externo
+  }, [filaExterna]);
 
   async function carregarFilas(): Promise<FilaWf[] | null> {
     if (carregandoFilas) return filas;
@@ -372,21 +300,6 @@ export function PainelPropostas({
     [filtros],
   );
 
-  /* --- Visão geral: contagens por categoria semântica + gargalos --- */
-  const porCategoria = useMemo(() => contagemPorCategoria(filas ?? []), [filas]);
-  const ativasNoFluxo =
-    porCategoria.andamento + porCategoria.aguardando + porCategoria.atencao;
-  /** Etapas com propostas paradas, maiores primeiro — "onde está travando". */
-  const gargalos = useMemo(
-    () =>
-      (filas ?? [])
-        .filter((f) => f.qtFilhos > 0)
-        .sort((a, b) => b.qtFilhos - a.qtFilhos)
-        .slice(0, 8),
-    [filas],
-  );
-  const maxGargalo = gargalos[0]?.qtFilhos ?? 0;
-
   /** Abre o dialog de transferência e busca os destinos permitidos. */
   async function abrirMover(p: PropostaPainel) {
     if (p.nrStatus === null || p.nrWf === null) return;
@@ -495,99 +408,6 @@ export function PainelPropostas({
             <XCircle className="h-4 w-4" />
           </button>
         </div>
-      )}
-
-      {/* Visão geral — saúde da esteira em categorias semânticas */}
-      {filas && filas.length > 0 && (
-        <Card className="reveal">
-          <CardHeader>
-            <div className="text-caption font-medium uppercase tracking-label text-wine-500">
-              Visão geral
-            </div>
-            <CardTitle>Saúde da esteira</CardTitle>
-            <CardDescription>
-              Contagens ao vivo do workflow — atualizam junto com a esteira abaixo.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-8">
-            <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
-              <StatDestaque
-                className="reveal reveal-delay-1"
-                categoria="Ativas no fluxo"
-                valor={ativasNoFluxo}
-                rodape="em andamento, aguardando ou em atenção"
-              />
-              <StatDestaque
-                className="reveal reveal-delay-2"
-                categoria="Aguardando ação"
-                valor={porCategoria.aguardando}
-                acento
-                rodape="formalização, assinatura e desembolso"
-              />
-              <StatDestaque
-                className="reveal reveal-delay-3"
-                categoria="Requer atenção"
-                valor={porCategoria.atencao}
-                rodape="risco apontado ou documentos pendentes"
-              />
-              <StatDestaque
-                className="reveal reveal-delay-4"
-                categoria="Concluídas"
-                valor={porCategoria.concluida}
-                rodape={`${porCategoria.cancelada} cancelada(s) · ${porCategoria.negada} negada(s)`}
-              />
-            </div>
-
-            <div className="grid items-start gap-8 lg:grid-cols-2">
-              {/* Donut por categoria — cores fixas de estado */}
-              <div className="reveal reveal-delay-2">
-                <h3 className="text-subheading text-foreground">Propostas por categoria</h3>
-                <p className="mb-4 text-caption text-muted-foreground">
-                  Distribuição de tudo que está no workflow.
-                </p>
-                <DonutCategorias porCategoria={porCategoria} />
-              </div>
-
-              {/* Gargalos — onde as propostas estão paradas */}
-              <div className="reveal reveal-delay-3">
-                <h3 className="text-subheading text-foreground">Onde está travando</h3>
-                <p className="mb-4 text-caption text-muted-foreground">
-                  Propostas paradas por etapa, maiores primeiro — clique para abrir a fila.
-                </p>
-                <div className="space-y-2">
-                  {gargalos.map((f) => {
-                    const cat = CATEGORIAS[categoriaDaEtapa(f.nrStatus, f.dsStatus)];
-                    return (
-                      <button
-                        key={f.nrStatus}
-                        type="button"
-                        onClick={() => selecionarFila(f.nrStatus)}
-                        title={`${f.dsStatus} — ${cat.label}. Clique para ver a fila.`}
-                        className="focus-ring group flex w-full items-center gap-3 rounded-md px-1 py-0.5 text-left"
-                      >
-                        <span className="w-44 shrink-0 truncate text-caption text-muted-foreground group-hover:text-foreground">
-                          {nomeEtapa(f.dsStatus)}
-                        </span>
-                        <span className="h-4 flex-1 overflow-hidden rounded-sm bg-muted">
-                          <span
-                            className="block h-full rounded-sm transition-all duration-200"
-                            style={{
-                              width: `${maxGargalo > 0 ? Math.max(4, (f.qtFilhos / maxGargalo) * 100) : 0}%`,
-                              backgroundColor: cat.cor,
-                            }}
-                          />
-                        </span>
-                        <span className="w-10 shrink-0 text-right text-body font-medium tabular-nums">
-                          {f.qtFilhos}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
       )}
 
       {/* Etapas da esteira — o fluxo inteiro, com contagem por etapa */}
