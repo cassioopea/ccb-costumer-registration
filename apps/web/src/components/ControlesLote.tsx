@@ -2,7 +2,7 @@ import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import { cn } from "@/lib/utils";
 import type { BatchControlInput, BatchControlPayload, IdAcao } from "@/lib/api";
 
@@ -71,21 +71,22 @@ export function ControlesLote({ control, setControl, onChange, escopo = "todas a
         <Label htmlFor="ctl-idAcao" className="text-xs">
           Ação (<code>idAcao</code>)
         </Label>
-        <Select
+        <Combobox
           id="ctl-idAcao"
           value={control.idAcao}
-          onChange={(e) => alterar({ idAcao: e.target.value as IdAcao | "" })}
-          className={cn(
+          onChange={(v) => alterar({ idAcao: v as IdAcao | "" })}
+          triggerClassName={cn(
             control.idAcao === "EX" &&
               "border-[var(--destructive)] font-medium text-[var(--destructive)]",
           )}
-        >
-          <option value="">Não enviar (padrão — inclusão)</option>
-          <option value="IN">IN — Incluir (cadastro novo)</option>
-          <option value="AL">AL — Alterar (atualizar cadastro existente)</option>
-          <option value="EX">EX — Excluir (remover cadastro)</option>
-          <option value="CO">CO — Consultar (somente leitura)</option>
-        </Select>
+          options={[
+            { value: "", label: "Não enviar (padrão — inclusão)" },
+            { value: "IN", label: "IN — Incluir (cadastro novo)" },
+            { value: "AL", label: "AL — Alterar (atualizar cadastro existente)" },
+            { value: "EX", label: "EX — Excluir (remover cadastro)" },
+            { value: "CO", label: "CO — Consultar (somente leitura)" },
+          ]}
+        />
         <p className="text-xs text-[var(--muted-foreground)]">
           {control.idAcao === "" ? (
             <>Nada é injetado — a Sinqia assume inclusão.</>
@@ -112,14 +113,15 @@ export function ControlesLote({ control, setControl, onChange, escopo = "todas a
           <Label htmlFor="ctl-idInt" className="text-xs">
             idIntegracaoCadastro
           </Label>
-          <Select
+          <Combobox
             id="ctl-idInt"
             value={control.idIntegracaoCadastro}
-            onChange={(e) => alterar({ idIntegracaoCadastro: e.target.value as "S" | "N" })}
-          >
-            <option value="S">S — integrar com o módulo de cadastro (padrão)</option>
-            <option value="N">N — não integrar</option>
-          </Select>
+            onChange={(v) => alterar({ idIntegracaoCadastro: v as "S" | "N" })}
+            options={[
+              { value: "S", label: "S — integrar com o módulo de cadastro (padrão)" },
+              { value: "N", label: "N — não integrar" },
+            ]}
+          />
         </div>
         <div className="space-y-1">
           <Label htmlFor="ctl-idRet" className="text-xs">

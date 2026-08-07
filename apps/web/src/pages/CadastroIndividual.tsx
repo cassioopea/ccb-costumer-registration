@@ -35,7 +35,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -644,23 +644,20 @@ function CampoInput({
       </Label>
 
       {campo.tipo === "select" ? (
-        <Select
+        <Combobox
           id={id}
           value={valor}
           disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          className={cn(
+          onChange={onChange}
+          triggerClassName={cn(
             temErro && "border-[var(--destructive)]",
             !temErro && faltando && "border-[var(--warning)]",
           )}
-        >
-          <option value="">— não enviar —</option>
-          {campo.opcoes?.map((o) => (
-            <option key={o.valor} value={o.valor}>
-              {o.label}
-            </option>
-          ))}
-        </Select>
+          options={[
+            { value: "", label: "— não enviar —" },
+            ...(campo.opcoes ?? []).map((o) => ({ value: o.valor, label: o.label })),
+          ]}
+        />
       ) : (
         <Input
           id={id}

@@ -108,9 +108,11 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
 
 ## Componentes canônicos (replicar, não reinventar)
 
-- `ui/` — button, input, select (nativo, de propósito), table (com `scroll` para
-  grades longas + thead aderente), badge (variantes semânticas incl. `warning`),
-  card, dialog, progress, skeleton.
+- `ui/` — button, input, **combobox** (o select da casa: o `<select>` nativo
+  renderiza o painel de opções no estilo do sistema operacional e está fora do
+  DS — todo dropdown usa o Combobox, que ganha pesquisa embutida acima de 8
+  opções), table (com `scroll` para grades longas + thead aderente), badge
+  (variantes semânticas incl. `warning`), card, dialog, progress, skeleton.
 - `RateInput` — taxa com sufixo (% a.m.), alinhada à direita, tabular-nums.
 - `PipelineSteps` — indicador passivo de etapas do fluxo (não é wizard).
 - `StatDestaque` — número institucional (anatomia do "Nossos números" Opea):

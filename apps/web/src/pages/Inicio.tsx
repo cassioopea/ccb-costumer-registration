@@ -18,7 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import { VisaoGeralEsteira } from "@/components/VisaoGeralEsteira";
 import { ValorOriginado } from "@/components/ValorOriginado";
 import { VelocidadeEsteira } from "@/components/VelocidadeEsteira";
@@ -118,20 +118,21 @@ export function Inicio({
         {/* Filtro GLOBAL: governa todos os blocos do dashboard */}
         <div className="flex shrink-0 items-center gap-2">
           {convenios.length > 0 && (
-            <Select
+            <Combobox
               aria-label="Filtrar o dashboard por convênio"
               value={convenio}
-              onChange={(e) => trocarConvenio(e.target.value)}
+              onChange={trocarConvenio}
               disabled={carregando}
-              className="w-56"
-            >
-              <option value="">Todos os convênios</option>
-              {convenios.map((c) => (
-                <option key={c.codigo} value={String(c.codigo)}>
-                  {c.codigo} — {c.descricao}
-                </option>
-              ))}
-            </Select>
+              pesquisavel
+              className="w-64"
+              options={[
+                { value: "", label: "Todos os convênios" },
+                ...convenios.map((c) => ({
+                  value: String(c.codigo),
+                  label: `${c.codigo} — ${c.descricao}`,
+                })),
+              ]}
+            />
           )}
           <Button
             variant="ghost"

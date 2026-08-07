@@ -3,7 +3,7 @@ import { AlertTriangle } from "lucide-react";
 import { CARACTERISTICAS_PROPOSTA } from "@cadastro-lote/shared";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import { RateInput } from "@/components/ui/rate-input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -205,31 +205,27 @@ export function ParamSelect({
   const atualNaLista =
     options.some((o) => String(o.codigo) === atual) || (permitirVazio && atual === "");
 
+  const opcoes = [
+    ...(permitirVazio ? [{ value: "", label: rotuloVazio }] : []),
+    ...(!atualNaLista ? [{ value: atual, label: `${atual} — (valor atual, fora da lista)` }] : []),
+    ...options.map((o) => ({ value: String(o.codigo), label: `${o.codigo} — ${o.descricao}` })),
+  ];
+
   return (
     <div className="space-y-1">
       <Label htmlFor={`param-${campo}`} className="text-caption">
         {label}
       </Label>
-      <Select
+      <Combobox
         id={`param-${campo}`}
         value={atual}
-        onChange={(e) => {
-          const novo = e.target.value;
+        onChange={(novo) => {
           setParams((p) => ({ ...p, [campo]: novo }));
           onChangeValue?.(novo);
         }}
-        className={cn("tabular-nums", aviso && "border-warning")}
-      >
-        {permitirVazio && <option value="">{rotuloVazio}</option>}
-        {!atualNaLista && (
-          <option value={atual}>{atual} — (valor atual, fora da lista)</option>
-        )}
-        {options.map((o) => (
-          <option key={o.codigo} value={String(o.codigo)}>
-            {o.codigo} — {o.descricao}
-          </option>
-        ))}
-      </Select>
+        options={opcoes}
+        triggerClassName={cn(aviso && "border-warning")}
+      />
       {permitirManual && (
         <button
           type="button"

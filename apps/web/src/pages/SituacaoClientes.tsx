@@ -31,7 +31,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -796,17 +796,15 @@ export function SituacaoClientes({
               <Label htmlFor="sit-nova" className="text-caption">
                 Nova situação
               </Label>
-              <Select
+              <Combobox
                 id="sit-nova"
                 value={String(cdSituacao)}
-                onChange={(e) => setCdSituacao(Number(e.target.value))}
-              >
-                {SITUACOES.map((s) => (
-                  <option key={s.codigo} value={s.codigo}>
-                    {s.codigo} — {s.label}
-                  </option>
-                ))}
-              </Select>
+                onChange={(v) => setCdSituacao(Number(v))}
+                options={SITUACOES.map((s) => ({
+                  value: String(s.codigo),
+                  label: `${s.codigo} — ${s.label}`,
+                }))}
+              />
             </div>
 
             <div className="max-h-48 overflow-y-auto rounded-lg border border-border p-2">
