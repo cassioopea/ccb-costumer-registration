@@ -537,7 +537,7 @@ export function SituacaoClientes({
       )}
 
       {/* Lista + filtro — o card é o hub da página */}
-      <Card className="reveal reveal-delay-1">
+      <Card className="reveal reveal-delay-1" data-tour="tomadores-tabela">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

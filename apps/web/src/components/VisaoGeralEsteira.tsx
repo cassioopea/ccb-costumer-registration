@@ -60,7 +60,7 @@ export function VisaoGeralEsteira({
   const slaHoras = dados?.slaHoras ?? 72;
 
   return (
-    <Card className="reveal">
+    <Card className="reveal" data-tour="inicio-saude">
       <CardHeader>
         <div className="text-caption font-medium uppercase tracking-label text-wine-500">
           Fluxo

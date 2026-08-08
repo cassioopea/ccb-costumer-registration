@@ -1,4 +1,4 @@
-import { Clock, LogOut, UserRound } from "lucide-react";
+import { Clock, Compass, LogOut, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpeaLogo } from "./OpeaLogo";
 import { formatarRestante, useRestante, useSession } from "@/lib/session";
@@ -33,7 +33,7 @@ function EnvironmentChip() {
  * expiração do token. Quando o token é opaco a Sinqia não informa a validade
  * dele — o tooltip diz isso em vez de fingir precisão.
  */
-function SessionChip() {
+function SessionChip({ onRefazerTour }: { onRefazerTour?: () => void }) {
   const { session, sair } = useSession();
   const restante = useRestante(session);
   if (!session) return null;
@@ -56,6 +56,17 @@ function SessionChip() {
         <Clock className="size-3.5" />
         {formatarRestante(restante)}
       </span>
+      {onRefazerTour && (
+        <button
+          type="button"
+          onClick={onRefazerTour}
+          title="Refazer o tour guiado"
+          className="focus-ring flex items-center gap-1.5 rounded-md border border-sidebar-foreground/20 px-2.5 py-1 text-caption text-sidebar-foreground/85 transition-colors duration-150 hover:bg-sidebar-foreground/10"
+        >
+          <Compass className="size-3.5" />
+          <span className="hidden lg:inline">Tour</span>
+        </button>
+      )}
       <button
         type="button"
         onClick={() => void sair()}
@@ -80,9 +91,11 @@ const MODULOS: Array<{ id: Modulo; label: string }> = [
 interface TopbarProps {
   modulo: Modulo;
   onModuloChange: (m: Modulo) => void;
+  /** Reabre o tour guiado (menu de perfil). */
+  onRefazerTour?: () => void;
 }
 
-export function Topbar({ modulo, onModuloChange }: TopbarProps) {
+export function Topbar({ modulo, onModuloChange, onRefazerTour }: TopbarProps) {
   return (
     <header className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground shadow-elevated">
       {/* Faixa contextual */}
@@ -140,7 +153,7 @@ export function Topbar({ modulo, onModuloChange }: TopbarProps) {
         </nav>
 
         <div className="ml-auto">
-          <SessionChip />
+          <SessionChip onRefazerTour={onRefazerTour} />
         </div>
       </div>
     </header>

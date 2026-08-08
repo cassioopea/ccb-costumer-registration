@@ -471,6 +471,36 @@ export interface LookupsResponse {
   avisos: string[];
 }
 
+/* --- Onboarding (estado por usuário, na base local) --- */
+
+export interface OnboardingEstado {
+  env?: string;
+  /** false = primeiro acesso (sem registro ainda). */
+  existe: boolean;
+  tourConcluido: boolean;
+  checklistItens: Record<string, boolean>;
+  hintsDispensados: string[];
+}
+
+export async function getOnboarding(): Promise<OnboardingEstado> {
+  const res = await fetch("/api/onboarding");
+  return lerResposta(res, "Falha ao consultar o onboarding");
+}
+
+/** Merge parcial: só os campos enviados são tocados. */
+export async function salvarOnboarding(patch: {
+  tourConcluido?: boolean;
+  checklistItens?: Record<string, boolean>;
+  hintsDispensados?: string[];
+}): Promise<OnboardingEstado> {
+  const res = await fetch("/api/onboarding", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return lerResposta(res, "Falha ao salvar o onboarding");
+}
+
 /* --- Painel de propostas (somente leitura) --- */
 
 export interface PropostaPainel {

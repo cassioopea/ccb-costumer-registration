@@ -65,6 +65,19 @@ db.exec(`
     atualizado_em TEXT    NOT NULL,
     PRIMARY KEY (ambiente, documento)
   );
+
+  -- Onboarding POR USUÁRIO: se já viu/concluiu o tour, itens do checklist
+  -- marcados e hints dispensados. Estado na base (não no browser) para valer
+  -- entre navegadores; cross-machine de verdade chega com o Postgres central.
+  CREATE TABLE IF NOT EXISTS onboarding_estado (
+    ambiente          TEXT NOT NULL,
+    usuario           TEXT NOT NULL,
+    tour_concluido    INTEGER NOT NULL DEFAULT 0,
+    checklist_itens   TEXT NOT NULL DEFAULT '{}',
+    hints_dispensados TEXT NOT NULL DEFAULT '[]',
+    atualizado_em     TEXT NOT NULL,
+    PRIMARY KEY (ambiente, usuario)
+  );
 `);
 
 export interface PropostaCriadaRegistro {
@@ -176,6 +189,79 @@ export function ajustePersonasTomadores(): { pjTomadoras: number; pfNaoTomadoras
     )
     .get(env.SINQIA_ENV) as { pj: number; pf: number } | undefined;
   return { pjTomadoras: linha?.pj ?? 0, pfNaoTomadoras: linha?.pf ?? 0 };
+}
+
+export interface OnboardingEstado {
+  /** true = usuário já tem registro (não é mais primeiro acesso). */
+  existe: boolean;
+  tourConcluido: boolean;
+  checklistItens: Record<string, boolean>;
+  hintsDispensados: string[];
+}
+
+/** Estado de onboarding do usuário no ambiente ativo. */
+export function getOnboarding(usuario: string): OnboardingEstado {
+  const linha = db
+    .prepare(
+      `SELECT tour_concluido, checklist_itens, hints_dispensados
+         FROM onboarding_estado WHERE ambiente = ? AND usuario = ?`,
+    )
+    .get(env.SINQIA_ENV, usuario) as
+    | { tour_concluido: number; checklist_itens: string; hints_dispensados: string }
+    | undefined;
+
+  if (!linha) {
+    return { existe: false, tourConcluido: false, checklistItens: {}, hintsDispensados: [] };
+  }
+  const parse = <T>(s: string, fallback: T): T => {
+    try {
+      return JSON.parse(s) as T;
+    } catch {
+      return fallback;
+    }
+  };
+  return {
+    existe: true,
+    tourConcluido: linha.tour_concluido === 1,
+    checklistItens: parse(linha.checklist_itens, {}),
+    hintsDispensados: parse(linha.hints_dispensados, []),
+  };
+}
+
+/**
+ * Salva (merge) o estado de onboarding. Só os campos presentes no patch são
+ * tocados; o restante é preservado. Marcar checklist/hints é incremental.
+ */
+export function salvarOnboarding(
+  usuario: string,
+  patch: {
+    tourConcluido?: boolean;
+    checklistItens?: Record<string, boolean>;
+    hintsDispensados?: string[];
+  },
+): OnboardingEstado {
+  const atual = getOnboarding(usuario);
+  const proximo: OnboardingEstado = {
+    existe: true,
+    tourConcluido: patch.tourConcluido ?? atual.tourConcluido,
+    checklistItens: { ...atual.checklistItens, ...(patch.checklistItens ?? {}) },
+    hintsDispensados: patch.hintsDispensados
+      ? [...new Set([...atual.hintsDispensados, ...patch.hintsDispensados])]
+      : atual.hintsDispensados,
+  };
+  db.prepare(
+    `INSERT OR REPLACE INTO onboarding_estado
+       (ambiente, usuario, tour_concluido, checklist_itens, hints_dispensados, atualizado_em)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    env.SINQIA_ENV,
+    usuario,
+    proximo.tourConcluido ? 1 : 0,
+    JSON.stringify(proximo.checklistItens),
+    JSON.stringify(proximo.hintsDispensados),
+    new Date().toISOString(),
+  );
+  return proximo;
 }
 
 export interface LiquidoAgregado {

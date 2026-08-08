@@ -124,6 +124,12 @@ componente usa cor, tamanho de fonte ou sombra fora dos tokens.** `text-[13px]`,
   com área+hover+tooltip). Séries por convênio usam `CORES_SERIES`; estado usa
   as cores de categoria. Só considerar uma lib (Recharts, não MUI X) se surgir
   demanda de muitos gráficos interativos.
+- **Onboarding** — Product Tour com **driver.js** (única lib de UI de terceiro),
+  vestido de Opea via `.opea-tour` no index.css. Roteiro, checklist e hints são
+  configuráveis em `lib/onboarding-roteiro.ts` (edita-se texto sem tocar lógica);
+  estado por usuário na base local (`onboarding_estado`), nunca no browser. O
+  tour ancora em `data-tour="..."` nos elementos reais e conduz a navegação
+  entre telas. Fio condutor: cada parada liga a função ao ganho de tempo na CCB.
 - `ResumoOperacao` — painel vivo sticky, na superfície escura da marca
   (`bg-panel` + `.panel-dark`), que consolida o que está sendo criado (linhas,
   somas, parâmetros, status) + o CTA da fase atual. Elemento assinatura das

@@ -20,6 +20,7 @@ import {
   SinqiaAuthError,
 } from "./sinqia-client.js";
 import { getEmitter, getJob, startJob } from "./batch.js";
+import { getOnboarding, salvarOnboarding } from "./db.js";
 import {
   getSituacaoEmitter,
   getSituacaoJob,
@@ -188,6 +189,37 @@ export async function registerRoutes(app: FastifyInstance) {
     const session = exigirSessao(req, reply);
     if (!session) return;
     return reply.send({ env: env.SINQIA_ENV, ...sessionPublica(session) });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* Onboarding (estado por usuário, na base local)                    */
+  /* ---------------------------------------------------------------- */
+
+  app.get("/api/onboarding", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    try {
+      return reply.send({ env: env.SINQIA_ENV, ...getOnboarding(session.username) });
+    } catch (e) {
+      return reply.code(500).send({ error: (e as Error).message });
+    }
+  });
+
+  app.put("/api/onboarding", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    const parsed = onboardingPatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
+    }
+    try {
+      const estado = salvarOnboarding(session.username, parsed.data);
+      return reply.send({ env: env.SINQIA_ENV, ...estado });
+    } catch (e) {
+      return reply.code(500).send({ error: (e as Error).message });
+    }
   });
 
   /* ---------------------------------------------------------------- */
@@ -640,6 +672,13 @@ const alterarSituacaoBodySchema = z.object({
       }),
     )
     .min(1, "Selecione ao menos um cliente."),
+});
+
+/** Body do PUT /api/onboarding — patch parcial do estado do usuário. */
+const onboardingPatchSchema = z.object({
+  tourConcluido: z.boolean().optional(),
+  checklistItens: z.record(z.boolean()).optional(),
+  hintsDispensados: z.array(z.string().max(60)).optional(),
 });
 
 /* ------------------------------------------------------------------ */

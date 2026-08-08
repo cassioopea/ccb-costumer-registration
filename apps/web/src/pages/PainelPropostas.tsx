@@ -565,7 +565,7 @@ export function PainelPropostas({
       )}
 
       {/* Etapas da esteira — o fluxo inteiro, com contagem por etapa */}
-      <Card className="reveal reveal-delay-1">
+      <Card className="reveal reveal-delay-1" data-tour="painel-esteira">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

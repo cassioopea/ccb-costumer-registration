@@ -10,7 +10,11 @@ import { PropostasLote } from "@/pages/PropostasLote";
 import { PropostaIndividual } from "@/pages/PropostaIndividual";
 import { PainelPropostas } from "@/pages/PainelPropostas";
 import { Login } from "@/pages/Login";
+import { PrimeiroAcessoDialog } from "@/components/onboarding/PrimeiroAcessoDialog";
+import { ProductTour } from "@/components/onboarding/ProductTour";
+import { OnboardingProvider, useOnboarding } from "@/lib/onboarding";
 import { SessionProvider, useSession } from "@/lib/session";
+import type { PaginaTour } from "@/lib/onboarding-roteiro";
 import type { ClienteResumo } from "@cadastro-lote/shared";
 
 /**
@@ -27,13 +31,16 @@ export type TelaPropostas = "painel-propostas" | "lote-propostas" | "proposta-in
 export default function App() {
   return (
     <SessionProvider>
-      <Shell />
+      <OnboardingProvider>
+        <Shell />
+      </OnboardingProvider>
     </SessionProvider>
   );
 }
 
 function Shell() {
   const { session, carregando } = useSession();
+  const { primeiroAcesso, concluirTour } = useOnboarding();
   // Início é a homepage: o operador lê a saúde da esteira e parte para os módulos.
   const [modulo, setModulo] = useState<Modulo>("inicio");
   const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
@@ -45,6 +52,21 @@ function Shell() {
   } | null>(null);
   /** Tomador da Base enviado para EDIÇÃO no Cadastro Individual. */
   const [clienteEdicao, setClienteEdicao] = useState<ClienteResumo | null>(null);
+  /** Tour: null = fechado; o dialog de 1º acesso e o menu de perfil o abrem. */
+  const [tourAberto, setTourAberto] = useState(false);
+  const [conviteRecusado, setConviteRecusado] = useState(false);
+
+  /** Leva a UI à página de um passo do tour (o tour conduz a navegação). */
+  const irParaPaginaTour = (pagina: PaginaTour) => {
+    if (pagina === "inicio") setModulo("inicio");
+    else if (pagina === "tomadores") {
+      setTelaClientes("situacao");
+      setModulo("clientes");
+    } else {
+      setTelaPropostas(pagina);
+      setModulo("propostas");
+    }
+  };
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -59,7 +81,11 @@ function Shell() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <Topbar modulo={modulo} onModuloChange={setModulo} />
+      <Topbar
+        modulo={modulo}
+        onModuloChange={setModulo}
+        onRefazerTour={() => setTourAberto(true)}
+      />
 
       <main className="mx-auto w-full max-w-shell flex-1 px-8 py-10">
         {/* Mantém todas montadas: navegar não perde arquivo selecionado,
@@ -143,6 +169,24 @@ function Shell() {
 
       {/* Reautenticação: aparece sobre a tela sem destruir o estado dela. */}
       <SessionExpiredDialog />
+
+      {/* Onboarding: convite de 1º acesso + tour guiado sobre as telas reais. */}
+      <PrimeiroAcessoDialog
+        aberto={primeiroAcesso && !tourAberto && !conviteRecusado}
+        onFazerTour={() => setTourAberto(true)}
+        onPular={() => {
+          setConviteRecusado(true);
+          concluirTour(); // registra que viu — não pergunta de novo
+        }}
+      />
+      <ProductTour
+        aberto={tourAberto}
+        navegar={irParaPaginaTour}
+        onFim={() => {
+          setTourAberto(false);
+          concluirTour();
+        }}
+      />
     </div>
   );
 }

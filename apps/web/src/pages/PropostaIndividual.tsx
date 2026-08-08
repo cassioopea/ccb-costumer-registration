@@ -420,7 +420,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
       {/* 1/3 cliente + 2/3 parâmetros — mesmo layout das telas de lote. */}
       <div className="grid items-start gap-6 lg:grid-cols-3">
         {/* Cliente */}
-        <Card className="reveal reveal-delay-1 lg:col-span-1">
+        <Card className="reveal reveal-delay-1 lg:col-span-1" data-tour="individual-cliente">
           <CardHeader>
             <CardTitle>Tomador</CardTitle>
             <CardDescription>
