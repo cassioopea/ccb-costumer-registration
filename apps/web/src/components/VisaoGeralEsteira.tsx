@@ -16,6 +16,7 @@ import {
   contagemPorCategoria,
   type CategoriaEtapa,
 } from "@/lib/esteira";
+import { Hint } from "@/components/onboarding/Hint";
 import type { VisaoGeralResponse } from "@/lib/api";
 
 /**
@@ -251,8 +252,11 @@ function DonutCategorias({ porCategoria }: { porCategoria: Record<CategoriaEtapa
               className="h-2.5 w-2.5 shrink-0 rounded-full"
               style={{ backgroundColor: CATEGORIAS[c].cor }}
             />
-            <span className="flex-1 truncate">{CATEGORIAS[c].label}</span>
-            <span className="font-medium tabular-nums">{porCategoria[c]}</span>
+            <span className="flex items-center gap-1 truncate">
+              {CATEGORIAS[c].label}
+              {c === "aguardando" && <Hint id="aguardando_acao" />}
+            </span>
+            <span className="ml-auto font-medium tabular-nums">{porCategoria[c]}</span>
             <span className="w-11 text-right text-caption text-muted-foreground tabular-nums">
               {total > 0 ? `${Math.round((porCategoria[c] / total) * 100)}%` : "—"}
             </span>

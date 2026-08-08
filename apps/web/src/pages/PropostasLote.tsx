@@ -55,6 +55,7 @@ import {
   type ParamsLote,
 } from "@/components/ParametrosProposta";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Hint } from "@/components/onboarding/Hint";
 import { cn, rolarAte } from "@/lib/utils";
 import {
   getLookups,
@@ -820,7 +821,10 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
           <CardHeader>
             <div className="flex items-start justify-between gap-2">
               <div>
-                <CardTitle>Parâmetros do lote</CardTitle>
+                <CardTitle className="flex items-center gap-1.5">
+                  Parâmetros do lote
+                  <Hint id="params_lote" />
+                </CardTitle>
                 <CardDescription>
                   Valem para todas as propostas deste lote — não vêm do Excel. Produto,
                   convênio e loja vêm das listas da Sinqia.

@@ -12,6 +12,7 @@ import { PainelPropostas } from "@/pages/PainelPropostas";
 import { Login } from "@/pages/Login";
 import { PrimeiroAcessoDialog } from "@/components/onboarding/PrimeiroAcessoDialog";
 import { ProductTour } from "@/components/onboarding/ProductTour";
+import { ChecklistOnboarding } from "@/components/onboarding/ChecklistOnboarding";
 import { OnboardingProvider, useOnboarding } from "@/lib/onboarding";
 import { SessionProvider, useSession } from "@/lib/session";
 import type { PaginaTour } from "@/lib/onboarding-roteiro";
@@ -187,6 +188,9 @@ function Shell() {
           concluirTour();
         }}
       />
+
+      {/* Checklist de primeiros passos — canto inferior, leva às telas. */}
+      {!tourAberto && <ChecklistOnboarding onIr={irParaPaginaTour} />}
     </div>
   );
 }

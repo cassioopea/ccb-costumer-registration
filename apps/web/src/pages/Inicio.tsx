@@ -23,6 +23,7 @@ import { VisaoGeralEsteira } from "@/components/VisaoGeralEsteira";
 import { ValorOriginado } from "@/components/ValorOriginado";
 import { VelocidadeEsteira } from "@/components/VelocidadeEsteira";
 import { FunilConversao } from "@/components/FunilConversao";
+import { Hint } from "@/components/onboarding/Hint";
 import { useSession } from "@/lib/session";
 import {
   getLookups,
@@ -117,6 +118,7 @@ export function Inicio({
         </div>
         {/* Filtro GLOBAL: governa todos os blocos do dashboard */}
         <div className="flex shrink-0 items-center gap-2">
+          <Hint id="filtro_convenio" />
           {convenios.length > 0 && (
             <Combobox
               aria-label="Filtrar o dashboard por convênio"
