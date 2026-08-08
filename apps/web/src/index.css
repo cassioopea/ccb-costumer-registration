@@ -438,6 +438,6 @@
 .driver-popover.opea-tour .driver-popover-close-btn:hover {
   color: var(--color-foreground);
 }
-.driver-popover.opea-tour .driver-popover-arrow {
-  border-color: var(--color-popover);
-}
+/* A seta do driver é um TRIÂNGULO de bordas (3 lados transparentes + 1
+   colorido). NÃO colorir os 4 lados — vira um quadrado. Deixamos o driver
+   pintar só o lado certo; o popover branco já casa com o padrão dele. */
