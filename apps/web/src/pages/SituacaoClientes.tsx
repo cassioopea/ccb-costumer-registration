@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { matchCliente, SITUACOES, situacaoLabel } from "@cadastro-lote/shared";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { Hint } from "@/components/onboarding/Hint";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Card,
@@ -558,6 +559,7 @@ export function SituacaoClientes({
               </CardDescription>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <Hint id="tipo_pessoa" />
               {/* Tipo de pessoa: trocar recarrega a base já filtrada no servidor */}
               <div
                 className="flex items-center gap-0.5 rounded-lg border border-border p-0.5"
@@ -724,7 +726,12 @@ export function SituacaoClientes({
                       <TableHead>Documento</TableHead>
                       <TableHead>Tipo</TableHead>
                       <TableHead>Situação atual</TableHead>
-                      <TableHead>Persona</TableHead>
+                      <TableHead>
+                        <span className="inline-flex items-center gap-1">
+                          Persona
+                          <Hint id="persona_tomador" />
+                        </span>
+                      </TableHead>
                       <TableHead>Ações</TableHead>
                     </TableRow>
                   </TableHeader>

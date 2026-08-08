@@ -46,6 +46,7 @@ import {
 import { IS_PROD } from "@/components/Topbar";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { CATEGORIAS, categoriaDaEtapa } from "@/lib/esteira";
+import { Hint } from "@/components/onboarding/Hint";
 import { cn } from "@/lib/utils";
 import {
   getFilasPropostas,
@@ -869,7 +870,12 @@ export function PainelPropostas({
                   <TableHead className="text-right">Valor</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Entrada</TableHead>
-                  <TableHead className="text-right">SLA</TableHead>
+                  <TableHead className="text-right">
+                    <span className="inline-flex items-center gap-1">
+                      SLA
+                      <Hint id="painel_sla" />
+                    </span>
+                  </TableHead>
                   <TableHead className="text-right">Contrato</TableHead>
                   <TableHead>Histórico</TableHead>
                 </TableRow>

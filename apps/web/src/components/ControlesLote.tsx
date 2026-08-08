@@ -3,6 +3,7 @@ import { AlertTriangle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Combobox } from "@/components/ui/combobox";
+import { Hint } from "@/components/onboarding/Hint";
 import { cn } from "@/lib/utils";
 import type { BatchControlInput, BatchControlPayload, IdAcao } from "@/lib/api";
 
@@ -68,8 +69,9 @@ export function ControlesLote({ control, setControl, onChange, escopo = "todas a
       </label>
 
       <div className="space-y-1">
-        <Label htmlFor="ctl-idAcao" className="text-xs">
+        <Label htmlFor="ctl-idAcao" className="flex items-center gap-1 text-xs">
           Ação (<code>idAcao</code>)
+          <Hint id="controle_idacao" />
         </Label>
         <Combobox
           id="ctl-idAcao"

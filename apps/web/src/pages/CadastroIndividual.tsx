@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { Hint } from "@/components/onboarding/Hint";
 import { cn } from "@/lib/utils";
 import {
   cadastrarUm,
@@ -309,7 +310,10 @@ export function CadastroIndividual({
       {/* Campos obrigatórios da Sinqia */}
       <Card>
         <CardHeader>
-          <CardTitle>Campos obrigatórios da Sinqia</CardTitle>
+          <CardTitle className="flex items-center gap-1.5">
+            Campos obrigatórios da Sinqia
+            <Hint id="campos_obrigatorios" />
+          </CardTitle>
           <CardDescription>
             <code>GET consultarCamposObrigatorios</code> — somente leitura. Os campos retornados
             ficam marcados com <span className="text-[var(--destructive)]">*</span> no formulário.

@@ -125,4 +125,49 @@ export const HINTS: Record<string, HintDef> = {
       "Valem para todas as linhas do arquivo. Produto, convênio e loja vêm das listas " +
       "da Sinqia; a taxa e a data do contrato você define aqui.",
   },
+  persona_tomador: {
+    id: "persona_tomador",
+    titulo: "Persona tomadora",
+    texto:
+      "Pessoa física entra como tomadora automaticamente; pessoa jurídica só se você " +
+      "marcar aqui. É essa marcação que alimenta a contagem de tomadores no dashboard — " +
+      "nem todo cliente da base é, de fato, um tomador.",
+  },
+  tipo_pessoa: {
+    id: "tipo_pessoa",
+    titulo: "Filtro por tipo de pessoa",
+    texto:
+      "Alterna entre PF, PJ e todos. Trocar recarrega a base já filtrada na Sinqia — " +
+      "depois a busca por nome/CPF é local e instantânea.",
+  },
+  painel_sla: {
+    id: "painel_sla",
+    titulo: "SLA — tempo na etapa",
+    texto:
+      "Há quanto tempo a proposta está parada nesta etapa: em horas até 72h, em dias " +
+      "depois. Acima de 72h ela ganha destaque — é o sinal de que precisa de ação.",
+  },
+  dados_operacao: {
+    id: "dados_operacao",
+    titulo: "Dados da operação",
+    texto:
+      "O valor líquido é o que o tomador recebe; TAC, seguro e outros são financiados " +
+      "por cima dele. A Sinqia calcula a parcela e o CET a partir daqui.",
+  },
+  campos_obrigatorios: {
+    id: "campos_obrigatorios",
+    titulo: "Campos obrigatórios da Sinqia",
+    texto:
+      "Consulte o que a Sinqia exige neste ambiente — os campos retornados ficam " +
+      "marcados com * no formulário. O cadastro é aceito incompleto (com avisos), mas " +
+      "completar evita retrabalho depois.",
+  },
+  controle_idacao: {
+    id: "controle_idacao",
+    titulo: "Ação do cadastro (idAcao)",
+    texto:
+      "Define o que a Sinqia faz: incluir (novo), alterar (completar existente) ou " +
+      "excluir. Em branco, a Sinqia assume inclusão. Excluir não tem desfazer pela " +
+      "ferramenta — teste em HML antes.",
+  },
 };

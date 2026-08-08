@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { IS_PROD } from "@/components/Topbar";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { Hint } from "@/components/onboarding/Hint";
 import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
 import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
 import {
@@ -556,7 +557,10 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
       {/* Dados da operação */}
       <Card>
         <CardHeader>
-          <CardTitle>Dados da operação</CardTitle>
+          <CardTitle className="flex items-center gap-1.5">
+            Dados da operação
+            <Hint id="dados_operacao" />
+          </CardTitle>
           <CardDescription>
             O líquido é o valor que o tomador recebe (vlContra do cálculo); TAC, seguro e
             outros são financiados por cima dele.
