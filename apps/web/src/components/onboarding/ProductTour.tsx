@@ -53,8 +53,10 @@ export function ProductTour({
       showProgress: true,
       allowClose: true,
       overlayColor: "rgba(38, 3, 25, 0.55)", // vinho profundo da marca
+      // Cantos CONCÊNTRICos com o do card (rounded-2xl = 18px): o raio do
+      // recorte = raio do elemento + padding, então os arcos partilham centro.
       stagePadding: 6,
-      stageRadius: 10,
+      stageRadius: 24,
       popoverClass: "opea-tour",
       nextBtnText: "Próximo",
       prevBtnText: "Anterior",
