@@ -46,6 +46,7 @@ export const ACAO_AUDITORIA = {
   criacao: "requisicao_criada",
   transicao: "transicao_estado",
   tentativaRejeitada: "tentativa_rejeitada",
+  inicioExecucao: "execucao_iniciada",
 } as const;
 
 export function criarSodServico(
@@ -106,13 +107,18 @@ export function criarSodServico(
     const { req, para, ator, decisao } = params;
 
     if (!transicaoPermitida(req.estado, para)) {
+      // Também é o caminho da decisão CONCORRENTE que releu tarde demais: quem
+      // perde recebe o estado atual e quem decidiu (Cenário 5 da US-03).
       rejeitar(
         "TRANSICAO_INVALIDA",
-        `Transição inválida: ${req.estado} → ${para} (requisição ${req.id}).`,
+        `Transição inválida: ${req.estado} → ${para} (requisição ${req.id}` +
+          (req.decididoPor ? `, decidida por ${req.decididoPor}` : "") +
+          `).`,
         {
           requisicaoId: req.id,
           ator,
           detalhe: { decisao, de: req.estado, para },
+          extra: { estadoAtual: req.estado, decididoPor: req.decididoPor },
         },
       );
     }
@@ -134,6 +140,9 @@ export function criarSodServico(
           de: req.estado,
           para,
           ...(params.motivo ? { motivo: params.motivo } : {}),
+          // Resultado integral da execução (resposta/erro Sinqia) também na
+          // trilha — a auditoria conta a história completa sozinha.
+          ...(params.resultado ? { resultado: params.resultado } : {}),
         },
         resultado: "ok",
         ts: agora(),
@@ -143,15 +152,22 @@ export function criarSodServico(
     if (!ok) {
       // Corrida perdida: outra decisão mudou o estado entre a leitura e o
       // UPDATE. A primeira venceu (RN: jamais segunda execução) — audita e erra.
+      // Quem perdeu recebe o estado atual E quem decidiu (Cenário 5 da US-03).
       const atual = repo.obterRequisicao(req.id);
       rejeitar(
         "TRANSICAO_INVALIDA",
         `Decisão não aplicada: a requisição ${req.id} já saiu de "${req.estado}" ` +
-          `(estado atual: "${atual?.estado ?? "desconhecido"}").`,
+          `(estado atual: "${atual?.estado ?? "desconhecido"}"` +
+          (atual?.decididoPor ? `, decidida por ${atual.decididoPor}` : "") +
+          `).`,
         {
           requisicaoId: req.id,
           ator,
           detalhe: { decisao, de: req.estado, para, estadoAtual: atual?.estado ?? null },
+          extra: {
+            estadoAtual: atual?.estado ?? null,
+            decididoPor: atual?.decididoPor ?? null,
+          },
         },
       );
     }
@@ -355,11 +371,28 @@ export function criarSodServico(
     },
 
     /**
-     * TODO US-03: stub de conclusão da execução. Na US-03 a execução real na
-     * sessão Sinqia do aprovador substitui isto; até lá, SÓ OS TESTES chamam
-     * este método para exercitar aprovada/executando → executada|falha.
+     * Marca o INÍCIO da execução na trilha (US-03): entre a transição
+     * `pendente → aprovada/executando` e a chamada Sinqia. Evento puro de
+     * auditoria — não muda estado.
      */
-    concluirExecucaoStub(
+    registrarInicioExecucao(id: string, ator: string): void {
+      const req = exigirRequisicao(id, normalizarLogin(ator), "inicio_execucao");
+      repo.inserirEvento({
+        requisicaoId: req.id,
+        ator: normalizarLogin(ator),
+        acao: ACAO_AUDITORIA.inicioExecucao,
+        detalhe: { tipo: req.tipo, estado: req.estado },
+        resultado: "ok",
+        ts: agora(),
+      });
+    },
+
+    /**
+     * Conclusão da execução (US-03): `aprovada/executando → executada|falha`,
+     * com a resposta/erro INTEGRAL da Sinqia anexada à requisição (RN05) e à
+     * trilha de auditoria. Sem retry automático (RN07): `falha` é repouso.
+     */
+    concluirExecucao(
       id: string,
       ator: string,
       desfecho: "executada" | "falha",
@@ -370,7 +403,7 @@ export function criarSodServico(
         req,
         para: desfecho,
         ator: normalizarLogin(ator),
-        decisao: "concluir_execucao(stub US-03)",
+        decisao: "concluir_execucao",
         resultado,
       });
     },
@@ -383,6 +416,7 @@ export function criarSodServico(
     },
 
     listarRequisicoes: repo.listarRequisicoes.bind(repo),
+    listarRequisitantes: repo.requisitantes.bind(repo),
     listarAuditoria: repo.listarEventos.bind(repo),
   };
 }

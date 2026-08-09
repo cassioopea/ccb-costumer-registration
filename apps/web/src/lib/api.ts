@@ -265,6 +265,68 @@ export async function cancelarRequisicao(id: string): Promise<{ requisicao: Requ
   return lerResposta(res, "Falha ao cancelar a requisição");
 }
 
+/* --- Painel de pendências (US-03, lado do aprovador) --- */
+
+/**
+ * Requisições PENDENTES de todos os operadores, da mais antiga para a mais
+ * nova (RN01), com filtros por tipo e criador.
+ */
+export async function listarPendencias(f: {
+  tipo?: string;
+  requisitante?: string;
+  limit: number;
+  offset: number;
+}): Promise<{ itens: RequisicaoSod[]; total: number }> {
+  const qs = new URLSearchParams({
+    estado: "pendente",
+    ordem: "asc",
+    limit: String(f.limit),
+    offset: String(f.offset),
+  });
+  if (f.tipo) qs.set("tipo", f.tipo);
+  if (f.requisitante) qs.set("requisitante", f.requisitante);
+  const res = await fetch(`/api/sod/requisicoes?${qs}`);
+  return lerResposta(res, "Falha ao listar as pendências");
+}
+
+/** Criadores distintos das requisições pendentes — alimenta o filtro "criador". */
+export async function listarRequisitantesPendentes(): Promise<string[]> {
+  const res = await fetch("/api/sod/requisitantes?estado=pendente");
+  const json = await lerResposta<{ requisitantes: string[] }>(
+    res,
+    "Falha ao listar os criadores",
+  );
+  return json.requisitantes;
+}
+
+/** Resumo público do desfecho de uma execução (aprovação US-03). */
+export interface ExecucaoResumo {
+  desfecho: "executada" | "falha";
+  httpStatus: number | null;
+  /** Mensagens da Sinqia — no sucesso, identificam o tomador criado. */
+  mensagens: string;
+  detalhe?: string;
+}
+
+/**
+ * Decide uma requisição pendente. Aprovar EXECUTA na Sinqia na sessão do
+ * usuário logado (B2') e devolve o desfecho em `execucao`; reprovar exige
+ * motivo e nunca chama a Sinqia. Concorrência → 409 com estado atual +
+ * quem decidiu (mensagem do erro).
+ */
+export async function decidirRequisicao(
+  id: string,
+  decisao: "aprovar" | "reprovar",
+  motivo?: string,
+): Promise<{ requisicao: RequisicaoSod; execucao?: ExecucaoResumo }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/decisao`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decisao, ...(motivo !== undefined ? { motivo } : {}) }),
+  });
+  return lerResposta(res, "Falha ao aplicar a decisão");
+}
+
 /* ------------------------------------------------------------------ */
 /* Situação de cliente                                                 */
 /* ------------------------------------------------------------------ */

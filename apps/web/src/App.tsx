@@ -9,7 +9,7 @@ import { SituacaoClientes } from "@/pages/SituacaoClientes";
 import { PropostasLote } from "@/pages/PropostasLote";
 import { PropostaIndividual } from "@/pages/PropostaIndividual";
 import { PainelPropostas } from "@/pages/PainelPropostas";
-import { MinhasRequisicoes } from "@/pages/MinhasRequisicoes";
+import { Requisicoes, type TelaRequisicoes } from "@/pages/Requisicoes";
 import { Login } from "@/pages/Login";
 import { PrimeiroAcessoDialog } from "@/components/onboarding/PrimeiroAcessoDialog";
 import { ProductTour } from "@/components/onboarding/ProductTour";
@@ -47,6 +47,8 @@ function Shell() {
   const [modulo, setModulo] = useState<Modulo>("inicio");
   const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
   const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("painel-propostas");
+  /** Requisições: pendências (aprovador) ou minhas (requisitante). */
+  const [telaRequisicoes, setTelaRequisicoes] = useState<TelaRequisicoes>("pendencias");
   /** Pedido do Início (gargalo clicado): fila + convênio — o painel consome e limpa. */
   const [filaExterna, setFilaExterna] = useState<{
     nrStatus: number;
@@ -125,11 +127,19 @@ function Shell() {
             onVoltar={() => setTelaClientes("situacao")}
             edicao={clienteEdicao}
             onEdicaoConsumida={() => setClienteEdicao(null)}
-            onVerRequisicoes={() => setModulo("requisicoes")}
+            onVerRequisicoes={() => {
+              // Quem acabou de criar uma requisição quer acompanhá-la.
+              setTelaRequisicoes("minhas");
+              setModulo("requisicoes");
+            }}
           />
         </div>
         <div className={modulo === "requisicoes" ? undefined : "hidden"}>
-          <MinhasRequisicoes ativa={modulo === "requisicoes"} />
+          <Requisicoes
+            ativa={modulo === "requisicoes"}
+            tela={telaRequisicoes}
+            onTelaChange={setTelaRequisicoes}
+          />
         </div>
         <div className={modulo === "clientes" && telaClientes === "cadastro" ? undefined : "hidden"}>
           <CadastroLote onVoltar={() => setTelaClientes("situacao")} />

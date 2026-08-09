@@ -36,7 +36,16 @@ before(async () => {
 
   app = Fastify();
   await app.register(cookie);
-  await registerSodRoutes(app, servico);
+  // Execução (US-03) simulada: sessão sempre válida, cadastro sempre OK —
+  // os desfechos de erro são exercitados no us03-aprovacao.test.ts.
+  await registerSodRoutes(app, servico, {
+    verificarSessaoSinqiaFn: async () => "valida",
+    cadastrarClienteFn: async () => ({
+      httpStatus: 200,
+      envelope: null,
+      analysis: { ok: true, envelopeStatus: "OK", messagesText: "", messages: [] },
+    }),
+  });
   await app.ready();
 
   limparSessoes();
@@ -71,7 +80,13 @@ function get(url: string, sid: string | null) {
 
 const BODY_CRIACAO = {
   tipo: "tomador.cadastrar",
-  payload: { cliente: { nrCpfCnpj: "15032465070", dsNome: "Fulana Fixture" } },
+  // Sem `campos` de propósito (documento null → guarda de duplicidade da
+  // US-02 não interfere nestes testes, que repetem o mesmo payload).
+  // `request` presente: a aprovação (US-03) executa e chega a `executada`.
+  payload: {
+    cliente: { nrCpfCnpj: "15032465070", dsNome: "Fulana Fixture" },
+    request: { cliente: { nrCpfCnpj: "15032465070", dsNome: "Fulana Fixture" } },
+  },
 };
 
 describe("endpoints SoD", () => {
@@ -115,14 +130,15 @@ describe("endpoints SoD", () => {
     assert.equal(detalhe.requisicao.estado, "pendente");
   });
 
-  test("aprovação por segundo operador → aprovada/executando (execução fica para a US-03)", async () => {
+  test("aprovação por segundo operador → executa (US-03) e chega a executada", async () => {
     const criada = (await post("/api/sod/requisicoes", sidMaria, BODY_CRIACAO)).json().requisicao;
     const r = await post(`/api/sod/requisicoes/${criada.id}/decisao`, sidJoao, {
       decisao: "aprovar",
     });
     assert.equal(r.statusCode, 200);
-    assert.equal(r.json().requisicao.estado, "aprovada/executando");
+    assert.equal(r.json().requisicao.estado, "executada");
     assert.equal(r.json().requisicao.decididoPor, "joao.souza");
+    assert.equal(r.json().execucao.desfecho, "executada");
 
     // Decisão repetida sobre estado que já mudou → 409.
     const repetida = await post(`/api/sod/requisicoes/${criada.id}/decisao`, sidJoao, {
@@ -163,8 +179,11 @@ describe("endpoints SoD", () => {
     await post(`/api/sod/requisicoes/${criada.id}/decisao`, sidJoao, { decisao: "aprovar" });
 
     const detalhe = (await get(`/api/sod/requisicoes/${criada.id}`, sidMaria)).json();
-    assert.equal(detalhe.historico.length, 2); // criação + transição
+    // criação + aprovação + início de execução + conclusão (US-03)
+    assert.equal(detalhe.historico.length, 4);
     assert.equal(detalhe.historico[1].acao, "transicao_estado");
+    assert.equal(detalhe.historico[2].acao, "execucao_iniciada");
+    assert.equal(detalhe.historico[3].acao, "transicao_estado");
 
     const sumida = await get(
       "/api/sod/requisicoes/00000000-0000-4000-8000-000000000000",

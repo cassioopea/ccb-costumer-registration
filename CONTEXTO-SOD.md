@@ -115,7 +115,27 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   em `components/ui/drawer.tsx`, rótulos de tipo em `ROTULO_TIPO_ACAO`, badge de estado
   em `BadgeEstado`. Testes de frontend não existem no repo — cenários cobertos no BFF
   (`us02-cadastro.test.ts`).
-- US-03: `pendente`
+- US-03: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-253).
+  Decisões: premissa B2' confirmada DIRETA (checkpoint condicional não acionado) — as
+  sessões do BFF vivem em memória com o token Sinqia do operador, e a decisão de
+  aprovação roda no ciclo HTTP do próprio aprovador; pré-verificação RN03 por sonda
+  REAL na Sinqia (`verificarSessaoSinqia` em sinqia-client.ts, reutilizando
+  consultarCamposObrigatorios; distingue valida/invalida/indisponivel — indisponível
+  → 502 sem transição, pendente intacta); fluxo de aprovação em três tempos na rota
+  de decisão (sonda → transição atômica → execução → conclusão com resultado
+  integral); sem novos MIGRATION-NOTEs.
+  Para as próximas US: executores por tipo no registro `EXECUTORES`
+  (apps/api/src/sod/rotas.ts) — a US-04 acrescenta o de proposta; deps injetáveis de
+  execução em `registerSodRoutes(app, servico, { cadastrarClienteFn,
+  verificarSessaoSinqiaFn })`; `concluirExecucao` substituiu o stub e há evento
+  `execucao_iniciada` na auditoria; decisão concorrente perdedora recebe 409 com
+  `estadoAtual` + `decididoPor` estruturados; listagem aceita `ordem=asc` (RN01) e
+  `GET /api/sod/requisitantes` alimenta o filtro de criador. Frontend: módulo
+  Requisições com abas em `Requisicoes.tsx` (pendências | minhas), painel em
+  `PainelPendencias.tsx`, detalhe compartilhado em
+  `components/RequisicaoDetalhe.tsx` (com seção "Resultado da execução").
+  Observação: validação de integração real em HML PENDENTE — entregue no sábado,
+  fora da janela Sinqia; PM valida no próximo dia útil.
 - US-04: `pendente`
 - US-05: `pendente`
 - US-06: `pendente`

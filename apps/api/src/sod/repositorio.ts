@@ -66,6 +66,11 @@ export interface FiltrosRequisicao {
   estado?: EstadoRequisicao;
   tipo?: TipoAcaoSod;
   requisitante?: string;
+  /**
+   * Ordenação por criado_em. Default "desc" ("Minhas requisições");
+   * o painel de pendências (US-03) usa "asc" — a mais antiga primeiro (RN01).
+   */
+  ordem?: "asc" | "desc";
   limit: number;
   offset: number;
 }
@@ -336,13 +341,32 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
           n: number;
         }
       ).n;
+      // Direção validada pelo tipo (nunca interpolação de entrada externa).
+      const direcao = f.ordem === "asc" ? "ASC" : "DESC";
       const linhas = db
         .prepare(
           `SELECT * FROM sod_requisicoes WHERE ${where}
-           ORDER BY criado_em DESC, id LIMIT ? OFFSET ?`,
+           ORDER BY criado_em ${direcao}, id LIMIT ? OFFSET ?`,
         )
         .all(...params, f.limit, f.offset) as unknown as LinhaRequisicao[];
       return { itens: linhas.map(paraRequisicao), total };
+    },
+
+    /** Criadores distintos (para o filtro "criador" do painel de pendências). */
+    requisitantes(f: { estado?: EstadoRequisicao } = {}): string[] {
+      const clausulas = ["ambiente = ?"];
+      const params: string[] = [ambiente];
+      if (f.estado) {
+        clausulas.push("estado = ?");
+        params.push(f.estado);
+      }
+      const linhas = db
+        .prepare(
+          `SELECT DISTINCT requisitante FROM sod_requisicoes
+            WHERE ${clausulas.join(" AND ")} ORDER BY requisitante`,
+        )
+        .all(...params) as unknown as Array<{ requisitante: string }>;
+      return linhas.map((l) => l.requisitante);
     },
 
     /**

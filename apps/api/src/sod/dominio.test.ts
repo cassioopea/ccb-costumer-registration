@@ -56,11 +56,11 @@ function criarPendente(s: SodServico, requisitante = "maria.silva") {
   return s.criarRequisicao({ tipo: "tomador.cadastrar", payload: PAYLOAD, requisitante });
 }
 
-/** Leva uma requisição recém-criada até `falha` (aprova + stub US-03). */
+/** Leva uma requisição recém-criada até `falha` (aprova + conclui em falha). */
 function criarEmFalha(s: SodServico) {
   const req = criarPendente(s);
   s.aprovar(req.id, "joao.souza");
-  return s.concluirExecucaoStub(req.id, "joao.souza", "falha", { erro: "timeout Sinqia (fixture)" });
+  return s.concluirExecucao(req.id, "joao.souza", "falha", { erro: "timeout Sinqia (fixture)" });
 }
 
 let ctx: Ctx;
@@ -118,7 +118,7 @@ describe("cenário 2 — transições inválidas", () => {
   test("pendente → executada direto é rejeitada, estado inalterado, tentativa auditada", () => {
     const req = criarPendente(ctx.servico);
     assert.throws(
-      () => ctx.servico.concluirExecucaoStub(req.id, "joao.souza", "executada"),
+      () => ctx.servico.concluirExecucao(req.id, "joao.souza", "executada"),
       (e: unknown) => e instanceof SodError && e.codigo === "TRANSICAO_INVALIDA",
     );
     assert.equal(ctx.repo.obterRequisicao(req.id)?.estado, "pendente");
@@ -239,13 +239,13 @@ describe("cenário 4 — trilha de auditoria imutável", () => {
 /* ------------------------------------------------------------------ */
 
 describe("transições válidas", () => {
-  test("pendente → aprovada/executando → executada (aprovação por segundo operador + stub US-03)", () => {
+  test("pendente → aprovada/executando → executada (aprovação por segundo operador + conclusão)", () => {
     const req = criarPendente(ctx.servico);
     const aprovada = ctx.servico.aprovar(req.id, "Joao.SOUZA");
     assert.equal(aprovada.estado, "aprovada/executando");
     assert.equal(aprovada.decididoPor, "joao.souza");
 
-    const executada = ctx.servico.concluirExecucaoStub(req.id, "joao.souza", "executada", {
+    const executada = ctx.servico.concluirExecucao(req.id, "joao.souza", "executada", {
       nrClient: 6874,
     });
     assert.equal(executada.estado, "executada");

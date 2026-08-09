@@ -72,7 +72,16 @@ before(async () => {
     sodServico: () => servico,
     aprovacaoAtivaFn: (tipo) => tipo === "tomador.cadastrar" && toggleOn,
   });
-  await registerSodRoutes(app, servico);
+  // Execução da aprovação (US-03) com spy PRÓPRIO: não contamina o contador
+  // `chamadasSinqia` do fluxo /api/cadastrar que estes cenários medem.
+  await registerSodRoutes(app, servico, {
+    verificarSessaoSinqiaFn: async () => "valida",
+    cadastrarClienteFn: async () => ({
+      httpStatus: 200,
+      envelope: null,
+      analysis: { ok: true, envelopeStatus: "OK", messagesText: "", messages: [] },
+    }),
+  });
   await app.ready();
 
   limparSessoes();
@@ -352,13 +361,13 @@ describe("US-02 — Cenário 3: cancelamento", () => {
     });
     assert.equal(cancel.statusCode, 409);
     assert.equal(cancel.json().code, "TRANSICAO_INVALIDA");
-    assert.ok(
-      cancel.json().error.includes("aprovada/executando"),
-      "resposta informa o estado atual",
-    );
+    // Com a US-03, a aprovação executa na hora: o estado atual é `executada`.
+    assert.ok(cancel.json().error.includes("executada"), "resposta informa o estado atual");
+    assert.equal(cancel.json().estadoAtual, "executada");
+    assert.equal(cancel.json().decididoPor, "joao.souza");
 
     const detalhe = (await get(`/api/sod/requisicoes/${criada.requisicao.id}`, sidMaria)).json();
-    assert.equal(detalhe.requisicao.estado, "aprovada/executando", "estado preservado");
+    assert.equal(detalhe.requisicao.estado, "executada", "estado preservado");
   });
 
   test("terceiro não cancela (403) e não vê a requisição em 'minhas'", async () => {
