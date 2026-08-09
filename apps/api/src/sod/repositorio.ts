@@ -3,7 +3,9 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   ESTADOS_REQUISICAO,
+  montarPlacar,
   type EstadoRequisicao,
+  type PlacarLote,
   type TipoAcaoSod,
 } from "@cadastro-lote/shared";
 
@@ -88,6 +90,30 @@ export interface FiltrosAuditoria {
 
 /** Ação da trilha de auditoria para mudança EFETIVA de feature flag (US-05, RN05). */
 export const ACAO_FLAG_ALTERADA = "flag_alterada";
+
+/**
+ * Item de uma requisição-LOTE (US-06): estado próprio espelhando a máquina
+ * individual, payload integral por item e resultado Sinqia integral. `tipo` é
+ * o tipo INDIVIDUAL executável do item (ex.: `tomador.cadastrar`) — é ele que
+ * resolve o executor e a chave de duplicidade.
+ */
+export interface ItemLoteSod {
+  id: string;
+  requisicaoId: string;
+  /** Posição no arquivo (1-based) — a ordem de execução (RN04). */
+  ordem: number;
+  tipo: TipoAcaoSod;
+  payload: Record<string, unknown>;
+  /** Chave de duplicidade do item (documento normalizado). */
+  documento: string | null;
+  estado: EstadoRequisicao;
+  /** Motivo da reprovação (exceção ou reprovação do lote). */
+  motivo: string | null;
+  /** Resposta/erro integral da execução Sinqia deste item. */
+  resultado: Record<string, unknown> | null;
+  criadoEm: string;
+  atualizadoEm: string;
+}
 
 /** Estado corrente de uma flag por tipo (US-05) — para o CLI operacional. */
 export interface FlagSod {
@@ -185,6 +211,34 @@ export function criarSchemaSod(db: DatabaseSync): void {
     );
   `);
 
+  // Itens de requisição-LOTE (US-06): tabela filha com estado próprio por
+  // item. A guarda de duplicidade de itens (RN06, dimensões intra-arquivo e
+  // entre lotes) vive NO BANCO, no mesmo padrão da individual: no máximo UM
+  // item pendente por (ambiente, tipo, documento) — como todos os itens de um
+  // lote nascem `pendente` na mesma transação, documento repetido no arquivo
+  // também aborta aqui. Índice parcial com sintaxe idêntica no PostgreSQL.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sod_lote_itens (
+      id            TEXT PRIMARY KEY,
+      ambiente      TEXT NOT NULL,
+      requisicao_id TEXT NOT NULL REFERENCES sod_requisicoes(id),
+      ordem         INTEGER NOT NULL,
+      tipo          TEXT NOT NULL,
+      payload       TEXT NOT NULL,
+      documento     TEXT,
+      estado        TEXT NOT NULL CHECK (estado IN (${estados})),
+      motivo        TEXT,
+      resultado     TEXT,
+      criado_em     TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sod_itens_requisicao
+      ON sod_lote_itens (ambiente, requisicao_id, ordem);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sod_itens_doc_pendente
+      ON sod_lote_itens (ambiente, tipo, documento)
+      WHERE estado = 'pendente' AND documento IS NOT NULL;
+  `);
+
   // Cinto de segurança do append-only (RN06): além de a camada não expor
   // update/delete, o PRÓPRIO BANCO os rejeita.
   // MIGRATION-NOTE: RAISE(ABORT) é sintaxe SQLite — no PostgreSQL vira uma
@@ -220,6 +274,21 @@ interface LinhaRequisicao {
   atualizado_em: string;
 }
 
+interface LinhaItemLote {
+  id: string;
+  ambiente: string;
+  requisicao_id: string;
+  ordem: number;
+  tipo: string;
+  payload: string;
+  documento: string | null;
+  estado: string;
+  motivo: string | null;
+  resultado: string | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
 interface LinhaEvento {
   id: number;
   ambiente: string;
@@ -241,6 +310,22 @@ function paraRequisicao(l: LinhaRequisicao): RequisicaoSod {
     requisitante: l.requisitante,
     estado: l.estado as EstadoRequisicao,
     decididoPor: l.decidido_por,
+    motivo: l.motivo,
+    resultado: l.resultado ? (JSON.parse(l.resultado) as Record<string, unknown>) : null,
+    criadoEm: l.criado_em,
+    atualizadoEm: l.atualizado_em,
+  };
+}
+
+function paraItemLote(l: LinhaItemLote): ItemLoteSod {
+  return {
+    id: l.id,
+    requisicaoId: l.requisicao_id,
+    ordem: l.ordem,
+    tipo: l.tipo as TipoAcaoSod,
+    payload: JSON.parse(l.payload) as Record<string, unknown>,
+    documento: l.documento,
+    estado: l.estado as EstadoRequisicao,
     motivo: l.motivo,
     resultado: l.resultado ? (JSON.parse(l.resultado) as Record<string, unknown>) : null,
     criadoEm: l.criado_em,
@@ -499,6 +584,208 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
       });
     },
 
+    /* ------------------- Requisição-LOTE (US-06) ------------------- */
+
+    /**
+     * Insere o LOTE + todos os itens + evento de criação na MESMA transação
+     * (tudo ou nada). Documento repetido — no arquivo ou pendente em outro
+     * lote — aborta pelo índice único parcial (`idx_sod_itens_doc_pendente`),
+     * detectável com `ehViolacaoDuplicidadeItemPendente`.
+     */
+    criarRequisicaoLote(
+      req: Pick<RequisicaoSod, "id" | "tipo" | "payload" | "requisitante" | "criadoEm">,
+      itens: Array<Pick<ItemLoteSod, "id" | "ordem" | "tipo" | "payload" | "documento">>,
+      evento: NovoEventoAuditoria,
+    ): void {
+      emTransacao(() => {
+        db.prepare(
+          `INSERT INTO sod_requisicoes
+             (id, ambiente, tipo, payload, documento, requisitante, estado, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, NULL, ?, 'pendente', ?, ?)`,
+        ).run(
+          req.id,
+          ambiente,
+          req.tipo,
+          JSON.stringify(req.payload),
+          req.requisitante,
+          req.criadoEm,
+          req.criadoEm,
+        );
+        const insereItem = db.prepare(
+          `INSERT INTO sod_lote_itens
+             (id, ambiente, requisicao_id, ordem, tipo, payload, documento, estado, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?)`,
+        );
+        for (const item of itens) {
+          insereItem.run(
+            item.id,
+            ambiente,
+            req.id,
+            item.ordem,
+            item.tipo,
+            JSON.stringify(item.payload),
+            item.documento,
+            req.criadoEm,
+            req.criadoEm,
+          );
+        }
+        inserirEventoInterno(evento);
+      });
+    },
+
+    /** Itens do lote na ordem do arquivo — a ordem de execução (RN04). */
+    itensDoLote(requisicaoId: string): ItemLoteSod[] {
+      const linhas = db
+        .prepare(
+          `SELECT * FROM sod_lote_itens WHERE ambiente = ? AND requisicao_id = ? ORDER BY ordem`,
+        )
+        .all(ambiente, requisicaoId) as unknown as LinhaItemLote[];
+      return linhas.map(paraItemLote);
+    },
+
+    obterItem(id: string): ItemLoteSod | null {
+      const linha = db
+        .prepare(`SELECT * FROM sod_lote_itens WHERE ambiente = ? AND id = ?`)
+        .get(ambiente, id) as LinhaItemLote | undefined;
+      return linha ? paraItemLote(linha) : null;
+    },
+
+    /** Item PENDENTE de qualquer lote com o (tipo, documento) — dimensão 3 da RN06. */
+    itemPendentePorDocumento(tipo: TipoAcaoSod, documento: string): ItemLoteSod | null {
+      const linha = db
+        .prepare(
+          `SELECT * FROM sod_lote_itens
+            WHERE ambiente = ? AND tipo = ? AND documento = ? AND estado = 'pendente'
+            LIMIT 1`,
+        )
+        .get(ambiente, tipo, documento) as LinhaItemLote | undefined;
+      return linha ? paraItemLote(linha) : null;
+    },
+
+    /** Placar do lote (RN01): contagem de itens por estado, direto do banco. */
+    placarDoLote(requisicaoId: string): PlacarLote {
+      const linhas = db
+        .prepare(
+          `SELECT estado, COUNT(*) AS n FROM sod_lote_itens
+            WHERE ambiente = ? AND requisicao_id = ? GROUP BY estado`,
+        )
+        .all(ambiente, requisicaoId) as unknown as Array<{ estado: EstadoRequisicao; n: number }>;
+      return montarPlacar(linhas);
+    },
+
+    /**
+     * Transição ATÔMICA de UM item ("primeira vence", mesmo padrão da
+     * requisição): o UPDATE só acontece se o estado ainda for `de` — é esta
+     * guarda que garante a idempotência por item (RN05): um item que já saiu
+     * de `pendente` nunca é reivindicado de novo por outra execução.
+     */
+    transicionarItem(params: {
+      id: string;
+      de: EstadoRequisicao;
+      para: EstadoRequisicao;
+      motivo?: string;
+      resultado?: Record<string, unknown>;
+      agora: string;
+      evento: NovoEventoAuditoria;
+    }): boolean {
+      return emTransacao(() => {
+        const r = db
+          .prepare(
+            `UPDATE sod_lote_itens
+                SET estado = ?,
+                    motivo = COALESCE(?, motivo),
+                    resultado = COALESCE(?, resultado),
+                    atualizado_em = ?
+              WHERE ambiente = ? AND id = ? AND estado = ?`,
+          )
+          .run(
+            params.para,
+            params.motivo ?? null,
+            params.resultado ? JSON.stringify(params.resultado) : null,
+            params.agora,
+            ambiente,
+            params.id,
+            params.de,
+          );
+        if (r.changes !== 1) return false;
+        inserirEventoInterno(params.evento);
+        return true;
+      });
+    },
+
+    /**
+     * Aplica a DECISÃO do lote atomicamente (RN03): transição do lote com
+     * "primeira decisão vence" + transições dos itens indicados + auditoria,
+     * tudo na MESMA transação. Perdeu a corrida do lote → false, nada gravado.
+     * Item fora do estado esperado → exceção (rollback total) — não existe
+     * decisão meio aplicada.
+     */
+    aplicarDecisaoLote(params: {
+      id: string;
+      de: EstadoRequisicao;
+      para: EstadoRequisicao;
+      decididoPor?: string;
+      motivo?: string;
+      agora: string;
+      eventoLote: NovoEventoAuditoria;
+      itens: Array<{
+        id: string;
+        de: EstadoRequisicao;
+        para: EstadoRequisicao;
+        motivo?: string;
+        resultado?: Record<string, unknown>;
+        evento: NovoEventoAuditoria;
+      }>;
+    }): boolean {
+      return emTransacao(() => {
+        const r = db
+          .prepare(
+            `UPDATE sod_requisicoes
+                SET estado = ?,
+                    decidido_por = COALESCE(?, decidido_por),
+                    motivo = COALESCE(?, motivo),
+                    atualizado_em = ?
+              WHERE ambiente = ? AND id = ? AND estado = ?`,
+          )
+          .run(
+            params.para,
+            params.decididoPor ?? null,
+            params.motivo ?? null,
+            params.agora,
+            ambiente,
+            params.id,
+            params.de,
+          );
+        if (r.changes !== 1) return false;
+        inserirEventoInterno(params.eventoLote);
+
+        const atualizaItem = db.prepare(
+          `UPDATE sod_lote_itens
+              SET estado = ?, motivo = COALESCE(?, motivo),
+                  resultado = COALESCE(?, resultado), atualizado_em = ?
+            WHERE ambiente = ? AND id = ? AND estado = ?`,
+        );
+        for (const item of params.itens) {
+          const ri = atualizaItem.run(
+            item.para,
+            item.motivo ?? null,
+            item.resultado ? JSON.stringify(item.resultado) : null,
+            params.agora,
+            ambiente,
+            item.id,
+            item.de,
+          );
+          if (ri.changes !== 1) {
+            throw new Error(
+              `Item ${item.id} não estava em "${item.de}" ao aplicar a decisão do lote ${params.id} — decisão revertida.`,
+            );
+          }
+          inserirEventoInterno(item.evento);
+        }
+        return true;
+      });
+    },
+
     /**
      * Auditoria: APENAS inserir e consultar (RN06). Este objeto não tem — e
      * nunca deve ganhar — métodos de update/delete de eventos.
@@ -563,5 +850,20 @@ export function ehViolacaoDuplicidadePendente(e: unknown): boolean {
   return (
     msg.includes("UNIQUE constraint failed") &&
     (msg.includes("idx_sod_req_doc_pendente") || msg.includes("sod_requisicoes.documento"))
+  );
+}
+
+/**
+ * O INSERT de itens perdeu a corrida da guarda de duplicidade do LOTE (RN06):
+ * outro lote (ou o próprio arquivo, com documento repetido) inseriu um item
+ * pendente do mesmo (tipo, documento) primeiro.
+ * MIGRATION-NOTE: detecção pela mensagem do SQLite; no PostgreSQL vira o
+ * código 23505 (unique_violation), como na guarda individual.
+ */
+export function ehViolacaoDuplicidadeItemPendente(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : "";
+  return (
+    msg.includes("UNIQUE constraint failed") &&
+    (msg.includes("idx_sod_itens_doc_pendente") || msg.includes("sod_lote_itens.documento"))
   );
 }

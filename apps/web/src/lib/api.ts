@@ -4,7 +4,14 @@
 // cookie httpOnly que o backend setou no login, enviado automaticamente pelo
 // fetch e pelo EventSource (mesma origem, via proxy do Vite).
 
-import type { EmissaoRow, EstadoRequisicao, TipoAcaoSod } from "@cadastro-lote/shared";
+import type {
+  DuplicidadesLote,
+  EmissaoRow,
+  EstadoRequisicao,
+  ExcecaoLote,
+  PlacarLote,
+  TipoAcaoSod,
+} from "@cadastro-lote/shared";
 import { lerResposta } from "./session";
 
 /** Ações aceitas pela Sinqia: Incluir / Alterar / Excluir / Consultar. */
@@ -43,6 +50,10 @@ export interface ValidateResponse {
   valido: boolean;
   rows: ValidateRow[];
   preview: Array<{ index: number; payload?: unknown; error?: string }>;
+  /** Esteira de Aprovação (US-06): true = o lote virará requisição pendente. */
+  aprovacao?: boolean;
+  /** Duplicidade tridimensional (RN06), apontada ANTES do envio. */
+  duplicidades?: DuplicidadesLote;
 }
 
 export interface RowResult {
@@ -67,6 +78,7 @@ export interface EnvInfo {
   aprovacao?: {
     cadastroTomadorIndividual: boolean;
     criacaoPropostaIndividual?: boolean;
+    cadastroTomadorLote?: boolean;
   };
 }
 
@@ -99,7 +111,16 @@ export async function validate(
 export async function startImport(
   file: File,
   control: BatchControlPayload,
-): Promise<{ jobId: string; total: number; validas: number; puladas: number; env: string }> {
+): Promise<{
+  jobId?: string;
+  total: number;
+  validas?: number;
+  puladas?: number;
+  env: string;
+  /** Esteira de Aprovação (US-06): true = virou requisição-lote pendente. */
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string; totalItens: number };
+}> {
   const res = await fetch("/api/import", {
     method: "POST",
     body: buildForm(file, control),
@@ -245,12 +266,63 @@ export async function listarMinhasRequisicoes(f: {
   return lerResposta(res, "Falha ao listar as requisições");
 }
 
-/** Detalhe: requisição + histórico de transições (trilha de auditoria dela). */
-export async function detalharRequisicao(
-  id: string,
-): Promise<{ requisicao: RequisicaoSod; historico: EventoAuditoriaSod[] }> {
+/**
+ * Item de lote em visão ENXUTA (US-06): estado, resumo e desfecho público —
+ * o payload/resposta integral vem de `obterItemLote`. É o shape que o polling
+ * de progresso consome.
+ */
+export interface ItemLoteResumo {
+  id: string;
+  ordem: number;
+  tipo: TipoAcaoSod;
+  estado: EstadoRequisicao;
+  documento: string | null;
+  /** Motivo da reprovação do item (exceção ou reprovação do lote). */
+  motivo: string | null;
+  resumo: { nome?: string; documento?: string; tipo?: string };
+  resultado: {
+    desfecho?: "executada" | "falha";
+    httpStatus?: number | null;
+    mensagens?: string;
+    detalhe?: string;
+    causa?: string;
+    duracaoMs?: number;
+  } | null;
+  atualizadoEm: string;
+}
+
+export interface DetalheRequisicao {
+  requisicao: RequisicaoSod;
+  historico: EventoAuditoriaSod[];
+  /** Presentes apenas em requisições de LOTE (US-06). */
+  itens?: ItemLoteResumo[];
+  placar?: PlacarLote;
+}
+
+/** Detalhe: requisição + histórico; lotes trazem itens + placar (US-06). */
+export async function detalharRequisicao(id: string): Promise<DetalheRequisicao> {
   const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}`);
   return lerResposta(res, "Falha ao consultar a requisição");
+}
+
+/** Detalhe INTEGRAL de um item de lote (payload + resposta Sinqia completa). */
+export async function obterItemLote(
+  requisicaoId: string,
+  itemId: string,
+): Promise<{
+  item: {
+    id: string;
+    ordem: number;
+    estado: EstadoRequisicao;
+    payload: Record<string, unknown>;
+    motivo: string | null;
+    resultado: Record<string, unknown> | null;
+  };
+}> {
+  const res = await fetch(
+    `/api/sod/requisicoes/${encodeURIComponent(requisicaoId)}/itens/${encodeURIComponent(itemId)}`,
+  );
+  return lerResposta(res, "Falha ao consultar o item do lote");
 }
 
 /**
@@ -326,6 +398,32 @@ export async function decidirRequisicao(
     body: JSON.stringify({ decisao, ...(motivo !== undefined ? { motivo } : {}) }),
   });
   return lerResposta(res, "Falha ao aplicar a decisão");
+}
+
+/**
+ * Decide um LOTE (US-06): direção-base + exceções por item com motivo
+ * (bidirecional). Os itens aprovados executam em background na sessão do
+ * usuário logado — acompanhe pelo polling do detalhe (`execucao.emAndamento`).
+ */
+export async function decidirLote(
+  id: string,
+  decisao: "aprovar" | "reprovar",
+  opts: { motivo?: string; excecoes?: ExcecaoLote[] } = {},
+): Promise<{
+  requisicao: RequisicaoSod;
+  placar: PlacarLote;
+  execucao?: { emAndamento: boolean; aprovados: number };
+}> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/decisao`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      decisao,
+      ...(opts.motivo !== undefined ? { motivo: opts.motivo } : {}),
+      ...(opts.excecoes && opts.excecoes.length > 0 ? { excecoes: opts.excecoes } : {}),
+    }),
+  });
+  return lerResposta(res, "Falha ao aplicar a decisão do lote");
 }
 
 /* ------------------------------------------------------------------ */

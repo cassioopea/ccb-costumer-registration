@@ -56,6 +56,91 @@ export function transicaoPermitida(de: EstadoRequisicao, para: EstadoRequisicao)
 }
 
 /* ------------------------------------------------------------------ */
+/* Requisição-LOTE (US-06): itens com estado próprio                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Máquina de estados de um ITEM de lote — espelha a individual, com uma única
+ * transição a mais: `pendente → falha`. Um item aprovado fica `pendente` (na
+ * fila de execução) até a sua vez; se a execução do lote for interrompida
+ * antes de chegar nele (sessão expirada, queda), o item vai direto a `falha`
+ * com a causa registrada (RN04/RN05, Cenário 4) — nunca fica órfão.
+ */
+export const TRANSICOES_ITEM_LOTE: Record<EstadoRequisicao, readonly EstadoRequisicao[]> = {
+  pendente: ["aprovada/executando", "reprovada", "cancelada", "falha"],
+  "aprovada/executando": ["executada", "falha"],
+  falha: ["aprovada/executando", "descartada"],
+  executada: [],
+  reprovada: [],
+  cancelada: [],
+  descartada: [],
+};
+
+export function transicaoItemPermitida(de: EstadoRequisicao, para: EstadoRequisicao): boolean {
+  return TRANSICOES_ITEM_LOTE[de].includes(para);
+}
+
+/**
+ * Tipos de ação de LOTE e o tipo INDIVIDUAL que cada item executa — os
+ * executores registrados (US-03/04) são reusados item a item, sem segundo
+ * caminho Sinqia. US-07/09/12 acrescentam as suas entradas aqui.
+ */
+export const TIPO_ITEM_DO_LOTE: Partial<Record<TipoAcaoSod, TipoAcaoSod>> = {
+  "tomador.cadastrar_lote": "tomador.cadastrar",
+};
+
+export function ehTipoLote(tipo: TipoAcaoSod): boolean {
+  return tipo in TIPO_ITEM_DO_LOTE;
+}
+
+/** Placar de um lote — contagem de itens por estado (RN01: estado derivado). */
+export interface PlacarLote {
+  total: number;
+  pendentes: number;
+  executando: number;
+  executadas: number;
+  falhas: number;
+  reprovadas: number;
+  canceladas: number;
+}
+
+export function placarVazio(): PlacarLote {
+  return {
+    total: 0,
+    pendentes: 0,
+    executando: 0,
+    executadas: 0,
+    falhas: 0,
+    reprovadas: 0,
+    canceladas: 0,
+  };
+}
+
+/** Monta o placar a partir de contagens por estado (linhas do GROUP BY). */
+export function montarPlacar(contagens: Array<{ estado: EstadoRequisicao; n: number }>): PlacarLote {
+  const p = placarVazio();
+  for (const { estado, n } of contagens) {
+    p.total += n;
+    if (estado === "pendente") p.pendentes += n;
+    else if (estado === "aprovada/executando") p.executando += n;
+    else if (estado === "executada") p.executadas += n;
+    else if (estado === "falha") p.falhas += n;
+    else if (estado === "reprovada") p.reprovadas += n;
+    else if (estado === "cancelada") p.canceladas += n;
+  }
+  return p;
+}
+
+/**
+ * Desfecho do LOTE ao fim da execução (RN01, estado derivado dos itens):
+ * qualquer item em `falha` → lote `falha` (repouso; retry por item na US-10);
+ * caso contrário `executada` — exceções reprovadas não tornam o lote falho.
+ */
+export function derivarDesfechoLote(placar: PlacarLote): "executada" | "falha" {
+  return placar.falhas > 0 ? "falha" : "executada";
+}
+
+/* ------------------------------------------------------------------ */
 /* Tipos de ação (registro extensível)                                 */
 /* ------------------------------------------------------------------ */
 
@@ -250,3 +335,76 @@ export const decisaoSodSchema = z.object({
 });
 
 export type DecisaoSod = z.infer<typeof decisaoSodSchema>;
+
+/**
+ * Exceção por item na decisão BIDIRECIONAL de um lote (US-06, RN02/RN03):
+ * o item marcado recebe a direção CONTRÁRIA à do lote, sempre com motivo —
+ * a justificativa do desvio é parte do controle, não cortesia de UI.
+ */
+export const excecaoLoteSchema = z.object({
+  itemId: z.string().uuid(),
+  motivo: z
+    .string({ required_error: "Motivo da exceção é obrigatório." })
+    .trim()
+    .min(1, "Motivo da exceção é obrigatório."),
+});
+
+export type ExcecaoLote = z.infer<typeof excecaoLoteSchema>;
+
+/**
+ * Corpo da decisão aceitando exceções de lote. Requisições INDIVIDUAIS não
+ * aceitam `excecoes` (a rota rejeita); US-09/US-12 herdam este contrato.
+ */
+export const decisaoComExcecoesSchema = decisaoSodSchema.extend({
+  excecoes: z.array(excecaoLoteSchema).optional(),
+});
+
+export type DecisaoComExcecoes = z.infer<typeof decisaoComExcecoesSchema>;
+
+/**
+ * Payload canônico da REQUISIÇÃO-LOTE de tomadores (US-06): os controles do
+ * lote + a identificação do arquivo. Os dados de cada tomador vivem nos ITENS
+ * (`ItemLoteSodPayload`), nunca aqui — o lote é o envelope, não o conteúdo.
+ */
+export interface LoteSodPayload {
+  control: Record<string, unknown>;
+  arquivo: {
+    nome: string;
+    totalItens: number;
+  };
+}
+
+/**
+ * Payload canônico de um ITEM de lote de tomadores: o request Sinqia montado
+ * na criação (a execução o reenvia intacto — RN05/RN08) + resumo de exibição.
+ */
+export interface ItemLoteSodPayload {
+  ordem: number;
+  resumo: {
+    nome: string;
+    documento: string;
+    tipo: "PF" | "PJ" | "?";
+  };
+  control: Record<string, unknown>;
+  request: Record<string, unknown>;
+}
+
+/**
+ * Duplicidade TRIDIMENSIONAL do lote (US-06, RN06), apontada ANTES da criação:
+ * (1) dentro do próprio arquivo; (2) contra requisições individuais pendentes;
+ * (3) contra itens pendentes de OUTROS lotes. Chave = documento normalizado.
+ */
+export interface DuplicidadesLote {
+  /** Documentos repetidos no arquivo, com as linhas (ordens) em conflito. */
+  intraArquivo: Array<{ documento: string; ordens: number[] }>;
+  /** Linhas cujo documento já tem requisição INDIVIDUAL pendente. */
+  pendentesIndividuais: Array<{ documento: string; ordem: number; requisicaoId: string }>;
+  /** Linhas cujo documento já está em item pendente de OUTRO lote. */
+  pendentesLote: Array<{ documento: string; ordem: number; requisicaoId: string }>;
+}
+
+export function temDuplicidades(d: DuplicidadesLote): boolean {
+  return (
+    d.intraArquivo.length > 0 || d.pendentesIndividuais.length > 0 || d.pendentesLote.length > 0
+  );
+}

@@ -182,7 +182,37 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   repositorio.ts e conexão do CLI em flag-cli.ts. Go-live com as duas flags
   inativas (estado padrão — sem seed). Observação: validação de integração real em
   HML PENDENTE — entregue no sábado, fora da janela Sinqia (mesmo caso das US-03/04).
-- US-06: `pendente`
+- US-06: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-256).
+  Decisões (checkpoint A): modelagem do lote pela "Opção A" — tabela filha
+  `sod_lote_itens` (payload integral POR item, estado próprio espelhando a máquina
+  individual + transição extra `pendente → falha` para interrupção); estado do lote
+  DERIVADO do placar dos itens (RN01: ≥1 falha → lote `falha`; exceções reprovadas
+  não tornam o lote falho); idempotência RN05 por reivindicação atômica
+  `pendente → aprovada/executando` por item (UPDATE condicional, "primeira vence");
+  duplicidade RN06 TRIDIMENSIONAL (intra-arquivo + individuais pendentes + itens de
+  outros lotes) com guarda no banco (índice único parcial em `sod_lote_itens`) e
+  RECÍPROCA na individual; progresso por POLLING do detalhe (estados persistidos =
+  fonte única; SSE descartado); upload mantido CSV/JSON (XLSX segue só em propostas).
+  Decisões de implementação ratificadas: sob aprovação NÃO há "pular inválidas"
+  (arquivo com erro volta inteiro — decisão 7); "aprovar com todas as linhas em
+  exceção" é rejeitado (caminho correto: reprovar); motivo de exceção obrigatório
+  nas DUAS direções (o de exceção aprovada vive na trilha de auditoria).
+  Para as próximas US (fundação reusada por US-07/09/12): decisão bidirecional em
+  `decisaoComExcecoesSchema` (shared) na MESMA rota de decisão; novo tipo de lote =
+  entrada em `TIPO_ITEM_DO_LOTE` (shared, lote → tipo individual executável) +
+  flags.ts + desvio/guard na rota da ação — os executores individuais são reusados
+  item a item por `iniciarExecucaoLote` (sod/execucao-lote.ts, job em processo com
+  o token do aprovador, mesmo padrão do batch.ts); `criarRequisicaoLote`/
+  `decidirLote`/`concluirLote` no domínio; detalhe devolve `itens` (visão enxuta) +
+  `placar`, item integral em `GET /api/sod/requisicoes/:id/itens/:itemId`; UI:
+  renderer de lote + marcação de exceções em `RequisicaoDetalhe.tsx` (`LoteItens`),
+  polling de 1,5s nas duas telas. Flag `aprovacao.cadastro_tomador_lote`.
+  MIGRATION-NOTE novo: detecção de violação do índice de itens pela mensagem do
+  SQLite → 23505 no PostgreSQL (repositorio.ts). Overhead da esteira medido nos
+  testes: ~0–3 ms/item (70 itens ≈ 200 ms ponta a ponta com Sinqia mockada);
+  `resultado.duracaoMediaItemMs` grava o tempo real de cada execução (insumo de UX
+  para lotes grandes). Teste de escopo da US-05 atualizado: exemplo de tipo fora do
+  corte passou a ser `proposta.criar_lote`.
 - US-07: `pendente`
 - US-08: `pendente`
 - US-09: `pendente`

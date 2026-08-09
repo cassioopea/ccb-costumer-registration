@@ -3,9 +3,14 @@ import { z } from "zod";
 import {
   batchControlSchema,
   cdSituacaoSchema,
+  normalizarDocumento,
   normalizeCamposObrigatorios,
+  temDuplicidades,
+  TIPO_ITEM_DO_LOTE,
   type BatchControl,
   type Cliente,
+  type ItemLoteSodPayload,
+  type LoteSodPayload,
 } from "@cadastro-lote/shared";
 import { env, isProd } from "./env.js";
 import { buildTemplateCsv } from "./template.js";
@@ -137,6 +142,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
     aprovacao: {
       cadastroTomadorIndividual: aprovacaoAtivaFn("tomador.cadastrar"),
       criacaoPropostaIndividual: aprovacaoAtivaFn("proposta.criar"),
+      cadastroTomadorLote: aprovacaoAtivaFn("tomador.cadastrar_lote"),
     },
   }));
 
@@ -280,11 +286,29 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
     });
 
     const totalErros = rows.filter((r) => r.errors.length > 0).length;
+
+    /*
+     * Esteira de Aprovação (SoD, US-06): com a flag do lote ativa, a
+     * conferência aponta a duplicidade TRIDIMENSIONAL (RN06) ANTES do envio —
+     * intra-arquivo, pendentes individuais e itens pendentes de outros lotes.
+     * Consulta pura, zero Sinqia, zero efeito colateral.
+     */
+    const aprovacaoLote = aprovacaoAtivaFn("tomador.cadastrar_lote");
+    const duplicidades = aprovacaoLote
+      ? sodServico().conferirDuplicidadesLote(
+          TIPO_ITEM_DO_LOTE["tomador.cadastrar_lote"]!,
+          rows.map((r) => ({
+            ordem: r.index,
+            documento: normalizarDocumento(r.documento ?? "") || null,
+          })),
+        )
+      : undefined;
+
     return reply.send({
       env: env.SINQIA_ENV,
       total: rows.length,
       totalErros,
-      valido: totalErros === 0,
+      valido: totalErros === 0 && (!duplicidades || !temDuplicidades(duplicidades)),
       rows: rows.map((r) => ({
         index: r.index,
         nome: r.nome,
@@ -293,6 +317,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
         errors: r.errors,
       })),
       preview,
+      ...(aprovacaoLote ? { aprovacao: true, duplicidades } : {}),
     });
   });
 
@@ -326,6 +351,88 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
         invalidas: rows.length,
       });
     }
+
+    /*
+     * Esteira de Aprovação (SoD, US-06): flag do lote ativa → o upload VÁLIDO
+     * vira requisição-LOTE pendente (um item por linha, payload integral com o
+     * request Sinqia já montado). Diferença deliberada do fluxo direto: sob
+     * aprovação NÃO existe "pular inválidas" — o aprovador confere mérito, não
+     * formato (decisão 7 do CONTEXTO), então arquivo com erro volta inteiro.
+     * Zero Sinqia neste caminho; duplicidade RN06 → 409 estruturado.
+     */
+    if (aprovacaoAtivaFn("tomador.cadastrar_lote")) {
+      if (validas.length < rows.length) {
+        return reply.code(422).send({
+          error:
+            "O arquivo tem linhas inválidas. Sob aprovação, o lote só vira requisição com todas as linhas válidas — corrija e envie novamente.",
+          total: rows.length,
+          invalidas: rows.length - validas.length,
+          rows: rows
+            .filter((r) => r.errors.length > 0)
+            .map((r) => ({ index: r.index, nome: r.nome, documento: r.documento, errors: r.errors })),
+        });
+      }
+
+      const tipoItem = TIPO_ITEM_DO_LOTE["tomador.cadastrar_lote"]!;
+      let itens: Array<{
+        ordem: number;
+        tipo: typeof tipoItem;
+        payload: Record<string, unknown>;
+        documento: string | null;
+      }>;
+      try {
+        itens = rows.map((r) => {
+          const request = buildRequest(r.cliente, payload.control);
+          const itemPayload: ItemLoteSodPayload = {
+            ordem: r.index,
+            resumo: { nome: r.nome, documento: r.documento, tipo: r.tipo },
+            control: payload.control as Record<string, unknown>,
+            request: request as unknown as Record<string, unknown>,
+          };
+          return {
+            ordem: r.index,
+            tipo: tipoItem,
+            payload: itemPayload as unknown as Record<string, unknown>,
+            documento: normalizarDocumento(r.documento ?? "") || null,
+          };
+        });
+      } catch (e) {
+        return reply.code(422).send({
+          error: `Falha ao montar o request de uma das linhas: ${(e as Error).message}`,
+        });
+      }
+
+      try {
+        const lotePayload: LoteSodPayload = {
+          control: payload.control as Record<string, unknown>,
+          arquivo: { nome: payload.filename, totalItens: itens.length },
+        };
+        const requisicao = sodServico().criarRequisicaoLote({
+          tipo: "tomador.cadastrar_lote",
+          payload: lotePayload as unknown as Record<string, unknown>,
+          requisitante: session.username,
+          itens,
+        });
+        return reply.code(201).send({
+          aprovacao: true,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+            totalItens: itens.length,
+          },
+          total: rows.length,
+          env: env.SINQIA_ENV,
+        });
+      } catch (e) {
+        // Duplicidade RN06 → 409 com as três dimensões estruturadas.
+        return responderErroSod(reply, e);
+      }
+    }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — segura flag ativada entre as duas leituras.
+    if (guardarExecucaoDireta("tomador.cadastrar_lote", reply, aprovacaoAtivaFn)) return;
 
     const jobId = startJob({
       items: rows.map((r) => ({

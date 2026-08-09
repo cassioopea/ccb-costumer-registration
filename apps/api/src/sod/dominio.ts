@@ -1,14 +1,22 @@
 import { randomUUID } from "node:crypto";
 import {
+  derivarDesfechoLote,
+  ehTipoLote,
   extrairDocumentoSod,
   normalizarLogin,
   ROTULO_TIPO_ACAO,
+  temDuplicidades,
+  transicaoItemPermitida,
   transicaoPermitida,
+  type DuplicidadesLote,
   type EstadoRequisicao,
+  type ExcecaoLote,
   type TipoAcaoSod,
 } from "@cadastro-lote/shared";
 import {
+  ehViolacaoDuplicidadeItemPendente,
   ehViolacaoDuplicidadePendente,
+  type ItemLoteSod,
   type RequisicaoSod,
   type SodRepositorio,
 } from "./repositorio.js";
@@ -28,7 +36,8 @@ export type CodigoErroSod =
   | "VIOLACAO_SOD"
   | "MOTIVO_OBRIGATORIO"
   | "CANCELAMENTO_NEGADO"
-  | "DUPLICIDADE_PENDENTE";
+  | "DUPLICIDADE_PENDENTE"
+  | "LOTE_INVALIDO";
 
 export class SodError extends Error {
   constructor(
@@ -178,6 +187,160 @@ export function criarSodServico(
     return depois;
   }
 
+  /**
+   * Núcleo da decisão de LOTE (US-06): valida as máquinas (lote + itens),
+   * aplica tudo em UMA transação com "primeira decisão vence" e audita —
+   * sucesso ou rejeição. Usado pela decisão bidirecional e pelo cancelamento.
+   */
+  function aplicarDecisaoLoteInterno(params: {
+    req: RequisicaoSod;
+    para: EstadoRequisicao;
+    ator: string;
+    decisao: string;
+    motivo?: string;
+    ehDecisor?: boolean;
+    /** Contexto extra do evento do lote (direção-base, exceções…). */
+    detalheLote?: Record<string, unknown>;
+    itens: Array<{
+      item: ItemLoteSod;
+      para: EstadoRequisicao;
+      motivo?: string;
+      origem?: string;
+    }>;
+  }): RequisicaoSod {
+    const { req, para, ator, decisao } = params;
+
+    if (!transicaoPermitida(req.estado, para)) {
+      rejeitar(
+        "TRANSICAO_INVALIDA",
+        `Transição inválida: ${req.estado} → ${para} (requisição ${req.id}` +
+          (req.decididoPor ? `, decidida por ${req.decididoPor}` : "") +
+          `).`,
+        {
+          requisicaoId: req.id,
+          ator,
+          detalhe: { decisao, de: req.estado, para },
+          extra: { estadoAtual: req.estado, decididoPor: req.decididoPor },
+        },
+      );
+    }
+    for (const { item, para: paraItem } of params.itens) {
+      // Programação defensiva: quem chama já filtra pendentes — item fora da
+      // máquina aqui é bug interno, não entrada do usuário.
+      if (!transicaoItemPermitida(item.estado, paraItem)) {
+        throw new Error(
+          `Transição de item inválida: ${item.estado} → ${paraItem} (item ${item.id} do lote ${req.id}).`,
+        );
+      }
+    }
+
+    const ts = agora();
+    const ok = repo.aplicarDecisaoLote({
+      id: req.id,
+      de: req.estado,
+      para,
+      decididoPor: params.ehDecisor ? ator : undefined,
+      motivo: params.motivo,
+      agora: ts,
+      eventoLote: {
+        requisicaoId: req.id,
+        ator,
+        acao: ACAO_AUDITORIA.transicao,
+        detalhe: {
+          decisao,
+          de: req.estado,
+          para,
+          ...(params.motivo ? { motivo: params.motivo } : {}),
+          ...(params.detalheLote ?? {}),
+        },
+        resultado: "ok",
+        ts,
+      },
+      itens: params.itens.map(({ item, para: paraItem, motivo, origem }) => ({
+        id: item.id,
+        de: item.estado,
+        para: paraItem,
+        motivo,
+        evento: {
+          requisicaoId: req.id,
+          ator,
+          acao: ACAO_AUDITORIA.transicao,
+          detalhe: {
+            itemId: item.id,
+            ordem: item.ordem,
+            decisao,
+            de: item.estado,
+            para: paraItem,
+            ...(motivo ? { motivo } : {}),
+            ...(origem ? { origem } : {}),
+          },
+          resultado: "ok",
+          ts,
+        },
+      })),
+    });
+
+    if (!ok) {
+      // Corrida perdida entre aprovadores: a primeira decisão do lote venceu.
+      const atual = repo.obterRequisicao(req.id);
+      rejeitar(
+        "TRANSICAO_INVALIDA",
+        `Decisão não aplicada: o lote ${req.id} já saiu de "${req.estado}" ` +
+          `(estado atual: "${atual?.estado ?? "desconhecido"}"` +
+          (atual?.decididoPor ? `, decidida por ${atual.decididoPor}` : "") +
+          `).`,
+        {
+          requisicaoId: req.id,
+          ator,
+          detalhe: { decisao, de: req.estado, para, estadoAtual: atual?.estado ?? null },
+          extra: {
+            estadoAtual: atual?.estado ?? null,
+            decididoPor: atual?.decididoPor ?? null,
+          },
+        },
+      );
+    }
+
+    const depois = repo.obterRequisicao(req.id);
+    if (!depois) throw new Error(`Requisição ${req.id} sumiu após decisão de lote.`);
+    return depois;
+  }
+
+  /** Conferência RN06 (tridimensional) — consulta pura, sem efeito colateral. */
+  function conferirDuplicidadesLoteInterno(
+    tipoItem: TipoAcaoSod,
+    entradas: Array<{ ordem: number; documento: string | null }>,
+  ): DuplicidadesLote {
+    const porDocumento = new Map<string, number[]>();
+    for (const e of entradas) {
+      if (!e.documento) continue;
+      const ordens = porDocumento.get(e.documento) ?? [];
+      ordens.push(e.ordem);
+      porDocumento.set(e.documento, ordens);
+    }
+    const dups: DuplicidadesLote = {
+      intraArquivo: [],
+      pendentesIndividuais: [],
+      pendentesLote: [],
+    };
+    for (const [documento, ordens] of porDocumento) {
+      if (ordens.length > 1) dups.intraArquivo.push({ documento, ordens });
+      const individual = repo.pendentePorDocumento(tipoItem, documento);
+      if (individual) {
+        for (const ordem of ordens) {
+          dups.pendentesIndividuais.push({ documento, ordem, requisicaoId: individual.id });
+        }
+      }
+      const item = repo.itemPendentePorDocumento(tipoItem, documento);
+      if (item) {
+        for (const ordem of ordens) {
+          dups.pendentesLote.push({ documento, ordem, requisicaoId: item.requisicaoId });
+        }
+      }
+    }
+    return dups;
+  }
+
   /** Maker-checker (RN03): quem decide nunca é quem criou. */
   function exigirSegundoOperador(req: RequisicaoSod, ator: string, decisao: string): void {
     if (normalizarLogin(ator) === req.requisitante) {
@@ -268,6 +431,35 @@ export function criarSodServico(
         if (existente) {
           rejeitarDuplicidade({ existente, tipo: entrada.tipo, documento, ator: requisitante });
         }
+        // RN06 (US-06), recíproca: documento pendente como ITEM de lote também
+        // bloqueia a individual — a regra é "uma pendência por documento",
+        // independentemente do envelope (individual ou lote).
+        const itemPendente = repo.itemPendentePorDocumento(entrada.tipo, documento);
+        if (itemPendente) {
+          const lote = repo.obterRequisicao(itemPendente.requisicaoId);
+          rejeitar(
+            "DUPLICIDADE_PENDENTE",
+            `O documento ${documento} já está pendente no item ${itemPendente.ordem} de uma ` +
+              `requisição-lote (${itemPendente.requisicaoId}` +
+              (lote ? `, criada por ${lote.requisitante} em ${lote.criadoEm}` : "") +
+              `). Aguarde a decisão do lote ou cancele-o antes de criar outra.`,
+            {
+              requisicaoId: itemPendente.requisicaoId,
+              ator: requisitante,
+              detalhe: { operacao: "criar", tipo: entrada.tipo, documento, itemId: itemPendente.id },
+              extra: {
+                requisicaoExistente: lote
+                  ? {
+                      id: lote.id,
+                      estado: lote.estado,
+                      requisitante: lote.requisitante,
+                      criadoEm: lote.criadoEm,
+                    }
+                  : { id: itemPendente.requisicaoId },
+              },
+            },
+          );
+        }
       }
 
       const id = randomUUID();
@@ -343,6 +535,18 @@ export function criarSodServico(
           },
         );
       }
+      // Lote (US-06): cancelamento em cascata — os itens pendentes caem junto,
+      // na MESMA transação (nunca fica item pendente órfão de lote cancelado).
+      if (ehTipoLote(req.tipo)) {
+        const pendentes = repo.itensDoLote(req.id).filter((i) => i.estado === "pendente");
+        return aplicarDecisaoLoteInterno({
+          req,
+          para: "cancelada",
+          ator,
+          decisao: "cancelar",
+          itens: pendentes.map((item) => ({ item, para: "cancelada" as const, origem: "lote" })),
+        });
+      }
       return transicionar({ req, para: "cancelada", ator, decisao: "cancelar" });
     },
 
@@ -415,11 +619,21 @@ export function criarSodServico(
       });
     },
 
-    /** Detalhe: requisição + histórico completo de auditoria dela. */
-    detalharRequisicao(id: string) {
+    /**
+     * Detalhe: requisição + histórico completo de auditoria dela. Lotes
+     * (US-06) trazem também os itens (na ordem do arquivo) e o placar (RN01).
+     */
+    detalharRequisicao(id: string): {
+      requisicao: RequisicaoSod;
+      historico: ReturnType<SodRepositorio["eventosDaRequisicao"]>;
+      itens?: ItemLoteSod[];
+      placar?: ReturnType<SodRepositorio["placarDoLote"]>;
+    } {
       const req = repo.obterRequisicao(id);
       if (!req) throw new SodError("REQUISICAO_NAO_ENCONTRADA", `Requisição ${id} não encontrada.`);
-      return { requisicao: req, historico: repo.eventosDaRequisicao(id) };
+      const base = { requisicao: req, historico: repo.eventosDaRequisicao(id) };
+      if (!ehTipoLote(req.tipo)) return base;
+      return { ...base, itens: repo.itensDoLote(id), placar: repo.placarDoLote(id) };
     },
 
     /**
@@ -437,6 +651,375 @@ export function criarSodServico(
       }
       return repo.definirFlag({ tipo, ativa, ator: normalizado, agora: agora() });
     },
+
+    /* ------------------- Requisição-LOTE (US-06) ------------------- */
+
+    /**
+     * Conferência de duplicidade TRIDIMENSIONAL (RN06), sem efeito colateral:
+     * intra-arquivo + requisições individuais pendentes + itens pendentes de
+     * outros lotes, por documento normalizado. A criação usa esta MESMA
+     * conferência como guarda; a rota de validação a expõe para a UI apontar
+     * os conflitos ANTES do envio.
+     */
+    conferirDuplicidadesLote: conferirDuplicidadesLoteInterno,
+
+    /**
+     * Cria a requisição-LOTE em `pendente`, com todos os itens `pendente` e
+     * payload integral por item (RN08), na mesma transação. A guarda RN06
+     * roda ANTES (tridimensional) e o índice único parcial cobre a corrida
+     * entre uploads simultâneos. Zero Sinqia neste caminho.
+     */
+    criarRequisicaoLote(entrada: {
+      tipo: TipoAcaoSod;
+      payload: Record<string, unknown>;
+      requisitante: string;
+      itens: Array<{
+        ordem: number;
+        tipo: TipoAcaoSod;
+        payload: Record<string, unknown>;
+        documento: string | null;
+      }>;
+    }): RequisicaoSod {
+      const requisitante = normalizarLogin(entrada.requisitante);
+      if (!requisitante) throw new Error("Requisitante vazio — sessão sem login utilizável.");
+      if (!ehTipoLote(entrada.tipo)) {
+        throw new Error(`Tipo ${entrada.tipo} não é um tipo de lote.`);
+      }
+      if (entrada.itens.length === 0) {
+        rejeitar("LOTE_INVALIDO", "Um lote precisa de ao menos um item.", {
+          requisicaoId: null,
+          ator: requisitante,
+          detalhe: { operacao: "criar_lote", tipo: entrada.tipo },
+        });
+      }
+
+      const rejeitarDuplicidadeLote = (dups: DuplicidadesLote): never => {
+        const partes: string[] = [];
+        if (dups.intraArquivo.length > 0) {
+          partes.push(`${dups.intraArquivo.length} documento(s) repetido(s) no arquivo`);
+        }
+        if (dups.pendentesIndividuais.length > 0) {
+          partes.push(
+            `${dups.pendentesIndividuais.length} linha(s) com requisição individual pendente`,
+          );
+        }
+        if (dups.pendentesLote.length > 0) {
+          partes.push(`${dups.pendentesLote.length} linha(s) pendente(s) em outro lote`);
+        }
+        rejeitar(
+          "DUPLICIDADE_PENDENTE",
+          `Duplicidade impede a criação do lote: ${partes.join("; ")}. ` +
+            `Resolva os conflitos (ou aguarde as decisões pendentes) e envie novamente.`,
+          {
+            requisicaoId: null,
+            ator: requisitante,
+            detalhe: { operacao: "criar_lote", tipo: entrada.tipo, duplicidades: dups },
+            extra: { duplicidades: dups },
+          },
+        );
+      };
+
+      const tipoItem = entrada.itens[0].tipo;
+      const dups = conferirDuplicidadesLoteInterno(
+        tipoItem,
+        entrada.itens.map((i) => ({ ordem: i.ordem, documento: i.documento })),
+      );
+      if (temDuplicidades(dups)) rejeitarDuplicidadeLote(dups);
+
+      const id = randomUUID();
+      const ts = agora();
+      try {
+        repo.criarRequisicaoLote(
+          { id, tipo: entrada.tipo, payload: entrada.payload, requisitante, criadoEm: ts },
+          entrada.itens.map((i) => ({
+            id: randomUUID(),
+            ordem: i.ordem,
+            tipo: i.tipo,
+            payload: i.payload,
+            documento: i.documento,
+          })),
+          {
+            requisicaoId: id,
+            ator: requisitante,
+            acao: ACAO_AUDITORIA.criacao,
+            detalhe: {
+              tipo: entrada.tipo,
+              payload: entrada.payload,
+              totalItens: entrada.itens.length,
+            },
+            resultado: "ok",
+            ts,
+          },
+        );
+      } catch (e) {
+        // Corrida perdida: outro lote/arquivo inseriu item pendente do mesmo
+        // documento entre a conferência e o INSERT — o índice garantiu a RN06.
+        if (ehViolacaoDuplicidadeItemPendente(e)) {
+          const atuais = conferirDuplicidadesLoteInterno(
+            tipoItem,
+            entrada.itens.map((i) => ({ ordem: i.ordem, documento: i.documento })),
+          );
+          rejeitarDuplicidadeLote(atuais);
+        }
+        throw e;
+      }
+      const criada = repo.obterRequisicao(id);
+      if (!criada) throw new Error(`Requisição-lote ${id} não encontrada logo após criar.`);
+      return criada;
+    },
+
+    /**
+     * Decisão BIDIRECIONAL do lote (US-06, RN02/RN03): direção-base
+     * (aprovar/reprovar) + exceções por item com motivo, aplicada ATOMICAMENTE
+     * (primeira decisão do lote vence). Itens reprovados transicionam já na
+     * decisão; itens aprovados permanecem `pendente` — a fila de execução —
+     * até a reivindicação atômica de cada um (RN05).
+     */
+    decidirLote(
+      id: string,
+      aprovador: string,
+      entrada: { decisao: "aprovar" | "reprovar"; motivo?: string; excecoes?: ExcecaoLote[] },
+    ): { requisicao: RequisicaoSod; aprovados: ItemLoteSod[]; placar: ReturnType<SodRepositorio["placarDoLote"]> } {
+      const ator = normalizarLogin(aprovador);
+      const req = exigirRequisicao(id, ator, "decidir_lote");
+      if (!ehTipoLote(req.tipo)) {
+        rejeitar("LOTE_INVALIDO", `A requisição ${id} não é um lote — decida-a individualmente.`, {
+          requisicaoId: req.id,
+          ator,
+          detalhe: { decisao: entrada.decisao, tipo: req.tipo },
+        });
+      }
+      exigirSegundoOperador(req, aprovador, entrada.decisao);
+
+      const itens = repo.itensDoLote(id);
+      const pendentes = itens.filter((i) => i.estado === "pendente");
+      const porId = new Map(pendentes.map((i) => [i.id, i]));
+
+      const excecoes = entrada.excecoes ?? [];
+      const idsExcecao = new Set<string>();
+      for (const e of excecoes) {
+        const motivoLimpo = e.motivo?.trim() ?? "";
+        if (!motivoLimpo) {
+          rejeitar("MOTIVO_OBRIGATORIO", "Toda exceção de item exige motivo (RN03).", {
+            requisicaoId: req.id,
+            ator,
+            detalhe: { decisao: entrada.decisao, itemId: e.itemId },
+          });
+        }
+        if (idsExcecao.has(e.itemId) || !porId.has(e.itemId)) {
+          rejeitar(
+            "LOTE_INVALIDO",
+            `Exceção inválida: o item ${e.itemId} não é um item pendente deste lote (ou está repetido).`,
+            {
+              requisicaoId: req.id,
+              ator,
+              detalhe: { decisao: entrada.decisao, itemId: e.itemId },
+            },
+          );
+        }
+        idsExcecao.add(e.itemId);
+      }
+
+      // Motivo do LOTE é obrigatório na reprovação (RN03); na aprovação é livre.
+      const motivoLote =
+        entrada.decisao === "reprovar"
+          ? exigirMotivo(req, aprovador, "reprovar", entrada.motivo)
+          : entrada.motivo?.trim() || undefined;
+
+      const aprovados = pendentes.filter((i) =>
+        entrada.decisao === "aprovar" ? !idsExcecao.has(i.id) : idsExcecao.has(i.id),
+      );
+      const reprovados = pendentes.filter((i) =>
+        entrada.decisao === "aprovar" ? idsExcecao.has(i.id) : !idsExcecao.has(i.id),
+      );
+      // Só quando HÁ pendentes: sem nenhum, é decisão concorrente atrasada —
+      // o núcleo abaixo responde com o estado atual e quem decidiu (409).
+      if (entrada.decisao === "aprovar" && pendentes.length > 0 && aprovados.length === 0) {
+        rejeitar(
+          "LOTE_INVALIDO",
+          "Todas as linhas foram marcadas como exceção — para não executar nada, use a reprovação do lote (motivo obrigatório).",
+          {
+            requisicaoId: req.id,
+            ator,
+            detalhe: { decisao: entrada.decisao, excecoes: excecoes.length },
+          },
+        );
+      }
+
+      const motivoPorItem = new Map(excecoes.map((e) => [e.itemId, e.motivo.trim()]));
+      const para: EstadoRequisicao = aprovados.length > 0 ? "aprovada/executando" : "reprovada";
+      const requisicao = aplicarDecisaoLoteInterno({
+        req,
+        para,
+        ator,
+        decisao: entrada.decisao,
+        motivo: motivoLote,
+        ehDecisor: true,
+        detalheLote: {
+          direcaoBase: entrada.decisao,
+          aprovados: aprovados.length,
+          reprovados: reprovados.length,
+          // Motivo das exceções APROVADAS (base reprovar) só existe aqui e na
+          // trilha — item.motivo é reservado à reprovação.
+          excecoes: excecoes.map((e) => ({
+            itemId: e.itemId,
+            ordem: porId.get(e.itemId)?.ordem ?? null,
+            motivo: e.motivo.trim(),
+          })),
+        },
+        itens: reprovados.map((item) => ({
+          item,
+          para: "reprovada" as const,
+          motivo: motivoPorItem.get(item.id) ?? motivoLote,
+          origem: idsExcecao.has(item.id) ? "excecao" : "lote",
+        })),
+      });
+
+      return { requisicao, aprovados, placar: repo.placarDoLote(id) };
+    },
+
+    /**
+     * Reivindica UM item para execução (RN05): transição atômica
+     * `pendente → aprovada/executando`. Null = o item não estava mais
+     * pendente (já executado, reprovado ou reivindicado por outra execução) —
+     * o chamador simplesmente pula, sem tocar a Sinqia.
+     */
+    iniciarItemExecucao(itemId: string, ator: string): ItemLoteSod | null {
+      const item = repo.obterItem(itemId);
+      if (!item) return null;
+      const normalizado = normalizarLogin(ator);
+      const ok = repo.transicionarItem({
+        id: itemId,
+        de: "pendente",
+        para: "aprovada/executando",
+        agora: agora(),
+        evento: {
+          requisicaoId: item.requisicaoId,
+          ator: normalizado,
+          acao: ACAO_AUDITORIA.inicioExecucao,
+          detalhe: { itemId, ordem: item.ordem, tipo: item.tipo },
+          resultado: "ok",
+          ts: agora(),
+        },
+      });
+      return ok ? repo.obterItem(itemId) : null;
+    },
+
+    /** Conclui a execução de um item: `aprovada/executando → executada|falha`. */
+    concluirItemExecucao(
+      itemId: string,
+      ator: string,
+      desfecho: "executada" | "falha",
+      resultado: Record<string, unknown> = {},
+    ): ItemLoteSod {
+      const item = repo.obterItem(itemId);
+      if (!item) throw new Error(`Item ${itemId} não encontrado ao concluir execução.`);
+      const ok = repo.transicionarItem({
+        id: itemId,
+        de: "aprovada/executando",
+        para: desfecho,
+        resultado,
+        agora: agora(),
+        evento: {
+          requisicaoId: item.requisicaoId,
+          ator: normalizarLogin(ator),
+          acao: ACAO_AUDITORIA.transicao,
+          detalhe: {
+            itemId,
+            ordem: item.ordem,
+            decisao: "concluir_execucao",
+            de: "aprovada/executando",
+            para: desfecho,
+            resultado,
+          },
+          resultado: "ok",
+          ts: agora(),
+        },
+      });
+      if (!ok) {
+        throw new Error(
+          `Item ${itemId} não estava em execução ao concluir — estado inconsistente.`,
+        );
+      }
+      const depois = repo.obterItem(itemId);
+      if (!depois) throw new Error(`Item ${itemId} sumiu após conclusão.`);
+      return depois;
+    },
+
+    /**
+     * Interrupção da execução (Cenário 4): os itens ainda `pendente` vão a
+     * `falha` com a causa — nenhum fica órfão, nenhum é executado depois.
+     */
+    falharItensPendentesDoLote(
+      requisicaoId: string,
+      ator: string,
+      causa: string,
+      mensagem: string,
+    ): number {
+      const normalizado = normalizarLogin(ator);
+      let n = 0;
+      for (const item of repo.itensDoLote(requisicaoId)) {
+        if (item.estado !== "pendente") continue;
+        const ok = repo.transicionarItem({
+          id: item.id,
+          de: "pendente",
+          para: "falha",
+          resultado: {
+            desfecho: "falha",
+            causa,
+            mensagem,
+            publico: { desfecho: "falha", httpStatus: null, mensagens: mensagem },
+          },
+          agora: agora(),
+          evento: {
+            requisicaoId,
+            ator: normalizado,
+            acao: ACAO_AUDITORIA.transicao,
+            detalhe: {
+              itemId: item.id,
+              ordem: item.ordem,
+              decisao: "interromper_lote",
+              de: "pendente",
+              para: "falha",
+              causa,
+            },
+            resultado: "ok",
+            ts: agora(),
+          },
+        });
+        if (ok) n++;
+      }
+      return n;
+    },
+
+    /**
+     * Conclusão do LOTE (RN01, estado derivado): agrega o placar dos itens e
+     * transiciona `aprovada/executando → executada|falha` com o placar (e o
+     * contexto de interrupção, se houve) anexado ao resultado.
+     */
+    concluirLote(
+      id: string,
+      ator: string,
+      extra: Record<string, unknown> = {},
+    ): RequisicaoSod {
+      const normalizado = normalizarLogin(ator);
+      const req = exigirRequisicao(id, normalizado, "concluir_lote");
+      const placar = repo.placarDoLote(id);
+      const desfecho = derivarDesfechoLote(placar);
+      return transicionar({
+        req,
+        para: desfecho,
+        ator: normalizado,
+        decisao: "concluir_execucao",
+        resultado: { desfecho, placar, ...extra },
+      });
+    },
+
+    obterRequisicao: repo.obterRequisicao.bind(repo),
+    obterItem: repo.obterItem.bind(repo),
+    itensDoLote: repo.itensDoLote.bind(repo),
+    placarDoLote: repo.placarDoLote.bind(repo),
+    itemPendentePorDocumento: repo.itemPendentePorDocumento.bind(repo),
 
     listarRequisicoes: repo.listarRequisicoes.bind(repo),
     listarRequisitantes: repo.requisitantes.bind(repo),

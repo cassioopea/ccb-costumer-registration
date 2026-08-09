@@ -2,7 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   criarRequisicaoSodSchema,
-  decisaoSodSchema,
+  decisaoComExcecoesSchema,
+  ehTipoLote,
   estadoRequisicaoSchema,
   tipoAcaoSodSchema,
   normalizarLogin,
@@ -15,9 +16,10 @@ import {
   verificarSessaoSinqia,
 } from "./../sinqia-client.js";
 import { criarUma } from "./../criacao-job.js";
-import { abrirBancoSod, criarSodRepositorio } from "./repositorio.js";
+import { abrirBancoSod, criarSodRepositorio, type ItemLoteSod } from "./repositorio.js";
 import { criarSodServico, SodError, type CodigoErroSod, type SodServico } from "./dominio.js";
 import { EXECUTORES, falhaExecucao, type ExecucaoDeps } from "./execucao.js";
+import { iniciarExecucaoLote } from "./execucao-lote.js";
 
 /**
  * Esteira de Aprovação (SoD) — endpoints internos do BFF.
@@ -58,7 +60,38 @@ const STATUS_POR_CODIGO: Record<CodigoErroSod, number> = {
   CANCELAMENTO_NEGADO: 403,
   MOTIVO_OBRIGATORIO: 400,
   DUPLICIDADE_PENDENTE: 409,
+  LOTE_INVALIDO: 400,
 };
+
+/**
+ * Visão ENXUTA de um item de lote para listagem/polling: sem o payload
+ * integral e sem o envelope Sinqia completo — o detalhe de UM item
+ * (GET .../itens/:itemId) traz tudo. 70 itens × envelope integral a cada
+ * poll de 1,5s seria desperdício puro.
+ */
+function itemParaLista(item: ItemLoteSod) {
+  const resumo = (item.payload as { resumo?: Record<string, unknown> }).resumo ?? {};
+  const resultado = item.resultado as
+    | { publico?: Record<string, unknown>; causa?: unknown; duracaoMs?: unknown }
+    | null;
+  return {
+    id: item.id,
+    ordem: item.ordem,
+    tipo: item.tipo,
+    estado: item.estado,
+    documento: item.documento,
+    motivo: item.motivo,
+    resumo,
+    resultado: resultado
+      ? {
+          ...(resultado.publico ?? {}),
+          ...(resultado.causa !== undefined ? { causa: resultado.causa } : {}),
+          ...(resultado.duracaoMs !== undefined ? { duracaoMs: resultado.duracaoMs } : {}),
+        }
+      : null,
+    atualizadoEm: item.atualizadoEm,
+  };
+}
 
 export function responderErroSod(reply: FastifyReply, e: unknown): FastifyReply {
   if (e instanceof SodError) {
@@ -191,7 +224,11 @@ export async function registerSodRoutes(
     );
   });
 
-  /** Detalhar: requisição + histórico de transições (auditoria vinculada). */
+  /**
+   * Detalhar: requisição + histórico (auditoria vinculada). Lotes (US-06)
+   * trazem também o placar e os itens em visão enxuta — é este endpoint que a
+   * UI consulta em polling durante a execução (progresso quase em tempo real).
+   */
   app.get("/api/sod/requisicoes/:id", async (req, reply) => {
     const session = exigirSessao(req, reply);
     if (!session) return;
@@ -199,10 +236,32 @@ export async function registerSodRoutes(
     const parsed = idParamsSchema.safeParse(req.params);
     if (!parsed.success) return reply.code(400).send({ error: "Id inválido." });
     try {
-      return reply.send(servico.detalharRequisicao(parsed.data.id));
+      const detalhe = servico.detalharRequisicao(parsed.data.id);
+      return reply.send({
+        requisicao: detalhe.requisicao,
+        historico: detalhe.historico,
+        ...(detalhe.itens ? { itens: detalhe.itens.map(itemParaLista) } : {}),
+        ...(detalhe.placar ? { placar: detalhe.placar } : {}),
+      });
     } catch (e) {
       return responderErroSod(reply, e);
     }
+  });
+
+  /** Detalhe INTEGRAL de um item de lote: payload + resposta Sinqia completa. */
+  app.get("/api/sod/requisicoes/:id/itens/:itemId", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = z
+      .object({ id: z.string().uuid(), itemId: z.string().uuid() })
+      .safeParse(req.params);
+    if (!parsed.success) return reply.code(400).send({ error: "Id inválido." });
+    const item = servico.obterItem(parsed.data.itemId);
+    if (!item || item.requisicaoId !== parsed.data.id) {
+      return reply.code(404).send({ error: "Item não encontrado neste lote." });
+    }
+    return reply.send({ item });
   });
 
   /**
@@ -216,7 +275,7 @@ export async function registerSodRoutes(
 
     const params = idParamsSchema.safeParse(req.params);
     if (!params.success) return reply.code(400).send({ error: "Id inválido." });
-    const body = decisaoSodSchema.safeParse(req.body);
+    const body = decisaoComExcecoesSchema.safeParse(req.body);
     if (!body.success) {
       return reply
         .code(400)
@@ -225,7 +284,77 @@ export async function registerSodRoutes(
 
     const { id } = params.data;
     const ator = session.username;
+    const excecoes = body.data.excecoes ?? [];
+
+    // Exceções são um conceito de LOTE (US-06). O alvo pode não existir —
+    // nesse caso o domínio responde 404 auditado pelo fluxo normal abaixo.
+    const alvo = servico.obterRequisicao(id);
+    const ehLote = !!alvo && ehTipoLote(alvo.tipo);
+    if (!ehLote && excecoes.length > 0) {
+      return reply
+        .code(400)
+        .send({ error: "Exceções por item só se aplicam a requisições de lote." });
+    }
+
     try {
+      /*
+       * Decisão de LOTE (US-06): direção-base + exceções, aplicada
+       * atomicamente; itens aprovados executam SEQUENCIALMENTE na sessão do
+       * aprovador, em background — a resposta volta já, e o progresso é
+       * consultado por polling do detalhe.
+       */
+      if (ehLote && (body.data.decisao === "aprovar" || body.data.decisao === "reprovar")) {
+        // (i) Pré-verificação da sessão Sinqia (RN03) — apenas quando a
+        // decisão vai EXECUTAR algo (aprovação, ou reprovação com exceções
+        // aprovadas). Reprovar-todos nunca sonda nem chama a Sinqia.
+        const vaiExecutar =
+          body.data.decisao === "aprovar" || excecoes.length > 0;
+        if (vaiExecutar) {
+          const sessaoSinqia = await verificarSessaoSinqiaFn(session.token);
+          if (sessaoSinqia === "invalida") {
+            destroySession(session.id);
+            reply.clearCookie(COOKIE_SID, { path: "/" });
+            return reply.code(401).send({
+              error:
+                "Sua sessão na Sinqia não é mais válida. Entre novamente e repita a decisão — o lote continua pendente.",
+              code: CODE_SESSAO_EXPIRADA,
+              motivo: "token",
+            });
+          }
+          if (sessaoSinqia === "indisponivel") {
+            return reply.code(502).send({
+              error:
+                "A Sinqia está indisponível — não foi possível confirmar sua sessão. Nada foi alterado; o lote continua pendente.",
+            });
+          }
+        }
+
+        // (ii) Decisão atômica (primeira vence) + transição dos reprovados.
+        const decisao = servico.decidirLote(id, ator, {
+          decisao: body.data.decisao,
+          motivo: body.data.motivo,
+          excecoes,
+        });
+
+        // (iii) Execução sequencial em background, na sessão do aprovador.
+        if (decisao.aprovados.length > 0) {
+          servico.registrarInicioExecucao(id, ator);
+          void iniciarExecucaoLote(
+            decisao.requisicao,
+            { token: session.token, ator: normalizarLogin(ator), sessionId: session.id },
+            { servico, deps: execucaoDeps },
+          );
+        }
+        return reply.send({
+          requisicao: decisao.requisicao,
+          placar: decisao.placar,
+          execucao:
+            decisao.aprovados.length > 0
+              ? { emAndamento: true, aprovados: decisao.aprovados.length }
+              : undefined,
+        });
+      }
+
       switch (body.data.decisao) {
         case "aprovar": {
           // (i) Pré-verificação da sessão Sinqia do APROVADOR (RN03): sessão

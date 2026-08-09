@@ -54,11 +54,16 @@ import {
   cancelarRequisicao,
   detalharRequisicao,
   listarMinhasRequisicoes,
-  type EventoAuditoriaSod,
+  type DetalheRequisicao,
   type RequisicaoSod,
 } from "@/lib/api";
 import { SessaoExpiradaError, useSession } from "@/lib/session";
-import { RequisicaoDetalhe, formatarTs, nomeDoPayload } from "@/components/RequisicaoDetalhe";
+import {
+  RequisicaoDetalhe,
+  contagemDoPayload,
+  formatarTs,
+  nomeDoPayload,
+} from "@/components/RequisicaoDetalhe";
 
 /**
  * Esteira de Aprovação (SoD) — "Minhas requisições" (US-02, lado do
@@ -125,12 +130,30 @@ export function MinhasRequisicoes({ ativa }: { ativa: boolean }) {
 
   /* ---------------------------- detalhe ---------------------------- */
   const [detalheId, setDetalheId] = useState<string | null>(null);
-  const [detalhe, setDetalhe] = useState<{
-    requisicao: RequisicaoSod;
-    historico: EventoAuditoriaSod[];
-  } | null>(null);
+  const [detalhe, setDetalhe] = useState<DetalheRequisicao | null>(null);
   const [detalheCarregando, setDetalheCarregando] = useState(false);
   const [detalheErro, setDetalheErro] = useState<string | null>(null);
+
+  /**
+   * Progresso do LOTE (US-06): enquanto a requisição aberta está
+   * `aprovada/executando`, o detalhe é reconsultado (polling) — os estados
+   * dos itens são persistidos, então o placar avança em tempo quase real.
+   */
+  const emExecucao = detalhe?.requisicao.estado === "aprovada/executando";
+  useEffect(() => {
+    if (!detalheId || !emExecucao) return;
+    const timer = setInterval(async () => {
+      try {
+        const atual = await detalharRequisicao(detalheId);
+        setDetalhe(atual);
+        // Execução terminou: recarrega a lista uma vez (badge de estado).
+        if (atual.requisicao.estado !== "aprovada/executando") void carregar();
+      } catch {
+        /* melhor-esforço: o próximo tick tenta de novo */
+      }
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [detalheId, emExecucao, carregar]);
 
   async function abrirDetalhe(id: string) {
     setDetalheId(id);
@@ -306,7 +329,14 @@ export function MinhasRequisicoes({ ativa }: { ativa: boolean }) {
                       </TableCell>
                       <TableCell>{ROTULO_TIPO_ACAO[r.tipo] ?? r.tipo}</TableCell>
                       <TableCell className="max-w-56 truncate">
-                        {nomeDoPayload(r.tipo, r.payload)}
+                        <span className="inline-flex max-w-full items-center gap-1.5">
+                          <span className="truncate">{nomeDoPayload(r.tipo, r.payload)}</span>
+                          {contagemDoPayload(r.tipo, r.payload) !== null && (
+                            <Badge variant="secondary">
+                              {contagemDoPayload(r.tipo, r.payload)} itens
+                            </Badge>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="tabular-nums">{r.documento ?? "—"}</TableCell>
                       <TableCell>
@@ -394,7 +424,12 @@ export function MinhasRequisicoes({ ativa }: { ativa: boolean }) {
 
           {req && (
             <div className="space-y-5 text-sm">
-              <RequisicaoDetalhe requisicao={req} historico={detalhe?.historico ?? []} />
+              <RequisicaoDetalhe
+                requisicao={req}
+                historico={detalhe?.historico ?? []}
+                itens={detalhe?.itens}
+                placar={detalhe?.placar}
+              />
 
               {/* Cancelar — só o criador, só pendente */}
               {podeCancelar && (

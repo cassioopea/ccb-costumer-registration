@@ -22,12 +22,14 @@ import { sodServicoPadrao } from "./rotas.js";
 export const TIPOS_COM_FLAG: readonly TipoAcaoSod[] = [
   "tomador.cadastrar", // US-02/US-05
   "proposta.criar", // US-04/US-05
+  "tomador.cadastrar_lote", // US-06
 ];
 
 /** Nome de negócio da configuração de cada tipo (documentação, logs e CLI). */
 export const CHAVE_APROVACAO: Partial<Record<TipoAcaoSod, string>> = {
   "tomador.cadastrar": "aprovacao.cadastro_tomador_individual",
   "proposta.criar": "aprovacao.criacao_proposta_individual",
+  "tomador.cadastrar_lote": "aprovacao.cadastro_tomador_lote",
 };
 
 /**
