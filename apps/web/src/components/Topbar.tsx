@@ -80,12 +80,13 @@ function SessionChip({ onRefazerTour }: { onRefazerTour?: () => void }) {
 }
 
 /** Módulos da esteira — a topbar navega entre eles (estilo AppShell do backoffice). */
-export type Modulo = "inicio" | "clientes" | "propostas";
+export type Modulo = "inicio" | "clientes" | "propostas" | "requisicoes";
 
 const MODULOS: Array<{ id: Modulo; label: string }> = [
   { id: "inicio", label: "Início" },
   { id: "clientes", label: "Tomadores" },
   { id: "propostas", label: "Propostas" },
+  { id: "requisicoes", label: "Requisições" },
 ];
 
 interface TopbarProps {

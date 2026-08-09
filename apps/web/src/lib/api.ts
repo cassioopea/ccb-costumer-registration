@@ -4,7 +4,7 @@
 // cookie httpOnly que o backend setou no login, enviado automaticamente pelo
 // fetch e pelo EventSource (mesma origem, via proxy do Vite).
 
-import type { EmissaoRow } from "@cadastro-lote/shared";
+import type { EmissaoRow, EstadoRequisicao, TipoAcaoSod } from "@cadastro-lote/shared";
 import { lerResposta } from "./session";
 
 /** Ações aceitas pela Sinqia: Incluir / Alterar / Excluir / Consultar. */
@@ -63,6 +63,11 @@ export interface EnvInfo {
   env: string;
   isProd: boolean;
   baseUrl: string;
+  /** Toggles da Esteira de Aprovação (SoD) — a UI adapta CTAs e mensagens. */
+  aprovacao?: {
+    cadastroTomadorIndividual: boolean;
+    criacaoPropostaIndividual?: boolean;
+  };
 }
 
 export const TEMPLATE_URL = "/api/template.csv";
@@ -163,6 +168,9 @@ export interface CadastrarUmResponse {
   globalMessage?: string;
   messages?: string;
   detail?: string;
+  /** Esteira de Aprovação: true = virou requisição pendente (nada foi à Sinqia). */
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string };
 }
 
 /**
@@ -180,6 +188,144 @@ export async function cadastrarUm(
     body: JSON.stringify({ campos, control, dryRun }),
   });
   return lerResposta<CadastrarUmResponse>(res, "Falha no cadastro");
+}
+
+/* ------------------------------------------------------------------ */
+/* Esteira de Aprovação (SoD) — requisições                            */
+/* ------------------------------------------------------------------ */
+
+export interface RequisicaoSod {
+  id: string;
+  ambiente: string;
+  tipo: TipoAcaoSod;
+  /** Payload integral da ação — no cadastro: { campos, control, request }. */
+  payload: Record<string, unknown>;
+  /** CPF/CNPJ (dígitos) extraído na criação — null nos tipos sem documento. */
+  documento: string | null;
+  /** Login Sinqia normalizado do criador. */
+  requisitante: string;
+  estado: EstadoRequisicao;
+  decididoPor: string | null;
+  /** Motivo da reprovação/descarte, quando houver. */
+  motivo: string | null;
+  resultado: Record<string, unknown> | null;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface EventoAuditoriaSod {
+  id: number;
+  ambiente: string;
+  requisicaoId: string | null;
+  ator: string;
+  acao: string;
+  detalhe: Record<string, unknown>;
+  resultado: string;
+  ts: string;
+}
+
+/**
+ * Lista as requisições criadas pelo usuário LOGADO (o backend força o filtro
+ * pela identidade da sessão — `minhas=1`).
+ */
+export async function listarMinhasRequisicoes(f: {
+  estado?: string;
+  tipo?: string;
+  limit: number;
+  offset: number;
+}): Promise<{ itens: RequisicaoSod[]; total: number }> {
+  const qs = new URLSearchParams({
+    minhas: "1",
+    limit: String(f.limit),
+    offset: String(f.offset),
+  });
+  if (f.estado) qs.set("estado", f.estado);
+  if (f.tipo) qs.set("tipo", f.tipo);
+  const res = await fetch(`/api/sod/requisicoes?${qs}`);
+  return lerResposta(res, "Falha ao listar as requisições");
+}
+
+/** Detalhe: requisição + histórico de transições (trilha de auditoria dela). */
+export async function detalharRequisicao(
+  id: string,
+): Promise<{ requisicao: RequisicaoSod; historico: EventoAuditoriaSod[] }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}`);
+  return lerResposta(res, "Falha ao consultar a requisição");
+}
+
+/**
+ * Cancela uma requisição PENDENTE criada pelo próprio usuário. Se ela já foi
+ * decidida (concorrência), o backend responde 409 com o estado atual.
+ */
+export async function cancelarRequisicao(id: string): Promise<{ requisicao: RequisicaoSod }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/decisao`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decisao: "cancelar" }),
+  });
+  return lerResposta(res, "Falha ao cancelar a requisição");
+}
+
+/* --- Painel de pendências (US-03, lado do aprovador) --- */
+
+/**
+ * Requisições PENDENTES de todos os operadores, da mais antiga para a mais
+ * nova (RN01), com filtros por tipo e criador.
+ */
+export async function listarPendencias(f: {
+  tipo?: string;
+  requisitante?: string;
+  limit: number;
+  offset: number;
+}): Promise<{ itens: RequisicaoSod[]; total: number }> {
+  const qs = new URLSearchParams({
+    estado: "pendente",
+    ordem: "asc",
+    limit: String(f.limit),
+    offset: String(f.offset),
+  });
+  if (f.tipo) qs.set("tipo", f.tipo);
+  if (f.requisitante) qs.set("requisitante", f.requisitante);
+  const res = await fetch(`/api/sod/requisicoes?${qs}`);
+  return lerResposta(res, "Falha ao listar as pendências");
+}
+
+/** Criadores distintos das requisições pendentes — alimenta o filtro "criador". */
+export async function listarRequisitantesPendentes(): Promise<string[]> {
+  const res = await fetch("/api/sod/requisitantes?estado=pendente");
+  const json = await lerResposta<{ requisitantes: string[] }>(
+    res,
+    "Falha ao listar os criadores",
+  );
+  return json.requisitantes;
+}
+
+/** Resumo público do desfecho de uma execução (aprovação US-03). */
+export interface ExecucaoResumo {
+  desfecho: "executada" | "falha";
+  httpStatus: number | null;
+  /** Mensagens da Sinqia — no sucesso, identificam o tomador criado. */
+  mensagens: string;
+  detalhe?: string;
+}
+
+/**
+ * Decide uma requisição pendente. Aprovar EXECUTA na Sinqia na sessão do
+ * usuário logado (B2') e devolve o desfecho em `execucao`; reprovar exige
+ * motivo e nunca chama a Sinqia. Concorrência → 409 com estado atual +
+ * quem decidiu (mensagem do erro).
+ */
+export async function decidirRequisicao(
+  id: string,
+  decisao: "aprovar" | "reprovar",
+  motivo?: string,
+): Promise<{ requisicao: RequisicaoSod; execucao?: ExecucaoResumo }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/decisao`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decisao, ...(motivo !== undefined ? { motivo } : {}) }),
+  });
+  return lerResposta(res, "Falha ao aplicar a decisão");
 }
 
 /* ------------------------------------------------------------------ */
@@ -885,13 +1031,24 @@ export async function calcularUmaProposta(input: {
   return lerResposta(res, "Falha ao calcular a proposta");
 }
 
-/** CRIA a proposta individual na Sinqia (irreversível). */
+/**
+ * Resposta do criar-uma. Com a Esteira de Aprovação ativa (US-04), nada vai à
+ * Sinqia: `aprovacao: true` + a requisição pendente criada; os campos de
+ * CriacaoRowResult só existem no fluxo direto.
+ */
+export type CriarUmaPropostaResponse = Partial<CriacaoRowResult> & {
+  env: string;
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string };
+};
+
+/** CRIA a proposta individual na Sinqia (irreversível) — ou, com a aprovação ativa, cria a requisição. */
 export async function criarUmaProposta(input: {
   calcId: string;
   /** cdLoja ausente = proposta sem loja/filial. */
   params: CalculoParamsPayload & { cdConven: string; cdLoja?: number };
   forcarDuplicada: boolean;
-}): Promise<CriacaoRowResult & { env: string }> {
+}): Promise<CriarUmaPropostaResponse> {
   const res = await fetch("/api/propostas/criar-uma", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
