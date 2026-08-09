@@ -13,11 +13,13 @@ import { env } from "./../env.js";
 /** Nome de negócio da configuração de cada tipo (documentação e logs). */
 export const CHAVE_APROVACAO: Partial<Record<TipoAcaoSod, string>> = {
   "tomador.cadastrar": "aprovacao.cadastro_tomador_individual",
+  "proposta.criar": "aprovacao.criacao_proposta_individual",
 };
 
 /** Valor bruto configurado para cada tipo — só os tipos já entregues entram. */
 const FONTE_ENV: Partial<Record<TipoAcaoSod, () => string>> = {
   "tomador.cadastrar": () => env.APROVACAO_CADASTRO_TOMADOR_INDIVIDUAL,
+  "proposta.criar": () => env.APROVACAO_CRIACAO_PROPOSTA_INDIVIDUAL,
 };
 
 const LIGADO = new Set(["1", "true", "on", "sim"]);

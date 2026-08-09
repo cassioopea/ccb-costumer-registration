@@ -113,6 +113,12 @@ const envSchema = z.object({
    * sod/flags.ts; vira feature flag definitiva (com auditoria) na US-05.
    */
   APROVACAO_CADASTRO_TOMADOR_INDIVIDUAL: z.string().default("0"),
+  /**
+   * Toggle da Esteira de Aprovação para a CRIAÇÃO INDIVIDUAL DE PROPOSTA
+   * (US-04): ligado, a proposta individual vira requisição pendente em vez de
+   * ser criada na Sinqia. DESLIGADO por padrão — mesma mecânica do toggle acima.
+   */
+  APROVACAO_CRIACAO_PROPOSTA_INDIVIDUAL: z.string().default("0"),
   /** Base local (SQLite embutido) — métricas, eventos e futuras aprovações. */
   SQLITE_PATH: z.string().default("./data/esteira.db"),
   PORT: z.coerce.number().int().positive().default(3333),

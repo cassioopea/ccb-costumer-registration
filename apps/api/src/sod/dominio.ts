@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   extrairDocumentoSod,
   normalizarLogin,
+  ROTULO_TIPO_ACAO,
   transicaoPermitida,
   type EstadoRequisicao,
   type TipoAcaoSod,
@@ -220,9 +221,15 @@ export function criarSodServico(
     ator: string;
   }): never {
     const { existente, tipo, documento, ator } = params;
+    // A "chave" de tomador é o próprio documento; a de proposta é a assinatura
+    // (RN04, US-04) — a mensagem descreve cada uma no vocabulário do negócio.
+    const descricaoChave =
+      tipo === "proposta.criar"
+        ? "com a mesma assinatura (tomador, produto, parcelas, valores e 1º vencimento)"
+        : `para o documento ${documento}`;
     rejeitar(
       "DUPLICIDADE_PENDENTE",
-      `Já existe uma requisição pendente de ${tipo} para o documento ${documento} ` +
+      `Já existe uma requisição pendente de ${ROTULO_TIPO_ACAO[tipo].toLowerCase()} ${descricaoChave} ` +
         `(requisição ${existente.id}, criada por ${existente.requisitante} em ${existente.criadoEm}). ` +
         `Aguarde a decisão dela ou cancele-a antes de criar outra.`,
       {
@@ -418,6 +425,12 @@ export function criarSodServico(
     listarRequisicoes: repo.listarRequisicoes.bind(repo),
     listarRequisitantes: repo.requisitantes.bind(repo),
     listarAuditoria: repo.listarEventos.bind(repo),
+    /**
+     * Consulta pura da guarda: a requisição pendente de um (tipo, chave).
+     * A US-04 usa com ("tomador.cadastrar", cpf) na pré-condição RN05 —
+     * proposta para tomador ainda em aprovação é bloqueada na criação.
+     */
+    pendentePorDocumento: repo.pendentePorDocumento.bind(repo),
   };
 }
 

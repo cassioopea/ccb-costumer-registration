@@ -6,7 +6,10 @@ import {
   categoriaDaEtapa,
   dateInt,
   emissaoRowSchema,
+  ROTULO_REFERENCIA_CALCULO,
   type CalcProspCalculo,
+  type CalcProspRequest,
+  type PropostaSodPayload,
 } from "@cadastro-lote/shared";
 import {
   ajustePersonasTomadores,
@@ -62,6 +65,9 @@ import {
   motivoTexto,
   type Session,
 } from "./session.js";
+import { aprovacaoAtiva, type AprovacaoAtivaFn } from "./sod/flags.js";
+import { responderErroSod, sodServicoPadrao } from "./sod/rotas.js";
+import type { SodServico } from "./sod/dominio.js";
 
 /**
  * Rotas do módulo PROPOSTAS (Esteira de Originação).
@@ -105,7 +111,29 @@ async function readBinaryUpload(req: any): Promise<{ filename: string; buffer: B
   return { filename, buffer };
 }
 
-export async function registerPropostasRoutes(app: FastifyInstance) {
+/**
+ * Dependências injetáveis nos testes — o runtime usa os padrões. Mesmo padrão
+ * do RegisterRoutesDeps de routes.ts: os cenários da Esteira de Aprovação
+ * (US-04) provam "zero criações na Sinqia" com spies, offline.
+ */
+export interface RegisterPropostasDeps {
+  calcProspFn?: typeof calcProsp;
+  buscarClientePorCpfFn?: typeof buscarClientePorCpf;
+  criarUmaFn?: typeof criarUma;
+  /** Preguiçoso: só abre o banco quando o toggle está ativo. */
+  sodServico?: () => SodServico;
+  aprovacaoAtivaFn?: AprovacaoAtivaFn;
+}
+
+export async function registerPropostasRoutes(
+  app: FastifyInstance,
+  deps: RegisterPropostasDeps = {},
+) {
+  const calcProspFn = deps.calcProspFn ?? calcProsp;
+  const buscarClientePorCpfFn = deps.buscarClientePorCpfFn ?? buscarClientePorCpf;
+  const criarUmaFn = deps.criarUmaFn ?? criarUma;
+  const sodServico = deps.sodServico ?? sodServicoPadrao;
+  const aprovacaoAtivaFn = deps.aprovacaoAtivaFn ?? aprovacaoAtiva;
   /**
    * Parse + pré-visualização do Emissoes.xlsx. Não toca na Sinqia.
    * Exige sessão mesmo assim: o arquivo contém dados pessoais de tomadores.
@@ -409,7 +437,7 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "CPF deve ter 11 dígitos." });
     }
 
-    const busca = await buscarClientePorCpf(session.token, cpf);
+    const busca = await buscarClientePorCpfFn(session.token, cpf);
     if (busca.httpStatus === 401) return responder401(reply, session.id);
 
     return reply.send({
@@ -440,7 +468,7 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
     const { cpf, nome, dados, params } = parsed.data;
 
     const request = buildCalcRequestDados({ cpf, ...dados }, params);
-    const { httpStatus, calculo, analysis, rawBody } = await calcProsp(session.token, request);
+    const { httpStatus, calculo, analysis, rawBody } = await calcProspFn(session.token, request);
     if (httpStatus === 401) return responder401(reply, session.id);
 
     if (!calculo) {
@@ -456,6 +484,10 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
       sessionId: session.id,
       cpf,
       nome,
+      // `dados` e `request` também retidos: com a aprovação ativa (US-04),
+      // eles viram os INSUMOS persistidos da requisição — a execução recalcula.
+      dados,
+      request,
       calculo,
       criadoEm: Date.now(),
     });
@@ -512,8 +544,109 @@ export async function registerPropostasRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "Este cálculo pertence a outra sessão." });
     }
 
+    /*
+     * Esteira de Aprovação (SoD, US-04): toggle do tipo ativo → a proposta
+     * VÁLIDA (cálculo retido = validações RN03 já passaram) vira requisição
+     * pendente pela camada da US-01, com os INSUMOS persistidos e os valores
+     * do cálculo do requisitante anexados como REFERÊNCIA rotulada (RN06).
+     * NENHUMA criação na Sinqia neste caminho; o cálculo oficial e a criação
+     * acontecem na sessão do aprovador (executor da US-04). Toggle inativo →
+     * fluxo direto intacto.
+     */
+    if (aprovacaoAtivaFn("proposta.criar")) {
+      // RN05: tomador com cadastro ainda em aprovação → aguarde a decisão dele.
+      const tomadorPendente = sodServico().pendentePorDocumento(
+        "tomador.cadastrar",
+        retido.cpf,
+      );
+      if (tomadorPendente) {
+        return reply.code(409).send({
+          error:
+            "O cadastro deste tomador está em uma requisição pendente de aprovação — " +
+            "aguarde a aprovação do tomador antes de requisitar a proposta.",
+          code: "TOMADOR_PENDENTE",
+          requisicaoTomador: {
+            id: tomadorPendente.id,
+            estado: tomadorPendente.estado,
+            requisitante: tomadorPendente.requisitante,
+            criadoEm: tomadorPendente.criadoEm,
+          },
+        });
+      }
+
+      // RN05: tomador existente e apto no ambiente ativo (mesma checagem que o
+      // fluxo direto faz na criação — aqui antecipada para a requisição).
+      const busca = await buscarClientePorCpfFn(session.token, retido.cpf);
+      if (busca.httpStatus === 401) return responder401(reply, session.id);
+      if (!busca.encontrado || busca.nrClient === null) {
+        return reply.code(422).send({
+          error:
+            "Cliente não cadastrado neste ambiente — cadastre o tomador antes (módulo Tomadores).",
+          code: "TOMADOR_INEXISTENTE",
+          httpStatus: busca.httpStatus,
+        });
+      }
+
+      const payloadSod: PropostaSodPayload = {
+        proposta: {
+          cpf: retido.cpf,
+          nome: busca.dsNome || retido.nome,
+          dados: retido.dados,
+          params,
+          forcarDuplicada,
+        },
+        calcRequest: retido.request as unknown as Record<string, unknown>,
+        referencia: {
+          rotulo: ROTULO_REFERENCIA_CALCULO,
+          calculadoEm: new Date(retido.criadoEm).toISOString(),
+          resumo: {
+            vlPresta: retido.calculo.vlPresta,
+            vlFinanciado: retido.calculo.vlContra,
+            vlLiquid: retido.calculo.vlLiquid,
+            vlIof: retido.calculo.vlIof,
+            vlTotal: retido.calculo.vlTotal,
+            txAm: retido.calculo.txAm,
+            txCetAm: retido.calculo.txCetAm,
+            qtPrest: retido.calculo.qtPrest,
+            dtVct1ap: retido.calculo.dtVct1ap,
+            dtVctult: retido.calculo.dtVctult,
+            vlTac: retido.calculo.vlTac ?? 0,
+            vlSeguro: retido.calculo.vlSeguro ?? 0,
+            vlOutvlr: retido.calculo.vlOutvlr ?? 0,
+          },
+        },
+      };
+
+      try {
+        const requisicao = sodServico().criarRequisicao({
+          tipo: "proposta.criar",
+          payload: payloadSod as unknown as Record<string, unknown>,
+          requisitante: session.username,
+        });
+        // Requisição criada: os insumos agora vivem nela — descarta o retido
+        // para impedir reenvio acidental do MESMO calcId.
+        calculosIndividuais.delete(calcId);
+        app.log.info(
+          `Proposta individual virou requisição SoD ${requisicao.id} ` +
+            `(CPF final ${retido.cpf.slice(-4)}) — ambiente ${env.SINQIA_ENV.toUpperCase()}`,
+        );
+        return reply.code(201).send({
+          env: env.SINQIA_ENV,
+          aprovacao: true,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+          },
+        });
+      } catch (e) {
+        // Duplicidade pendente (RN04) → 409 com a requisição existente.
+        return responderErroSod(reply, e);
+      }
+    }
+
     try {
-      const result = await criarUma(
+      const result = await criarUmaFn(
         session.token,
         { linha: 1, nome: retido.nome, cpf: retido.cpf, calculo: retido.calculo },
         params,
@@ -1190,6 +1323,17 @@ interface CalculoIndividualRetido {
   sessionId: string;
   cpf: string;
   nome: string;
+  /** Dados da operação como digitados (US-04: insumos da requisição). */
+  dados: {
+    vlLiquido: number;
+    qtParcelas: number;
+    dtVct1Ap: number;
+    vlTac?: number;
+    vlSeguro?: number;
+    vlOutros?: number;
+  };
+  /** Request EXATO enviado ao calcProsp (US-04: a execução recalcula com ele). */
+  request: CalcProspRequest;
   calculo: CalcProspCalculo;
   criadoEm: number;
 }

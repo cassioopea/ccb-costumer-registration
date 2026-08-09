@@ -334,7 +334,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                           </span>
                         </TableCell>
                         <TableCell className="max-w-56 truncate">
-                          {nomeDoPayload(r.payload)}
+                          {nomeDoPayload(r.tipo, r.payload)}
                         </TableCell>
                         <TableCell className="tabular-nums">{r.documento ?? "—"}</TableCell>
                         <TableCell className="text-right">

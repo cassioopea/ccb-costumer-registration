@@ -136,7 +136,32 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   `components/RequisicaoDetalhe.tsx` (com seção "Resultado da execução").
   Observação: validação de integração real em HML PENDENTE — entregue no sábado,
   fora da janela Sinqia; PM valida no próximo dia útil.
-- US-04: `pendente`
+- US-04: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-248).
+  Decisões (checkpoint A): o cálculo do requisitante é PRÉ-REQUISITO da requisição
+  (sem cálculo OK não há requisição) e o CÁLCULO OFICIAL da execução, na sessão do
+  aprovador, é o que vale — divergência com a referência NÃO bloqueia (fica
+  registrada em `resultado.divergenciasReferencia`); guarda RN04 pela "Opção A":
+  chave de duplicidade de proposta = assinatura da guarda do fluxo direto
+  (cpf:prod:parcelas:1º vcto:financiado:parcela em centavos) na MESMA coluna
+  `documento` — índice único parcial reusado, zero mudança de schema; refactor
+  mínimo aprovado (executores extraídos para `sod/execucao.ts` com deps genéricas,
+  `extrairDocumentoSod` por tipo, drawer parametrizado por tipo).
+  Para as próximas US: novo tipo custa 1 entrada em flags.ts + 1 executor em
+  `sod/execucao.ts` (registro `EXECUTORES`, assinatura `(requisicao, {token, ator},
+  deps)`) + 1 branch de toggle na rota da ação + 1 renderer em
+  `RequisicaoDetalhe.tsx` + testes (~570 linhas de custo marginal na US-04).
+  Payload canônico de `proposta.criar` = `PropostaSodPayload` (shared): `proposta`
+  (insumos) + `calcRequest` (a execução recalcula com ele) + `referencia` rotulada
+  (`ROTULO_REFERENCIA_CALCULO`, RN06). Falhas de execução distinguíveis por
+  `resultado.causa` (calculo_reprovado | erro_negocio | duplicidade_sinqia |
+  indisponibilidade_ou_timeout | sessao_expirada_durante_execucao) + `etapa`.
+  RN05: `pendentePorDocumento("tomador.cadastrar", cpf)` exposto no serviço —
+  proposta para tomador pendente → 409 TOMADOR_PENDENTE. Toggle
+  `APROVACAO_CRIACAO_PROPOSTA_INDIVIDUAL` (chave
+  `aprovacao.criacao_proposta_individual`), OFF por padrão. Sem novos
+  MIGRATION-NOTEs. Observação: validação de integração real em HML PENDENTE —
+  entregue fora da janela Sinqia; PM valida no próximo dia útil (mesmo caso da
+  US-03).
 - US-05: `pendente`
 - US-06: `pendente`
 - US-07: `pendente`

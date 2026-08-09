@@ -90,7 +90,7 @@ export const ROTULO_TIPO_ACAO: Record<TipoAcaoSod, string> = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Documento (guarda de duplicidade — RN02 da US-02)                   */
+/* Chave de duplicidade (guarda de pendentes — RN02 US-02 / RN04 US-04) */
 /* ------------------------------------------------------------------ */
 
 /** CPF/CNPJ reduzido a dígitos — a forma canônica comparável e indexável. */
@@ -99,17 +99,112 @@ export function normalizarDocumento(doc: string): string {
 }
 
 /**
- * Extrai o documento (CPF/CNPJ) do payload de uma requisição, por tipo.
+ * Payload canônico de `proposta.criar` (US-04): os INSUMOS da execução
+ * (`proposta` + `calcRequest`) e os valores do cálculo do requisitante como
+ * REFERÊNCIA rotulada (RN06) — o cálculo oficial acontece na execução, na
+ * sessão do aprovador (decisão do PM no checkpoint A).
+ */
+export interface PropostaSodPayload {
+  proposta: {
+    cpf: string;
+    nome: string;
+    dados: {
+      vlLiquido: number;
+      qtParcelas: number;
+      dtVct1Ap: number;
+      vlTac?: number;
+      vlSeguro?: number;
+      vlOutros?: number;
+    };
+    params: {
+      txJuros: number;
+      cdProd: number;
+      idCarCtr: number;
+      cdConven: string;
+      cdLoja?: number;
+      dtContra: number;
+    };
+    forcarDuplicada: boolean;
+  };
+  /** Request EXATO do calcProsp do requisitante — a execução recalcula com ele. */
+  calcRequest: Record<string, unknown>;
+  referencia: {
+    rotulo: string;
+    calculadoEm: string;
+    resumo: {
+      vlPresta: number;
+      vlFinanciado: number;
+      vlLiquid: number;
+      vlIof: number;
+      vlTotal: number;
+      txAm: number;
+      txCetAm: number | null;
+      qtPrest: number;
+      dtVct1ap: number;
+      dtVctult: number | null;
+      vlTac: number;
+      vlSeguro: number;
+      vlOutvlr: number;
+    };
+  };
+}
+
+/** Rótulo fixo da referência (RN06) — a UI exibe exatamente este texto. */
+export const ROTULO_REFERENCIA_CALCULO = "referência — cálculo oficial na execução";
+
+const centavos = (v: number): number => Math.round(v * 100);
+
+/**
+ * Chave de duplicidade de `proposta.criar` (RN04): a MESMA assinatura da
+ * guarda do fluxo direto (`propostaIdentica` — produto + parcelas + 1º vcto. +
+ * financiado + parcela, em centavos), prefixada pelo CPF. Legível de propósito
+ * (o drawer e a auditoria a mostram). Payload fora do formato → null (sem guarda).
+ */
+export function chaveDuplicidadeProposta(payload: Record<string, unknown>): string | null {
+  const proposta = payload.proposta as PropostaSodPayload["proposta"] | undefined;
+  const referencia = payload.referencia as PropostaSodPayload["referencia"] | undefined;
+  const resumo = referencia?.resumo;
+  const cpf = typeof proposta?.cpf === "string" ? normalizarDocumento(proposta.cpf) : "";
+  const cdProd = proposta?.params?.cdProd;
+  if (
+    !cpf ||
+    typeof cdProd !== "number" ||
+    typeof resumo?.qtPrest !== "number" ||
+    typeof resumo?.dtVct1ap !== "number" ||
+    typeof resumo?.vlFinanciado !== "number" ||
+    typeof resumo?.vlPresta !== "number"
+  ) {
+    return null;
+  }
+  return [
+    cpf,
+    `prod${cdProd}`,
+    `${resumo.qtPrest}x`,
+    `vcto${resumo.dtVct1ap}`,
+    `fin${centavos(resumo.vlFinanciado)}`,
+    `parc${centavos(resumo.vlPresta)}`,
+  ].join(":");
+}
+
+/**
+ * Extrai a CHAVE DE DUPLICIDADE do payload de uma requisição, por tipo — o
+ * valor vai para a coluna `documento`, coberta pelo índice único parcial de
+ * pendentes (uma pendente por (ambiente, tipo, chave)).
  *
- * A guarda de duplicidade só vale para tipos "com documento"; os demais (e
- * payloads em formato inesperado) devolvem null — sem documento não há guarda.
- * O formato canônico do payload de `tomador.cadastrar` (US-02) é
- * `{ campos: { nrCpfCnpj: "..." }, control, request }`.
+ * - `tomador.cadastrar` (US-02): o documento (CPF/CNPJ) de
+ *   `{ campos: { nrCpfCnpj } }` — uma pendente por documento.
+ * - `proposta.criar` (US-04): a assinatura da proposta (mesma chave da guarda
+ *   do fluxo direto) — pendentes de propostas DIFERENTES do mesmo CPF são
+ *   permitidas, como na Sinqia (decisão "Opção A" do PM no checkpoint da US-04).
+ *
+ * Demais tipos (e payloads em formato inesperado) devolvem null — sem chave
+ * não há guarda.
  */
 export function extrairDocumentoSod(
   tipo: TipoAcaoSod,
   payload: Record<string, unknown>,
 ): string | null {
+  if (tipo === "proposta.criar") return chaveDuplicidadeProposta(payload);
   if (tipo !== "tomador.cadastrar") return null;
   const campos = payload.campos;
   if (!campos || typeof campos !== "object" || Array.isArray(campos)) return null;

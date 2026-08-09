@@ -66,6 +66,7 @@ export interface EnvInfo {
   /** Toggles da Esteira de Aprovação (SoD) — a UI adapta CTAs e mensagens. */
   aprovacao?: {
     cadastroTomadorIndividual: boolean;
+    criacaoPropostaIndividual?: boolean;
   };
 }
 
@@ -1030,13 +1031,24 @@ export async function calcularUmaProposta(input: {
   return lerResposta(res, "Falha ao calcular a proposta");
 }
 
-/** CRIA a proposta individual na Sinqia (irreversível). */
+/**
+ * Resposta do criar-uma. Com a Esteira de Aprovação ativa (US-04), nada vai à
+ * Sinqia: `aprovacao: true` + a requisição pendente criada; os campos de
+ * CriacaoRowResult só existem no fluxo direto.
+ */
+export type CriarUmaPropostaResponse = Partial<CriacaoRowResult> & {
+  env: string;
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string };
+};
+
+/** CRIA a proposta individual na Sinqia (irreversível) — ou, com a aprovação ativa, cria a requisição. */
 export async function criarUmaProposta(input: {
   calcId: string;
   /** cdLoja ausente = proposta sem loja/filial. */
   params: CalculoParamsPayload & { cdConven: string; cdLoja?: number };
   forcarDuplicada: boolean;
-}): Promise<CriacaoRowResult & { env: string }> {
+}): Promise<CriarUmaPropostaResponse> {
   const res = await fetch("/api/propostas/criar-uma", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

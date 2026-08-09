@@ -306,7 +306,7 @@ export function MinhasRequisicoes({ ativa }: { ativa: boolean }) {
                       </TableCell>
                       <TableCell>{ROTULO_TIPO_ACAO[r.tipo] ?? r.tipo}</TableCell>
                       <TableCell className="max-w-56 truncate">
-                        {nomeDoPayload(r.payload)}
+                        {nomeDoPayload(r.tipo, r.payload)}
                       </TableCell>
                       <TableCell className="tabular-nums">{r.documento ?? "—"}</TableCell>
                       <TableCell>

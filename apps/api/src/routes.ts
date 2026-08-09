@@ -135,6 +135,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
     // Toggles da Esteira de Aprovação (SoD) — a UI adapta CTAs e mensagens.
     aprovacao: {
       cadastroTomadorIndividual: aprovacaoAtivaFn("tomador.cadastrar"),
+      criacaoPropostaIndividual: aprovacaoAtivaFn("proposta.criar"),
     },
   }));
 
