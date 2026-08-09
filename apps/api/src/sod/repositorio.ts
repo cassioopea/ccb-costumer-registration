@@ -86,6 +86,16 @@ export interface FiltrosAuditoria {
   offset: number;
 }
 
+/** Ação da trilha de auditoria para mudança EFETIVA de feature flag (US-05, RN05). */
+export const ACAO_FLAG_ALTERADA = "flag_alterada";
+
+/** Estado corrente de uma flag por tipo (US-05) — para o CLI operacional. */
+export interface FlagSod {
+  tipo: TipoAcaoSod;
+  ativa: boolean;
+  atualizadoEm: string;
+}
+
 /** Abre (ou cria) o banco e garante o schema da esteira SoD. */
 export function abrirBancoSod(caminho: string): DatabaseSync {
   const resolvido = path.resolve(caminho);
@@ -158,6 +168,21 @@ export function criarSchemaSod(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_sod_aud_requisicao ON sod_auditoria (ambiente, requisicao_id);
     CREATE INDEX IF NOT EXISTS idx_sod_aud_ator_ts ON sod_auditoria (ambiente, ator, ts);
     CREATE INDEX IF NOT EXISTS idx_sod_aud_ts ON sod_auditoria (ambiente, ts);
+  `);
+
+  // Feature flags da Esteira de Aprovação (US-05, RN02/RN07): fonte DEFINITIVA
+  // do "tipo sob aprovação", por (ambiente, tipo). AUSÊNCIA de linha = flag
+  // INATIVA (RN07 — estado padrão), então o go-live não precisa de seed.
+  // MIGRATION-NOTE: `ativa INTEGER` (0/1) vira BOOLEAN no PostgreSQL; o resto
+  // (PK composta, upsert ON CONFLICT) tem sintaxe idêntica.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sod_flags (
+      ambiente      TEXT NOT NULL,
+      tipo          TEXT NOT NULL,
+      ativa         INTEGER NOT NULL CHECK (ativa IN (0, 1)),
+      atualizado_em TEXT NOT NULL,
+      PRIMARY KEY (ambiente, tipo)
+    );
   `);
 
   // Cinto de segurança do append-only (RN06): além de a camada não expor
@@ -367,6 +392,69 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
         )
         .all(...params) as unknown as Array<{ requisitante: string }>;
       return linhas.map((l) => l.requisitante);
+    },
+
+    /**
+     * A feature flag do tipo está ativa? (US-05, RN02.) Leitura em RUNTIME —
+     * cada requisição HTTP consulta o valor corrente; mudança de flag vale na
+     * requisição seguinte, sem restart. Ausência de linha = INATIVA (RN07).
+     */
+    flagAtiva(tipo: TipoAcaoSod): boolean {
+      const linha = db
+        .prepare(`SELECT ativa FROM sod_flags WHERE ambiente = ? AND tipo = ?`)
+        .get(ambiente, tipo) as { ativa: number } | undefined;
+      return linha ? linha.ativa === 1 : false;
+    },
+
+    /** Flags registradas no ambiente (para o CLI `sod:flag status`). */
+    listarFlags(): FlagSod[] {
+      const linhas = db
+        .prepare(
+          `SELECT tipo, ativa, atualizado_em FROM sod_flags WHERE ambiente = ? ORDER BY tipo`,
+        )
+        .all(ambiente) as unknown as Array<{ tipo: string; ativa: number; atualizado_em: string }>;
+      return linhas.map((l) => ({
+        tipo: l.tipo as TipoAcaoSod,
+        ativa: l.ativa === 1,
+        atualizadoEm: l.atualizado_em,
+      }));
+    },
+
+    /**
+     * Muda a flag do tipo, com auditoria NA MESMA transação (US-05, RN05):
+     * a comparação com o estado anterior acontece dentro da transação, então
+     * só mudança EFETIVA grava (upsert + evento `flag_alterada` com estado
+     * anterior, novo, ator e timestamp). Repetir o mesmo valor não grava nada.
+     */
+    definirFlag(params: {
+      tipo: TipoAcaoSod;
+      ativa: boolean;
+      ator: string;
+      agora: string;
+    }): { mudou: boolean; anterior: boolean } {
+      return emTransacao(() => {
+        const linha = db
+          .prepare(`SELECT ativa FROM sod_flags WHERE ambiente = ? AND tipo = ?`)
+          .get(ambiente, params.tipo) as { ativa: number } | undefined;
+        const anterior = linha ? linha.ativa === 1 : false;
+        if (anterior === params.ativa) return { mudou: false, anterior };
+
+        db.prepare(
+          `INSERT INTO sod_flags (ambiente, tipo, ativa, atualizado_em)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (ambiente, tipo)
+           DO UPDATE SET ativa = excluded.ativa, atualizado_em = excluded.atualizado_em`,
+        ).run(ambiente, params.tipo, params.ativa ? 1 : 0, params.agora);
+        inserirEventoInterno({
+          requisicaoId: null,
+          ator: params.ator,
+          acao: ACAO_FLAG_ALTERADA,
+          detalhe: { tipo: params.tipo, anterior, novo: params.ativa },
+          resultado: "ok",
+          ts: params.agora,
+        });
+        return { mudou: true, anterior };
+      });
     },
 
     /**

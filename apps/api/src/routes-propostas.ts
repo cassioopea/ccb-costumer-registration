@@ -66,6 +66,7 @@ import {
   type Session,
 } from "./session.js";
 import { aprovacaoAtiva, type AprovacaoAtivaFn } from "./sod/flags.js";
+import { guardarExecucaoDireta } from "./sod/corte.js";
 import { responderErroSod, sodServicoPadrao } from "./sod/rotas.js";
 import type { SodServico } from "./sod/dominio.js";
 
@@ -644,6 +645,10 @@ export async function registerPropostasRoutes(
         return responderErroSod(reply, e);
       }
     }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — mesma mecânica do /api/cadastrar (ver sod/corte.ts).
+    if (guardarExecucaoDireta("proposta.criar", reply, aprovacaoAtivaFn)) return;
 
     try {
       const result = await criarUmaFn(

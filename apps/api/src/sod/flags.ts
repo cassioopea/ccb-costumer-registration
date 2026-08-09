@@ -1,33 +1,52 @@
 import type { TipoAcaoSod } from "@cadastro-lote/shared";
-import { env } from "./../env.js";
+import { sodServicoPadrao } from "./rotas.js";
 
 /**
- * Esteira de Aprovação (SoD) — toggles por tipo de ação (RN05, US-02).
+ * Esteira de Aprovação (SoD) — feature flags DEFINITIVAS por tipo de ação
+ * (US-05, RN02). Fonte única: tabela `sod_flags` (mesmo banco/repositório da
+ * esteira), lida em RUNTIME — mudança vale na requisição seguinte, sem
+ * restart, e sobrevive a reinício por ser persistida. Ausência de registro =
+ * INATIVA (RN07: estado padrão). O env provisório das US-02/US-04
+ * (APROVACAO_*) foi REMOVIDO — não há segundo caminho de configuração.
  *
- * Fonte na Onda 1: variável de ambiente (o único padrão de configuração do
- * repo — env.ts com zod). A US-05 troca a FONTE (flag persistida, com
- * auditoria de mudança) atrás desta mesma função — os chamadores não mudam.
- * Tipo sem chave configurada = fluxo direto (toggle inexistente ≠ ligado).
+ * Mudança operacional (RN03: sem tela) somente pelo CLI auditado:
+ *   npm run sod:flag -- <tipo> <on|off> --por <login>
  */
 
-/** Nome de negócio da configuração de cada tipo (documentação e logs). */
+/**
+ * Tipos com flag NESTA fase (Onda 1). A Onda 2 acrescenta os seus aqui ao
+ * entregar cada história — tipo fora desta lista NUNCA é considerado sob
+ * aprovação, mesmo que alguém insira linha na tabela (ações da Onda 2
+ * permanecem intocadas até a US correspondente).
+ */
+export const TIPOS_COM_FLAG: readonly TipoAcaoSod[] = [
+  "tomador.cadastrar", // US-02/US-05
+  "proposta.criar", // US-04/US-05
+];
+
+/** Nome de negócio da configuração de cada tipo (documentação, logs e CLI). */
 export const CHAVE_APROVACAO: Partial<Record<TipoAcaoSod, string>> = {
   "tomador.cadastrar": "aprovacao.cadastro_tomador_individual",
   "proposta.criar": "aprovacao.criacao_proposta_individual",
 };
 
-/** Valor bruto configurado para cada tipo — só os tipos já entregues entram. */
-const FONTE_ENV: Partial<Record<TipoAcaoSod, () => string>> = {
-  "tomador.cadastrar": () => env.APROVACAO_CADASTRO_TOMADOR_INDIVIDUAL,
-  "proposta.criar": () => env.APROVACAO_CRIACAO_PROPOSTA_INDIVIDUAL,
-};
-
-const LIGADO = new Set(["1", "true", "on", "sim"]);
+/**
+ * Resolve a entrada do operador (CLI) para o tipo de ação: aceita o tipo
+ * (`tomador.cadastrar`) ou a chave de negócio
+ * (`aprovacao.cadastro_tomador_individual`). Null = não é um tipo com flag.
+ */
+export function resolverTipoComFlag(entrada: string): TipoAcaoSod | null {
+  const limpa = entrada.trim().toLowerCase();
+  for (const tipo of TIPOS_COM_FLAG) {
+    if (limpa === tipo || limpa === CHAVE_APROVACAO[tipo]) return tipo;
+  }
+  return null;
+}
 
 /** O tipo de ação exige aprovação (requisição) em vez do fluxo direto? */
 export function aprovacaoAtiva(tipo: TipoAcaoSod): boolean {
-  const bruto = FONTE_ENV[tipo]?.() ?? "";
-  return LIGADO.has(bruto.trim().toLowerCase());
+  if (!TIPOS_COM_FLAG.includes(tipo)) return false;
+  return sodServicoPadrao().flagAtiva(tipo);
 }
 
 export type AprovacaoAtivaFn = typeof aprovacaoAtiva;

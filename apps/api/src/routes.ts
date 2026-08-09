@@ -36,6 +36,7 @@ import {
   type Session,
 } from "./session.js";
 import { aprovacaoAtiva, type AprovacaoAtivaFn } from "./sod/flags.js";
+import { guardarExecucaoDireta } from "./sod/corte.js";
 import { responderErroSod, sodServicoPadrao } from "./sod/rotas.js";
 import type { SodServico } from "./sod/dominio.js";
 
@@ -509,6 +510,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
         return responderErroSod(reply, e);
       }
     }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta. Com o desvio acima, é inalcançável em operação normal —
+    // segura flag ativada entre as duas leituras e rotas futuras sem desvio.
+    if (guardarExecucaoDireta("tomador.cadastrar", reply, aprovacaoAtivaFn)) return;
 
     try {
       const { httpStatus, analysis } = await cadastrarClienteFn(session.token, payload);

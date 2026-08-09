@@ -451,7 +451,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
         <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3 text-body text-accent-foreground">
           <Hourglass className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            <strong>Aprovação ativa:</strong> esta proposta não é criada direto na Sinqia — a
+            <strong>Sob aprovação (SoD):</strong> esta proposta não é criada direto na Sinqia — a
             submissão cria uma <strong>requisição pendente</strong>, que um segundo operador
             precisa aprovar. Os valores calculados aqui são <strong>referência</strong>; o
             cálculo oficial acontece na aprovação. Acompanhe em "Requisições".

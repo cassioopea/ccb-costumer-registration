@@ -162,7 +162,26 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   MIGRATION-NOTEs. Observação: validação de integração real em HML PENDENTE —
   entregue fora da janela Sinqia; PM valida no próximo dia útil (mesmo caso da
   US-03).
-- US-05: `pendente`
+- US-05: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-249).
+  Decisões (checkpoint A): flag definitiva pela "Opção 2" — persistida na tabela
+  `sod_flags` (por ambiente + tipo; ausência de linha = INATIVA, RN07), lida em
+  RUNTIME (mudança vale na requisição seguinte, sem restart) e mudada SOMENTE pelo
+  CLI auditado `npm run sod:flag -- <tipo|chave> <on|off> --por <login>` (RN03: sem
+  tela); auditoria RN05 na mesma transação da mudança (evento `flag_alterada` só em
+  mudança EFETIVA); corte pela leitura "desvio automático + guard": as rotas cobertas
+  mantêm o desvio flag ativa → cria requisição (UX das US-02/04) e o guard
+  centralizado `guardarExecucaoDireta(tipo, reply)` (sod/corte.ts) barra QUALQUER
+  execução direta de tipo coberto com 409 `ACAO_SOB_APROVACAO`, zero Sinqia.
+  Toggle provisório REMOVIDO (envs `APROVACAO_*` fora de env.ts/.env.example) —
+  mecanismo único. Mapa do corte: POST /api/cadastrar (tomador.cadastrar, inclui
+  edição) e POST /api/propostas/criar-uma (proposta.criar).
+  Para a Onda 2: novo tipo sob corte = 1 entrada em `TIPOS_COM_FLAG` +
+  `CHAVE_APROVACAO` (sod/flags.ts) + chamada ao guard imediatamente antes da
+  execução direta na rota; o CLI e a auditoria valem automaticamente. Flags são por
+  AMBIENTE (HML ≠ prod). MIGRATION-NOTEs novos: `sod_flags` (INTEGER→BOOLEAN) em
+  repositorio.ts e conexão do CLI em flag-cli.ts. Go-live com as duas flags
+  inativas (estado padrão — sem seed). Observação: validação de integração real em
+  HML PENDENTE — entregue no sábado, fora da janela Sinqia (mesmo caso das US-03/04).
 - US-06: `pendente`
 - US-07: `pendente`
 - US-08: `pendente`
@@ -189,13 +208,17 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
 ## 6. Regras de trabalho do agente (valem em toda sessão)
 
 1. **Uma história por sessão.** O prompt da sessão define o escopo; nada além dele.
-2. **Uma branch por ONDA, um commit por US (fluxo Git):** o trabalho vive em
-   `feature/sod-onda-1` e `feature/sod-onda-2`. A primeira US de cada onda cria a branch a
-   partir da base atualizada (a Onda 2 só nasce após o merge da Onda 1 na base); as demais fazem
-   checkout e verificam no log os commits das US anteriores. Commit SOMENTE após aprovação do
+2. **Uma branch por ONDA, um commit por US (fluxo Git):** a branch base do fluxo é
+   `development` (integração/homolog); `master` recebe apenas merges de `development` já
+   validados em homologação contra a Sinqia (janela: dias úteis, horário comercial). O
+   trabalho vive em `feature/sod-onda-1` e `feature/sod-onda-2`. A primeira US de cada onda
+   cria a branch da onda a partir de `development` atualizada — e a Onda 2 só nasce após o
+   merge da Onda 1 em `development`; as demais US fazem checkout da branch da onda e
+   verificam no log os commits das US anteriores. Commit SOMENTE após aprovação do
    checkpoint final, em um único commit por US, com mensagem
-   `feat(sod): US-XX [CODIGO-CLICKUP] — <resumo>`. Sem o código ClickUp, pergunte ao PM antes de
-   começar. Nunca trabalhe na branch base; merge e push somente com instrução explícita do PM.
+   `feat(sod): US-XX [CODIGO-CLICKUP] — <resumo>`. Sem o código ClickUp, pergunte ao PM
+   antes de começar. Nunca trabalhe em `development` ou `master` diretamente; merge e push
+   somente com instrução explícita do PM.
 3. **Explorar antes de escrever:** todo prompt começa com exploração do repo — respeite-a.
 4. **Checkpoints são paradas reais:** ao atingir um checkpoint (condicional ou final), PARE e
    aguarde o PM. Não prossiga, não refatore além do escopo, não commite sem instrução explícita.

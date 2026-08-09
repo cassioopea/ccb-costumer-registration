@@ -422,6 +422,22 @@ export function criarSodServico(
       return { requisicao: req, historico: repo.eventosDaRequisicao(id) };
     },
 
+    /**
+     * Feature flags por tipo (US-05). `flagAtiva` é a fonte de `aprovacaoAtiva`
+     * (flags.ts); `definirFlag` é a ÚNICA porta de mudança (CLI operacional —
+     * RN03: sem tela) e exige o ator para a auditoria RN05. Mudança de flag
+     * NÃO toca requisição nenhuma (RN04): o ciclo de vida segue soberano.
+     */
+    flagAtiva: repo.flagAtiva.bind(repo),
+    listarFlags: repo.listarFlags.bind(repo),
+    definirFlag(tipo: TipoAcaoSod, ativa: boolean, ator: string) {
+      const normalizado = normalizarLogin(ator);
+      if (!normalizado) {
+        throw new Error("Mudança de flag exige o login de quem muda (auditoria RN05).");
+      }
+      return repo.definirFlag({ tipo, ativa, ator: normalizado, agora: agora() });
+    },
+
     listarRequisicoes: repo.listarRequisicoes.bind(repo),
     listarRequisitantes: repo.requisitantes.bind(repo),
     listarAuditoria: repo.listarEventos.bind(repo),
