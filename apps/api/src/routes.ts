@@ -35,6 +35,9 @@ import {
   sessionPublica,
   type Session,
 } from "./session.js";
+import { aprovacaoAtiva, type AprovacaoAtivaFn } from "./sod/flags.js";
+import { responderErroSod, sodServicoPadrao } from "./sod/rotas.js";
+import type { SodServico } from "./sod/dominio.js";
 
 /** Nome do cookie de sessão. httpOnly — o JS da página nunca lê. */
 const COOKIE_SID = "sid";
@@ -98,7 +101,22 @@ function exigirSessao(req: FastifyRequest, reply: FastifyReply): Session | null 
   return res.session;
 }
 
-export async function registerRoutes(app: FastifyInstance) {
+/**
+ * Dependências injetáveis nos testes — o runtime usa os padrões. Existem para
+ * os cenários da Esteira de Aprovação provarem "zero chamadas à Sinqia" (spy
+ * em cadastrarCliente) e usarem banco/toggle temporários, offline.
+ */
+export interface RegisterRoutesDeps {
+  cadastrarClienteFn?: typeof cadastrarCliente;
+  /** Preguiçoso: só abre o banco quando o toggle está ativo. */
+  sodServico?: () => SodServico;
+  aprovacaoAtivaFn?: AprovacaoAtivaFn;
+}
+
+export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesDeps = {}) {
+  const cadastrarClienteFn = deps.cadastrarClienteFn ?? cadastrarCliente;
+  const sodServico = deps.sodServico ?? sodServicoPadrao;
+  const aprovacaoAtivaFn = deps.aprovacaoAtivaFn ?? aprovacaoAtiva;
   /* ---------------------------------------------------------------- */
   /* Público (a tela de login precisa antes de qualquer sessão)        */
   /* ---------------------------------------------------------------- */
@@ -114,6 +132,10 @@ export async function registerRoutes(app: FastifyInstance) {
     env: env.SINQIA_ENV,
     isProd: isProd(),
     baseUrl: env.SINQIA_BASE_URL,
+    // Toggles da Esteira de Aprovação (SoD) — a UI adapta CTAs e mensagens.
+    aprovacao: {
+      cadastroTomadorIndividual: aprovacaoAtivaFn("tomador.cadastrar"),
+    },
   }));
 
   app.get("/api/template.csv", async (_req, reply) => {
@@ -456,8 +478,39 @@ export async function registerRoutes(app: FastifyInstance) {
       });
     }
 
+    /*
+     * Esteira de Aprovação (SoD, US-02): toggle do tipo ativo → a submissão
+     * VÁLIDA vira requisição pendente pela camada da US-01, com payload
+     * integral (campos como digitados + controles + request Sinqia montado).
+     * NENHUMA chamada à Sinqia neste caminho (RN04); a execução acontece na
+     * sessão do aprovador (US-03). Toggle inativo → fluxo direto intacto.
+     */
+    if (aprovacaoAtivaFn("tomador.cadastrar")) {
+      try {
+        const requisicao = sodServico().criarRequisicao({
+          tipo: "tomador.cadastrar",
+          payload: { campos, control, request: payload },
+          requisitante: session.username,
+        });
+        return reply.code(201).send({
+          valido: true,
+          aprovacao: true,
+          tipo: row.tipo,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+          },
+          env: env.SINQIA_ENV,
+        });
+      } catch (e) {
+        // Duplicidade pendente (RN02) → 409 com a requisição existente.
+        return responderErroSod(reply, e);
+      }
+    }
+
     try {
-      const { httpStatus, analysis } = await cadastrarCliente(session.token, payload);
+      const { httpStatus, analysis } = await cadastrarClienteFn(session.token, payload);
       if (httpStatus === 401) {
         destroySession(session.id);
         reply.clearCookie(COOKIE_SID, { path: "/" });

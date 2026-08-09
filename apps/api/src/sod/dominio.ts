@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import {
+  extrairDocumentoSod,
   normalizarLogin,
   transicaoPermitida,
   type EstadoRequisicao,
   type TipoAcaoSod,
 } from "@cadastro-lote/shared";
-import type { RequisicaoSod, SodRepositorio } from "./repositorio.js";
+import {
+  ehViolacaoDuplicidadePendente,
+  type RequisicaoSod,
+  type SodRepositorio,
+} from "./repositorio.js";
 
 /**
  * Esteira de Aprovação (SoD) — camada de DOMÍNIO.
@@ -21,12 +26,15 @@ export type CodigoErroSod =
   | "TRANSICAO_INVALIDA"
   | "VIOLACAO_SOD"
   | "MOTIVO_OBRIGATORIO"
-  | "CANCELAMENTO_NEGADO";
+  | "CANCELAMENTO_NEGADO"
+  | "DUPLICIDADE_PENDENTE";
 
 export class SodError extends Error {
   constructor(
     public readonly codigo: CodigoErroSod,
     mensagem: string,
+    /** Dados estruturados que a rota anexa à resposta (ex.: requisição existente). */
+    public readonly extra?: Record<string, unknown>,
   ) {
     super(mensagem);
     this.name = "SodError";
@@ -53,6 +61,8 @@ export function criarSodServico(
       requisicaoId: string | null;
       ator: string;
       detalhe: Record<string, unknown>;
+      /** Vai no SodError para a rota devolver estruturado (não entra na auditoria). */
+      extra?: Record<string, unknown>;
     },
   ): never {
     repo.inserirEvento({
@@ -63,7 +73,7 @@ export function criarSodServico(
       resultado: `rejeitada:${codigo.toLowerCase()}`,
       ts: agora(),
     });
-    throw new SodError(codigo, mensagem);
+    throw new SodError(codigo, mensagem, contexto.extra);
   }
 
   function exigirRequisicao(id: string, ator: string, operacao: string): RequisicaoSod {
@@ -183,8 +193,44 @@ export function criarSodServico(
     return limpo;
   }
 
+  /**
+   * Guarda de duplicidade (RN02): audita a tentativa e lança
+   * DUPLICIDADE_PENDENTE referenciando a requisição pendente existente.
+   */
+  function rejeitarDuplicidade(params: {
+    existente: RequisicaoSod;
+    tipo: TipoAcaoSod;
+    documento: string;
+    ator: string;
+  }): never {
+    const { existente, tipo, documento, ator } = params;
+    rejeitar(
+      "DUPLICIDADE_PENDENTE",
+      `Já existe uma requisição pendente de ${tipo} para o documento ${documento} ` +
+        `(requisição ${existente.id}, criada por ${existente.requisitante} em ${existente.criadoEm}). ` +
+        `Aguarde a decisão dela ou cancele-a antes de criar outra.`,
+      {
+        requisicaoId: existente.id,
+        ator,
+        detalhe: { operacao: "criar", tipo, documento, requisicaoExistente: existente.id },
+        extra: {
+          requisicaoExistente: {
+            id: existente.id,
+            estado: existente.estado,
+            requisitante: existente.requisitante,
+            criadoEm: existente.criadoEm,
+          },
+        },
+      },
+    );
+  }
+
   return {
-    /** Cria a requisição em `pendente` com payload integral e identidade normalizada. */
+    /**
+     * Cria a requisição em `pendente` com payload integral e identidade
+     * normalizada. Tipos com documento passam pela guarda de duplicidade
+     * (RN02): já havendo pendente do mesmo documento, nada é criado.
+     */
     criarRequisicao(entrada: {
       tipo: TipoAcaoSod;
       payload: Record<string, unknown>;
@@ -192,19 +238,40 @@ export function criarSodServico(
     }): RequisicaoSod {
       const requisitante = normalizarLogin(entrada.requisitante);
       if (!requisitante) throw new Error("Requisitante vazio — sessão sem login utilizável.");
+
+      const documento = extrairDocumentoSod(entrada.tipo, entrada.payload);
+      if (documento) {
+        const existente = repo.pendentePorDocumento(entrada.tipo, documento);
+        if (existente) {
+          rejeitarDuplicidade({ existente, tipo: entrada.tipo, documento, ator: requisitante });
+        }
+      }
+
       const id = randomUUID();
       const ts = agora();
-      repo.criarRequisicao(
-        { id, tipo: entrada.tipo, payload: entrada.payload, requisitante, criadoEm: ts },
-        {
-          requisicaoId: id,
-          ator: requisitante,
-          acao: ACAO_AUDITORIA.criacao,
-          detalhe: { tipo: entrada.tipo, payload: entrada.payload },
-          resultado: "ok",
-          ts,
-        },
-      );
+      try {
+        repo.criarRequisicao(
+          { id, tipo: entrada.tipo, payload: entrada.payload, documento, requisitante, criadoEm: ts },
+          {
+            requisicaoId: id,
+            ator: requisitante,
+            acao: ACAO_AUDITORIA.criacao,
+            detalhe: { tipo: entrada.tipo, payload: entrada.payload },
+            resultado: "ok",
+            ts,
+          },
+        );
+      } catch (e) {
+        // Corrida perdida: outra submissão do mesmo documento inseriu entre a
+        // checagem e o INSERT — o índice único parcial garantiu a RN02.
+        if (documento && ehViolacaoDuplicidadePendente(e)) {
+          const existente = repo.pendentePorDocumento(entrada.tipo, documento);
+          if (existente) {
+            rejeitarDuplicidade({ existente, tipo: entrada.tipo, documento, ator: requisitante });
+          }
+        }
+        throw e;
+      }
       const criada = repo.obterRequisicao(id);
       if (!criada) throw new Error(`Requisição ${id} não encontrada logo após criar.`);
       return criada;

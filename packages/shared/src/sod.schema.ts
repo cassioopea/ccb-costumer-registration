@@ -78,6 +78,47 @@ export type TipoAcaoSod = (typeof TIPOS_ACAO_SOD)[number];
 
 export const tipoAcaoSodSchema = z.enum(TIPOS_ACAO_SOD);
 
+/** Rótulos legíveis dos tipos — a UI (US-02+) exibe estes, nunca o código. */
+export const ROTULO_TIPO_ACAO: Record<TipoAcaoSod, string> = {
+  "tomador.cadastrar": "Cadastro de tomador",
+  "proposta.criar": "Criação de proposta",
+  "tomador.cadastrar_lote": "Cadastro de tomadores em lote",
+  "proposta.criar_lote": "Criação de propostas em lote",
+  "proposta.movimentar": "Movimentação de proposta",
+  "proposta.movimentar_massa": "Movimentação de propostas em massa",
+  "tomador.alterar_situacao": "Alteração de situação de tomador",
+};
+
+/* ------------------------------------------------------------------ */
+/* Documento (guarda de duplicidade — RN02 da US-02)                   */
+/* ------------------------------------------------------------------ */
+
+/** CPF/CNPJ reduzido a dígitos — a forma canônica comparável e indexável. */
+export function normalizarDocumento(doc: string): string {
+  return doc.replace(/\D/g, "");
+}
+
+/**
+ * Extrai o documento (CPF/CNPJ) do payload de uma requisição, por tipo.
+ *
+ * A guarda de duplicidade só vale para tipos "com documento"; os demais (e
+ * payloads em formato inesperado) devolvem null — sem documento não há guarda.
+ * O formato canônico do payload de `tomador.cadastrar` (US-02) é
+ * `{ campos: { nrCpfCnpj: "..." }, control, request }`.
+ */
+export function extrairDocumentoSod(
+  tipo: TipoAcaoSod,
+  payload: Record<string, unknown>,
+): string | null {
+  if (tipo !== "tomador.cadastrar") return null;
+  const campos = payload.campos;
+  if (!campos || typeof campos !== "object" || Array.isArray(campos)) return null;
+  const bruto = (campos as Record<string, unknown>).nrCpfCnpj;
+  if (typeof bruto !== "string") return null;
+  const doc = normalizarDocumento(bruto);
+  return doc.length > 0 ? doc : null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Identidade (RN05)                                                   */
 /* ------------------------------------------------------------------ */

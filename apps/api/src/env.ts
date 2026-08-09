@@ -105,6 +105,14 @@ const envSchema = z.object({
    */
   SINQIA_NR_INST: z.coerce.number().int().default(1309),
   SINQIA_NR_AGEN: z.coerce.number().int().default(19),
+  /**
+   * Esteira de Aprovação (SoD) — toggle da chave
+   * `aprovacao.cadastro_tomador_individual` (US-02, RN05): com "1"/"true", o
+   * cadastro individual de tomador cria requisição pendente em vez de chamar
+   * a Sinqia. DESLIGADO por padrão. A interpretação do valor vive em
+   * sod/flags.ts; vira feature flag definitiva (com auditoria) na US-05.
+   */
+  APROVACAO_CADASTRO_TOMADOR_INDIVIDUAL: z.string().default("0"),
   /** Base local (SQLite embutido) — métricas, eventos e futuras aprovações. */
   SQLITE_PATH: z.string().default("./data/esteira.db"),
   PORT: z.coerce.number().int().positive().default(3333),

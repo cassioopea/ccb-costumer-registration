@@ -28,6 +28,12 @@ export interface RequisicaoSod {
   tipo: TipoAcaoSod;
   /** Payload integral da ação (RN08), exatamente como recebido. */
   payload: Record<string, unknown>;
+  /**
+   * CPF/CNPJ (dígitos) extraído do payload na criação — coluna da guarda de
+   * duplicidade (RN02, decisão "Opção A" do PM na US-02). Null nos tipos sem
+   * documento e nas requisições anteriores à coluna.
+   */
+  documento: string | null;
   /** Login Sinqia normalizado do criador (RN05). */
   requisitante: string;
   estado: EstadoRequisicao;
@@ -97,6 +103,7 @@ export function criarSchemaSod(db: DatabaseSync): void {
       ambiente      TEXT NOT NULL,
       tipo          TEXT NOT NULL,
       payload       TEXT NOT NULL,
+      documento     TEXT,
       requisitante  TEXT NOT NULL,
       estado        TEXT NOT NULL CHECK (estado IN (${estados})),
       decidido_por  TEXT,
@@ -108,6 +115,28 @@ export function criarSchemaSod(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_sod_req_estado ON sod_requisicoes (ambiente, estado);
     CREATE INDEX IF NOT EXISTS idx_sod_req_tipo ON sod_requisicoes (ambiente, tipo);
     CREATE INDEX IF NOT EXISTS idx_sod_req_requisitante ON sod_requisicoes (ambiente, requisitante);
+  `);
+
+  // Bases criadas pela US-01 não têm a coluna `documento` — adiciona se faltar.
+  // MIGRATION-NOTE: PRAGMA table_info é SQLite; no PostgreSQL a checagem vira
+  // information_schema.columns (ou ALTER TABLE ... ADD COLUMN IF NOT EXISTS).
+  const colunas = db.prepare(`PRAGMA table_info(sod_requisicoes)`).all() as Array<{
+    name: string;
+  }>;
+  if (!colunas.some((c) => c.name === "documento")) {
+    db.exec(`ALTER TABLE sod_requisicoes ADD COLUMN documento TEXT`);
+  }
+
+  // Guarda de duplicidade (RN02) NO BANCO: no máximo UMA requisição pendente
+  // por (ambiente, tipo, documento). Índice parcial — sintaxe idêntica no
+  // PostgreSQL; linhas com documento NULL ficam fora da restrição.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sod_req_doc_pendente
+      ON sod_requisicoes (ambiente, tipo, documento)
+      WHERE estado = 'pendente' AND documento IS NOT NULL;
+  `);
+
+  db.exec(`
 
     -- MIGRATION-NOTE: AUTOINCREMENT vira GENERATED ALWAYS AS IDENTITY no
     -- PostgreSQL; payload/detalhe/resultado (TEXT com JSON) viram JSONB.
@@ -151,6 +180,7 @@ interface LinhaRequisicao {
   ambiente: string;
   tipo: string;
   payload: string;
+  documento: string | null;
   requisitante: string;
   estado: string;
   decidido_por: string | null;
@@ -177,6 +207,7 @@ function paraRequisicao(l: LinhaRequisicao): RequisicaoSod {
     ambiente: l.ambiente,
     tipo: l.tipo as TipoAcaoSod,
     payload: JSON.parse(l.payload) as Record<string, unknown>,
+    documento: l.documento,
     requisitante: l.requisitante,
     estado: l.estado as EstadoRequisicao,
     decididoPor: l.decidido_por,
@@ -235,21 +266,28 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
   }
 
   return {
-    /** Insere requisição + evento de criação na MESMA transação. */
+    /**
+     * Insere requisição + evento de criação na MESMA transação.
+     *
+     * Duplicidade (RN02): se já houver pendente do mesmo (tipo, documento), o
+     * índice único parcial aborta o INSERT — detectável com
+     * `ehViolacaoDuplicidadePendente`. Nada é gravado nesse caso.
+     */
     criarRequisicao(
-      req: Pick<RequisicaoSod, "id" | "tipo" | "payload" | "requisitante" | "criadoEm">,
+      req: Pick<RequisicaoSod, "id" | "tipo" | "payload" | "documento" | "requisitante" | "criadoEm">,
       evento: NovoEventoAuditoria,
     ): void {
       emTransacao(() => {
         db.prepare(
           `INSERT INTO sod_requisicoes
-             (id, ambiente, tipo, payload, requisitante, estado, criado_em, atualizado_em)
-           VALUES (?, ?, ?, ?, ?, 'pendente', ?, ?)`,
+             (id, ambiente, tipo, payload, documento, requisitante, estado, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, ?, ?, 'pendente', ?, ?)`,
         ).run(
           req.id,
           ambiente,
           req.tipo,
           JSON.stringify(req.payload),
+          req.documento,
           req.requisitante,
           req.criadoEm,
           req.criadoEm,
@@ -262,6 +300,18 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
       const linha = db
         .prepare(`SELECT * FROM sod_requisicoes WHERE ambiente = ? AND id = ?`)
         .get(ambiente, id) as LinhaRequisicao | undefined;
+      return linha ? paraRequisicao(linha) : null;
+    },
+
+    /** Requisição pendente do (tipo, documento) — a referência da guarda RN02. */
+    pendentePorDocumento(tipo: TipoAcaoSod, documento: string): RequisicaoSod | null {
+      const linha = db
+        .prepare(
+          `SELECT * FROM sod_requisicoes
+            WHERE ambiente = ? AND tipo = ? AND documento = ? AND estado = 'pendente'
+            LIMIT 1`,
+        )
+        .get(ambiente, tipo, documento) as LinhaRequisicao | undefined;
       return linha ? paraRequisicao(linha) : null;
     },
 
@@ -388,3 +438,18 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
 }
 
 export type SodRepositorio = ReturnType<typeof criarSodRepositorio>;
+
+/**
+ * O INSERT perdeu a corrida da guarda de duplicidade (RN02)? Duas submissões
+ * simultâneas do mesmo documento: a primeira insere, a segunda cai aqui.
+ * MIGRATION-NOTE: a detecção é pela mensagem do SQLite ("UNIQUE constraint
+ * failed" citando o índice); no PostgreSQL vira o código 23505 (unique_violation).
+ */
+export function ehViolacaoDuplicidadePendente(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : "";
+  // A mensagem cita o índice ou as colunas dele, conforme a versão do SQLite.
+  return (
+    msg.includes("UNIQUE constraint failed") &&
+    (msg.includes("idx_sod_req_doc_pendente") || msg.includes("sod_requisicoes.documento"))
+  );
+}

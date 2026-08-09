@@ -96,7 +96,25 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   sua entrada), endpoints `/api/sod/*`, serviço injetável em `registerSodRoutes(app, servico)`;
   execução na Sinqia pendente no stub `concluirExecucaoStub` (`TODO US-03`); retry/descarte já
   suportados no domínio, sem rota (US-10). MIGRATION-NOTEs concentrados em `sod/repositorio.ts`.
-- US-02: `pendente`
+- US-02: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-252).
+  Decisões: duplicidade RN02 pela "Opção A" (coluna `documento` extraída no INSERT +
+  índice único parcial `(ambiente, tipo, documento) WHERE estado='pendente'` — guarda
+  no próprio banco, corrida do INSERT coberta); toggle via env
+  `APROVACAO_CADASTRO_TOMADOR_INDIVIDUAL` (chave `aprovacao.cadastro_tomador_individual`)
+  atrás de `aprovacaoAtiva(tipo)` em `apps/api/src/sod/flags.ts` — a US-05 troca a FONTE
+  (flag persistida + auditoria) sem tocar os chamadores; a edição (idAcao=AL) do cadastro
+  individual também passa pelo toggle (mesma rota/ação sensível).
+  Para as próximas US: payload canônico de `tomador.cadastrar` =
+  `{ campos, control, request }` — a US-03 executa `payload.request` na sessão do
+  aprovador; extrator de documento por tipo em `extrairDocumentoSod` (shared);
+  `GET /api/sod/requisicoes?minhas=1` filtra pela identidade da SESSÃO;
+  `DUPLICIDADE_PENDENTE` → 409 com `requisicaoExistente` estruturada; `/api/cadastrar`
+  tem deps injetáveis p/ teste (`RegisterRoutesDeps`: spy Sinqia, serviço SoD, toggle);
+  `/api/env` expõe os toggles para a UI. Frontend: módulo "Requisições" na topbar
+  (`MinhasRequisicoes.tsx` — a US-03 acrescenta o painel de pendências), drawer lateral
+  em `components/ui/drawer.tsx`, rótulos de tipo em `ROTULO_TIPO_ACAO`, badge de estado
+  em `BadgeEstado`. Testes de frontend não existem no repo — cenários cobertos no BFF
+  (`us02-cadastro.test.ts`).
 - US-03: `pendente`
 - US-04: `pendente`
 - US-05: `pendente`
@@ -149,3 +167,21 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
 *Origem: Discovery "Esteira de Aprovação (SoD)" — Opea SCD/Produtos, PM Cassio (PPM), stakeholder
 Rodrigo Shyton de Melo (Head SCD). Processo invertido registrado: implementação de referência
 antecede as validações formais (TL/stakeholder), que ocorrem pós-apresentação.*
+
+---
+- **Janela de disponibilidade da Sinqia (importante):** as APIs da Sinqia só operam em
+  horário comercial (dias úteis). Fora dessa janela — noites, fins de semana, feriados —
+  o ambiente de homologação (BJ21M05) não responde, e isso NÃO é bug da nossa
+  implementação: nunca interprete timeout/indisponibilidade fora do horário comercial
+  como defeito do código, e não gaste ciclos "debugando" a integração nessas condições.
+  Regras práticas para o agente:
+  (1) testes automatizados usam SEMPRE mock/spy do cliente Sinqia — nunca dependem do
+      ambiente real, e por isso rodam a qualquer hora;
+  (2) validação de integração real contra a Sinqia (homologação) só em dia útil, em
+      horário comercial — se o checkpoint final cair fora da janela, entregue tudo com
+      os testes mockados verdes e marque explicitamente no checkpoint:
+      "validação de integração real PENDENTE — aguardando janela Sinqia (próximo dia
+      útil)"; o PM valida em homologação quando a janela abrir;
+  (3) NUNCA use o ambiente de produção como alternativa de teste fora da janela — a
+      execução em produção tem efeito financeiro real e está proibida para fins de
+      teste, sem exceção.

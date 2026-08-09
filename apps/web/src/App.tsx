@@ -9,6 +9,7 @@ import { SituacaoClientes } from "@/pages/SituacaoClientes";
 import { PropostasLote } from "@/pages/PropostasLote";
 import { PropostaIndividual } from "@/pages/PropostaIndividual";
 import { PainelPropostas } from "@/pages/PainelPropostas";
+import { MinhasRequisicoes } from "@/pages/MinhasRequisicoes";
 import { Login } from "@/pages/Login";
 import { PrimeiroAcessoDialog } from "@/components/onboarding/PrimeiroAcessoDialog";
 import { ProductTour } from "@/components/onboarding/ProductTour";
@@ -124,7 +125,11 @@ function Shell() {
             onVoltar={() => setTelaClientes("situacao")}
             edicao={clienteEdicao}
             onEdicaoConsumida={() => setClienteEdicao(null)}
+            onVerRequisicoes={() => setModulo("requisicoes")}
           />
+        </div>
+        <div className={modulo === "requisicoes" ? undefined : "hidden"}>
+          <MinhasRequisicoes ativa={modulo === "requisicoes"} />
         </div>
         <div className={modulo === "clientes" && telaClientes === "cadastro" ? undefined : "hidden"}>
           <CadastroLote onVoltar={() => setTelaClientes("situacao")} />

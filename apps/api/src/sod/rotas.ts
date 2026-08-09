@@ -46,11 +46,14 @@ const STATUS_POR_CODIGO: Record<CodigoErroSod, number> = {
   VIOLACAO_SOD: 403,
   CANCELAMENTO_NEGADO: 403,
   MOTIVO_OBRIGATORIO: 400,
+  DUPLICIDADE_PENDENTE: 409,
 };
 
-function responderErroSod(reply: FastifyReply, e: unknown): FastifyReply {
+export function responderErroSod(reply: FastifyReply, e: unknown): FastifyReply {
   if (e instanceof SodError) {
-    return reply.code(STATUS_POR_CODIGO[e.codigo]).send({ error: e.message, code: e.codigo });
+    return reply
+      .code(STATUS_POR_CODIGO[e.codigo])
+      .send({ error: e.message, code: e.codigo, ...(e.extra ?? {}) });
   }
   throw e;
 }
@@ -64,6 +67,15 @@ const listarRequisicoesQuerySchema = z.object({
   estado: estadoRequisicaoSchema.optional(),
   tipo: tipoAcaoSodSchema.optional(),
   requisitante: z.string().optional(),
+  /**
+   * "Minhas requisições" (US-02): força requisitante = identidade da SESSÃO,
+   * ignorando o parâmetro `requisitante` — o cliente não escolhe quem é.
+   * (Sem z.coerce.boolean: ele trataria "0"/"false" como true.)
+   */
+  minhas: z
+    .string()
+    .optional()
+    .transform((v) => v === "1" || v === "true"),
   ...paginacaoSchema,
 });
 
@@ -77,16 +89,24 @@ const auditoriaQuerySchema = z.object({
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
 
-/** Serviço padrão do runtime: mesmo arquivo SQLite e ambiente da base local. */
-function servicoPadrao(): SodServico {
-  const db = abrirBancoSod(env.SQLITE_PATH);
-  return criarSodServico(criarSodRepositorio(db, env.SINQIA_ENV));
+/**
+ * Serviço padrão do runtime: mesmo arquivo SQLite e ambiente da base local.
+ * SINGLETON preguiçoso — o /api/cadastrar (routes.ts) e as rotas SoD
+ * compartilham a MESMA conexão em vez de abrir o arquivo duas vezes.
+ */
+let servicoRuntime: SodServico | null = null;
+export function sodServicoPadrao(): SodServico {
+  if (!servicoRuntime) {
+    const db = abrirBancoSod(env.SQLITE_PATH);
+    servicoRuntime = criarSodServico(criarSodRepositorio(db, env.SINQIA_ENV));
+  }
+  return servicoRuntime;
 }
 
 export async function registerSodRoutes(
   app: FastifyInstance,
   /** Injetável nos testes (banco temporário); o runtime usa o padrão. */
-  servico: SodServico = servicoPadrao(),
+  servico: SodServico = sodServicoPadrao(),
 ) {
   /** Criar requisição — o requisitante é SEMPRE a sessão, nunca o body. */
   app.post("/api/sod/requisicoes", async (req, reply) => {
@@ -99,12 +119,17 @@ export async function registerSodRoutes(
         .code(400)
         .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
     }
-    const requisicao = servico.criarRequisicao({
-      tipo: parsed.data.tipo,
-      payload: parsed.data.payload,
-      requisitante: session.username,
-    });
-    return reply.code(201).send({ requisicao });
+    try {
+      const requisicao = servico.criarRequisicao({
+        tipo: parsed.data.tipo,
+        payload: parsed.data.payload,
+        requisitante: session.username,
+      });
+      return reply.code(201).send({ requisicao });
+    } catch (e) {
+      // Duplicidade pendente (RN02) → 409 com a requisição existente.
+      return responderErroSod(reply, e);
+    }
   });
 
   /** Listar com filtros (estado, tipo, requisitante) e paginação. */
@@ -118,12 +143,18 @@ export async function registerSodRoutes(
         .code(400)
         .send({ error: parsed.error.issues[0]?.message ?? "Filtros inválidos." });
     }
-    const { requisitante, ...resto } = parsed.data;
+    const { requisitante, minhas, ...resto } = parsed.data;
+    // `minhas` prevalece: a identidade vem da sessão, nunca do query param.
+    const filtroRequisitante = minhas
+      ? normalizarLogin(session.username)
+      : requisitante
+        ? normalizarLogin(requisitante)
+        : undefined;
     return reply.send(
       servico.listarRequisicoes({
         ...resto,
         // Filtro por requisitante compara na forma normalizada (RN05).
-        ...(requisitante ? { requisitante: normalizarLogin(requisitante) } : {}),
+        ...(filtroRequisitante ? { requisitante: filtroRequisitante } : {}),
       }),
     );
   });
