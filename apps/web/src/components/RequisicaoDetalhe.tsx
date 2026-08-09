@@ -13,6 +13,7 @@ import {
   CAMPOS,
   ehTipoLote,
   type LoteSodPayload,
+  type MovimentacaoLoteSodPayload,
   type MovimentacaoSodPayload,
   type PlacarLote,
   type PropostaSodPayload,
@@ -73,11 +74,24 @@ function movimentacaoDoPayload(
   return (payload as unknown as Partial<MovimentacaoSodPayload>).movimentacao;
 }
 
+/** Payload do lote de movimentação (US-09), tolerante a formato inesperado. */
+function movimentacaoLoteDoPayload(
+  payload: Record<string, unknown>,
+): Partial<MovimentacaoLoteSodPayload> {
+  return payload as unknown as Partial<MovimentacaoLoteSodPayload>;
+}
+
 /** Identificação principal (nome do tomador / arquivo) da requisição, por tipo. */
 export function nomeDoPayload(
   tipo: TipoAcaoSod | string,
   payload: Record<string, unknown>,
 ): string {
+  if (tipo === "proposta.movimentar_massa") {
+    const lote = movimentacaoLoteDoPayload(payload);
+    const origem = lote.fila?.origem?.dsStatus?.trim() || "origem";
+    const destino = lote.destino?.dsStatus?.trim() || "destino";
+    return `${lote.totalItens ?? "?"} proposta(s): ${origem} → ${destino}`;
+  }
   if (ehTipoLote(tipo as TipoAcaoSod)) {
     const arquivo = loteDoPayload(payload).arquivo;
     return arquivo?.nome?.trim() ? arquivo.nome : "Lote";
@@ -107,6 +121,11 @@ export function contagemDoPayload(
   payload: Record<string, unknown>,
 ): number | null {
   if (!ehTipoLote(tipo as TipoAcaoSod)) return null;
+  // Lote de movimentação (US-09) não tem arquivo — a contagem é direta.
+  if (tipo === "proposta.movimentar_massa") {
+    const total = movimentacaoLoteDoPayload(payload).totalItens;
+    return typeof total === "number" ? total : null;
+  }
   const total = loteDoPayload(payload).arquivo?.totalItens;
   return typeof total === "number" ? total : null;
 }
@@ -302,7 +321,11 @@ export function RequisicaoDetalhe({
       {/* Payload em campos nomeados — renderer por tipo de ação */}
       {ehLote ? (
         <>
-          <PayloadLote tipo={req.tipo} payload={req.payload} />
+          {req.tipo === "proposta.movimentar_massa" ? (
+            <PayloadLoteMovimentacao payload={req.payload} />
+          ) : (
+            <PayloadLote tipo={req.tipo} payload={req.payload} />
+          )}
           <LoteItens
             requisicao={req}
             itens={itens ?? []}
@@ -585,6 +608,53 @@ function PayloadMovimentacao({ payload }: { payload: Record<string, unknown> }) 
         A proposta permanece na etapa de origem até a aprovação. A execução confere na
         Sinqia se ela ainda está lá — mudança por fora da plataforma vira falha registrada,
         sem mover nada.
+      </p>
+    </section>
+  );
+}
+
+/**
+ * Payload do LOTE de movimentação (US-09): a transição única do lote com
+ * origem → destino EM DESTAQUE — é a primeira coisa que o aprovador precisa
+ * conferir na tela de decisão. As propostas vivem nos itens, logo abaixo.
+ */
+function PayloadLoteMovimentacao({ payload }: { payload: Record<string, unknown> }) {
+  const lote = movimentacaoLoteDoPayload(payload);
+  const origem = lote.fila?.origem;
+  const destino = lote.destino;
+  return (
+    <section>
+      <h3 className="mb-2 text-subheading text-foreground">Movimentação em massa</h3>
+      {/* Origem → destino em destaque (US-09) */}
+      <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--primary)] bg-[var(--accent)]/60 px-3 py-2.5">
+        <span className="text-body font-semibold">
+          {origem ? `${origem.dsStatus || "—"} (status ${origem.nrStatus})` : "—"}
+        </span>
+        <span aria-hidden className="text-lg font-semibold text-[var(--primary)]">
+          →
+        </span>
+        <span className="text-body font-semibold">
+          {destino ? `${destino.dsStatus || "—"} (status ${destino.proxStatus})` : "—"}
+        </span>
+        <Badge variant="outline" className="ml-auto tabular-nums">
+          {lote.totalItens ?? "?"} proposta(s)
+        </Badge>
+      </div>
+      <div className="grid gap-1 rounded-lg border border-border p-3">
+        <LinhaDetalhe rotulo="Workflow" valor={String(lote.fila?.nrWf ?? "—")} />
+        <LinhaDetalhe rotulo="Observação" valor={lote.dsObserv?.trim() || "—"} />
+        {typeof lote.inelegiveisRemovidas === "number" && lote.inelegiveisRemovidas > 0 && (
+          <LinhaDetalhe
+            rotulo="Fora do lote"
+            valor={`${lote.inelegiveisRemovidas} proposta(s) da seleção ficaram de fora por bloqueio ativo (confirmado pelo requisitante)`}
+          />
+        )}
+      </div>
+      <p className="mt-2 text-caption text-muted-foreground">
+        Todas as propostas permanecem na etapa de origem até a aprovação. A execução move
+        uma a uma, na sessão do aprovador, conferindo antes se cada proposta ainda está na
+        etapa de origem — mudança por fora vira falha registrada daquele item, sem
+        interromper os demais.
       </p>
     </section>
   );

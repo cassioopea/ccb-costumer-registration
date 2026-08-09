@@ -15,9 +15,11 @@ import {
 } from "@cadastro-lote/shared";
 import {
   ehViolacaoBloqueioMovimentacao,
+  ehViolacaoBloqueioMovimentacaoItem,
   ehViolacaoDuplicidadeItemPendente,
   ehViolacaoDuplicidadePendente,
   type ItemLoteSod,
+  type MovimentacaoAtivaSod,
   type RequisicaoSod,
   type SodRepositorio,
 } from "./repositorio.js";
@@ -308,7 +310,12 @@ export function criarSodServico(
     return depois;
   }
 
-  /** Conferência RN06 (tridimensional) — consulta pura, sem efeito colateral. */
+  /**
+   * Conferência RN06 (tridimensional) — consulta pura, sem efeito colateral.
+   * Para itens de `proposta.movimentar` (US-09), a régua NÃO é "pendente" e
+   * sim o BLOQUEIO da US-08 (pendente/executando/falha, fonte única
+   * individual+lote) — a mesma definição dos índices do banco.
+   */
   function conferirDuplicidadesLoteInterno(
     tipoItem: TipoAcaoSod,
     entradas: Array<{ ordem: number; documento: string | null }>,
@@ -327,6 +334,16 @@ export function criarSodServico(
     };
     for (const [documento, ordens] of porDocumento) {
       if (ordens.length > 1) dups.intraArquivo.push({ documento, ordens });
+      if (tipoItem === "proposta.movimentar") {
+        const ativa = repo.movimentacaoAtivaPorDocumento(documento);
+        if (ativa) {
+          const lista = ativa.itemId ? dups.pendentesLote : dups.pendentesIndividuais;
+          for (const ordem of ordens) {
+            lista.push({ documento, ordem, requisicaoId: ativa.id });
+          }
+        }
+        continue;
+      }
       const individual = repo.pendentePorDocumento(tipoItem, documento);
       if (individual) {
         for (const ordem of ordens) {
@@ -414,21 +431,25 @@ export function criarSodServico(
   }
 
   /**
-   * Bloqueio de movimentação (US-08, RN03): já existe requisição ATIVA
-   * (pendente/executando/falha) de movimentação para a proposta — audita a
-   * tentativa e rejeita com a requisição existente estruturada.
+   * Bloqueio de movimentação (US-08, RN03): já existe movimentação ATIVA
+   * (pendente/executando/falha) para a proposta — requisição individual OU
+   * item de lote (US-09, fonte única) — audita a tentativa e rejeita com a
+   * requisição existente estruturada.
    */
   function rejeitarMovimentacaoBloqueada(params: {
-    existente: RequisicaoSod;
+    existente: MovimentacaoAtivaSod;
     documento: string;
     ator: string;
   }): never {
     const { existente, documento, ator } = params;
     const emFalha = existente.estado === "falha";
+    const morada = existente.itemId
+      ? `item ${existente.itemOrdem ?? "?"} da requisição-lote ${existente.id}`
+      : `requisição ${existente.id}`;
     rejeitar(
       "MOVIMENTACAO_BLOQUEADA",
-      `A proposta ${documento} já tem uma requisição de movimentação ativa ` +
-        `(requisição ${existente.id}, estado "${existente.estado}", criada por ` +
+      `A proposta ${documento} já tem uma movimentação ativa ` +
+        `(${morada}, estado "${existente.estado}", criada por ` +
         `${existente.requisitante} em ${existente.criadoEm}). ` +
         (emFalha
           ? "A falha precisa ser resolvida (retry ou descarte) antes de nova movimentação."
@@ -442,6 +463,7 @@ export function criarSodServico(
           documento,
           requisicaoExistente: existente.id,
           estadoExistente: existente.estado,
+          ...(existente.itemId ? { itemExistente: existente.itemId } : {}),
         },
         extra: {
           requisicaoExistente: {
@@ -449,6 +471,9 @@ export function criarSodServico(
             estado: existente.estado,
             requisitante: existente.requisitante,
             criadoEm: existente.criadoEm,
+            ...(existente.itemId
+              ? { itemId: existente.itemId, itemOrdem: existente.itemOrdem, lote: true }
+              : {}),
           },
         },
       },
@@ -884,7 +909,9 @@ export function criarSodServico(
       } catch (e) {
         // Corrida perdida: outro lote/arquivo inseriu item pendente do mesmo
         // documento entre a conferência e o INSERT — o índice garantiu a RN06.
-        if (ehViolacaoDuplicidadeItemPendente(e)) {
+        // Para movimentação (US-09), o índice de bloqueio de itens decide a
+        // corrida lote×lote pela mesma via.
+        if (ehViolacaoDuplicidadeItemPendente(e) || ehViolacaoBloqueioMovimentacaoItem(e)) {
           rejeitarDuplicidadeLote(conferirTodosOsTipos());
         }
         throw e;
@@ -1271,12 +1298,13 @@ export function criarSodServico(
     pendentePorDocumento: repo.pendentePorDocumento.bind(repo),
 
     /**
-     * Bloqueio de movimentação CONSULTÁVEL (US-08, RN03 — insumo da US-09):
-     * a requisição ativa de uma proposta e a lista completa do ambiente. A
-     * definição de "ativa" é ESTADOS_BLOQUEIO_MOVIMENTACAO (shared) — a mesma
-     * do índice que decide a corrida de criação.
+     * Bloqueio de movimentação CONSULTÁVEL (US-08, RN03): a movimentação
+     * ativa de uma proposta e a lista completa do ambiente. Fonte ÚNICA
+     * (US-09): requisições individuais E itens de lote, contra a mesma
+     * definição de "ativa" (ESTADOS_BLOQUEIO_MOVIMENTACAO, shared) — a dos
+     * índices que decidem as corridas de criação.
      */
-    movimentacaoAtivaPorProposta(nrProsp: number | string): RequisicaoSod | null {
+    movimentacaoAtivaPorProposta(nrProsp: number | string): MovimentacaoAtivaSod | null {
       return repo.movimentacaoAtivaPorDocumento(String(nrProsp).replace(/\D/g, ""));
     },
     listarMovimentacoesAtivas: repo.listarMovimentacoesAtivas.bind(repo),

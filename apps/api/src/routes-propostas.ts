@@ -16,6 +16,8 @@ import {
   type CalcProspRequest,
   type Cliente,
   type ItemLoteSodPayload,
+  type MovimentacaoLoteItemSodPayload,
+  type MovimentacaoLoteSodPayload,
   type PropostaLoteItemSodPayload,
   type PropostaLoteSodPayload,
   type PropostaSodPayload,
@@ -1582,7 +1584,7 @@ export async function registerPropostasRoutes(
     }
     const b = parsed.data;
 
-    const permitidas = await consultarStatusTransf(session.token, b.nrWf, b.nrStatusAtual);
+    const permitidas = await consultarStatusTransfFn(session.token, b.nrWf, b.nrStatusAtual);
     if (permitidas.httpStatus === 401) return responder401(reply, session.id);
     const destino = permitidas.transicoes.find((t) => t.proxStatus === b.proxStatus);
     if (!destino) {
@@ -1597,6 +1599,152 @@ export async function registerPropostasRoutes(
         error: `A transição para "${destino.dsStatus}" exige observação.`,
       });
     }
+
+    /*
+     * Esteira de Aprovação (US-09): com a flag ativa, a seleção vira UMA
+     * requisição-LOTE de movimentação `pendente` — itens = propostas, payload
+     * por item no padrão da US-08 (dados da movimentação + request EXATO do
+     * transfStatus). ZERO movimentação na Sinqia neste caminho; a execução
+     * acontece na sessão do aprovador, item a item, pelo pipeline da US-06.
+     *
+     * A homogeneidade (RN02) é a MESMA regra do fluxo direto: o corpo carrega
+     * uma única fila de origem e um único destino, revalidado acima contra o
+     * workflow; a execução reconfere a origem de CADA proposta (US-08).
+     *
+     * Elegibilidade (RN04): proposta com movimentação ativa (individual OU
+     * item de outro lote — fonte única da US-08) fica de fora, apontada por
+     * motivo; o lote-subconjunto só nasce com confirmação explícita.
+     */
+    if (aprovacaoAtivaFn("proposta.movimentar_massa")) {
+      const vistos = new Set<number>();
+      for (const item of b.itens) {
+        if (vistos.has(item.nrProsp)) {
+          return reply.code(400).send({
+            error: `A proposta ${item.nrProsp} aparece mais de uma vez na seleção.`,
+          });
+        }
+        vistos.add(item.nrProsp);
+      }
+
+      const servico = sodServico();
+      const ativas = new Map(servico.listarMovimentacoesAtivas().map((m) => [m.documento, m]));
+      const inelegiveis = b.itens
+        .filter((i) => ativas.has(String(i.nrProsp)))
+        .map((i) => {
+          const ativa = ativas.get(String(i.nrProsp))!;
+          return {
+            nrProsp: i.nrProsp,
+            nmCliente: i.nmCliente,
+            requisicaoId: ativa.id,
+            estado: ativa.estado,
+            lote: ativa.itemId !== null,
+            motivo:
+              `Movimentação ativa (${ativa.estado}` +
+              (ativa.itemId ? ", em lote" : "") +
+              `) criada por ${ativa.requisitante} em ${ativa.criadoEm}` +
+              (ativa.estado === "falha"
+                ? " — a falha precisa ser resolvida (retry/descarte) antes de mover"
+                : ""),
+          };
+        });
+      const elegiveis = b.itens.filter((i) => !ativas.has(String(i.nrProsp)));
+
+      if (elegiveis.length === 0) {
+        return reply.code(409).send({
+          error:
+            "Todas as propostas selecionadas já têm movimentação ativa — nada foi criado. " +
+            `Propostas: ${inelegiveis.map((i) => i.nrProsp).join(", ")}.`,
+          code: "MOVIMENTACAO_BLOQUEADA",
+          inelegiveis,
+        });
+      }
+      if (inelegiveis.length > 0 && b.confirmarSubconjunto !== true) {
+        return reply.code(409).send({
+          error:
+            `${inelegiveis.length} proposta(s) da seleção já têm movimentação ativa e ` +
+            `ficariam de fora. Confirme para criar o lote só com as ${elegiveis.length} elegíveis.`,
+          code: "SUBCONJUNTO_NAO_CONFIRMADO",
+          inelegiveis,
+          elegiveis: elegiveis.length,
+        });
+      }
+
+      const origem = { nrStatus: b.nrStatusAtual, dsStatus: b.dsStatusAtual ?? "" };
+      const destinoSod = { proxStatus: destino.proxStatus, dsStatus: destino.dsStatus };
+      const payloadLote: MovimentacaoLoteSodPayload = {
+        fila: { nrWf: b.nrWf, origem },
+        destino: destinoSod,
+        dsObserv: b.dsObserv.trim(),
+        totalItens: elegiveis.length,
+        inelegiveisRemovidas: inelegiveis.length,
+      };
+      const itens = elegiveis.map((i, idx) => {
+        const payloadItem: MovimentacaoLoteItemSodPayload = {
+          ordem: idx + 1,
+          resumo: { nome: i.nmCliente, documento: String(i.nrProsp) },
+          movimentacao: {
+            nrProsp: i.nrProsp,
+            nmCliente: i.nmCliente,
+            nrCpf: i.nrCpf,
+            nrWf: b.nrWf,
+            origem,
+            destino: destinoSod,
+            dsObserv: b.dsObserv.trim(),
+            cdProd: i.cdProd,
+            nrContra: i.nrContra ?? null,
+          },
+          request: {
+            nrStatus: b.proxStatus,
+            dsObserv: b.dsObserv.trim(),
+            nrCpf: i.nrCpf,
+            nrProsp: i.nrProsp,
+            nmCliente: i.nmCliente,
+            nrWf: b.nrWf,
+            cdProd: i.cdProd,
+            nrContra: i.nrContra ?? 0,
+          },
+        };
+        return {
+          ordem: idx + 1,
+          tipo: "proposta.movimentar" as TipoAcaoSod,
+          payload: payloadItem as unknown as Record<string, unknown>,
+          documento: String(i.nrProsp),
+        };
+      });
+
+      try {
+        const requisicao = servico.criarRequisicaoLote({
+          tipo: "proposta.movimentar_massa",
+          payload: payloadLote as unknown as Record<string, unknown>,
+          requisitante: session.username,
+          itens,
+        });
+        app.log.info(
+          `Movimentação em MASSA sob aprovação: lote ${requisicao.id} com ${elegiveis.length} ` +
+            `proposta(s) ${b.nrStatusAtual}→${b.proxStatus} (${inelegiveis.length} inelegível(is) ` +
+            `removida(s)) — ambiente ${env.SINQIA_ENV.toUpperCase()}`,
+        );
+        return reply.code(201).send({
+          env: env.SINQIA_ENV,
+          aprovacao: true,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+          },
+          totalItens: elegiveis.length,
+          inelegiveis,
+          destino: destinoSod,
+        });
+      } catch (e) {
+        // Bloqueio por proposta / duplicidade de itens → 409 estruturado.
+        return responderErroSod(reply, e);
+      }
+    }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — segura flag ativada entre as duas leituras.
+    if (guardarExecucaoDireta("proposta.movimentar_massa", reply, aprovacaoAtivaFn)) return;
 
     const jobId = startTransferenciaJob({
       items: b.itens.map((i) => ({ ...i, nrContra: i.nrContra ?? 0 })),
@@ -1953,8 +2101,16 @@ const transferirBodySchema = z.object({
 const transferirLoteBodySchema = z.object({
   nrWf: z.number().int(),
   nrStatusAtual: z.number().int(),
+  /** Nome da etapa de ORIGEM (exibição) — vai no payload da requisição US-09. */
+  dsStatusAtual: z.string().max(120).optional(),
   proxStatus: z.number().int(),
   dsObserv: z.string().max(500).default(""),
+  /**
+   * Confirmação de SUBCONJUNTO (US-09, RN04): quando parte da seleção está
+   * bloqueada por movimentação ativa, o lote só nasce sem essas propostas com
+   * esta confirmação explícita — sem ela, a rota devolve 409 com a lista.
+   */
+  confirmarSubconjunto: z.boolean().optional(),
   itens: z
     .array(
       z.object({

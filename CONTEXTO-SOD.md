@@ -294,7 +294,48 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   — entregue no sábado, fora da janela Sinqia (mesmo caso das US-03..07); sem infra de
   teste de frontend no repo (registrado desde a US-02), a medição do painel é a do BFF +
   análise de render (indicador = 1 Map.get por linha, zero fetch por proposta).
-- US-09: `pendente`
+- US-09: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-258).
+  Decisões (checkpoint A condicional NÃO acionado — a composição saiu por
+  parametrização, sem duplicação relevante; avaliação registrada): tipo
+  `proposta.movimentar_massa` com
+  itens do tipo INDIVIDUAL `proposta.movimentar` (TIPO_ITEM_DO_LOTE) — executor da
+  US-08 reusado item a item pelo pipeline da US-06 (`iniciarExecucaoLote`), incluindo
+  verificação de divergência externa POR item e idempotência por reivindicação
+  atômica; decisão bidirecional herdada sem código novo (rota/domínio/UI genéricos
+  por `ehTipoLote`). BLOQUEIO UNIFICADO (a única generalização de fundo, prevista
+  pela US-08): `movimentacaoAtivaPorDocumento`/`listarMovimentacoesAtivas` viraram
+  fonte ÚNICA sobre as DUAS moradas (sod_requisicoes + sod_lote_itens) devolvendo a
+  visão `MovimentacaoAtivaSod` (id do lote + itemId/itemOrdem quando item); índice
+  parcial novo `idx_sod_itens_mov_ativa` decide a corrida lote×lote no banco (mesma
+  régua: pendente/executando/FALHA); corrida individual×lote é decidida pela
+  pré-checagem SÍNCRONA do domínio (node:sqlite não cede o event loop entre checagem
+  e INSERT — testada nas duas ordens). Elegibilidade RN04 na rota
+  (POST /api/propostas-transferir-lote, desvio com flag ativa): inelegíveis apontadas
+  por motivo → 409 `SUBCONJUNTO_NAO_CONFIRMADO` (nada criado); lote-subconjunto só
+  com `confirmarSubconjunto: true`; todas bloqueadas → 409 `MOVIMENTACAO_BLOQUEADA`.
+  Homogeneidade RN02 = a MESMA regra do fluxo direto (uma fila de origem + um
+  destino revalidado no consultarStatusTransf; seleção da UI limitada à fila
+  carregada e limpa na troca) + reconferência de origem por item na execução.
+  Payloads canônicos: `MovimentacaoLoteSodPayload` (fila/destino/dsObserv/totalItens/
+  inelegiveisRemovidas) e `MovimentacaoLoteItemSodPayload` (US-08 + ordem/resumo).
+  Flag `aprovacao.movimentacao_proposta_massa` (OFF por padrão) + corte na rota
+  direta — fecha o gap registrado na US-08 (mover 1 pelo caminho do lote era direto).
+  UI: modal "Mover selecionadas" com desvio de aprovação (aviso local de bloqueadas +
+  etapa de confirmação de subconjunto vinda do backend), indicador do painel cobrindo
+  itens de lote (`lote`/`itemId` no agregado; drawer com itens+placar e cancelamento
+  em cascata), renderer `PayloadLoteMovimentacao` com origem → destino EM DESTAQUE na
+  tela de decisão (PainelPendencias herdou exceções/polling sem mudança).
+  Para a US-10: retry de item de movimentação reexecuta o payload persistido pelo
+  executor da US-08; `falha → descartada` de item libera o bloqueio pela própria
+  máquina (o índice só cobre pendente/executando/falha).
+  MIGRATION-NOTEs novos (repositorio.ts): `idx_sod_itens_mov_ativa` (23505 no
+  PostgreSQL via `ehViolacaoBloqueioMovimentacaoItem`) e a nota de que no PostgreSQL
+  a guarda individual×lote exige trava explícita (advisory lock por documento).
+  Teste de escopo da US-05 atualizado (exemplo fora do corte → `tomador.alterar_situacao`,
+  o único restante). Testes: us09-movimentacao-massa.test.ts (15 testes; suíte 146/146).
+  Observação: validação de integração real em HML PENDENTE — entregue no sábado,
+  fora da janela Sinqia (mesmo caso das US-03..08); sem infra de teste de frontend
+  no repo (registrado desde a US-02) — fluxo do modal coberto pelos contratos do BFF.
 - US-10: `pendente`
 - US-11: `pendente`
 - US-12: `pendente — aguarda aceite do negócio (ação 4)`

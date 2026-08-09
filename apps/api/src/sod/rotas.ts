@@ -442,8 +442,9 @@ export async function registerSodRoutes(
 
   /**
    * Movimentações ATIVAS do ambiente (US-08, RN05) — UMA consulta agregada
-   * para o indicador do Painel de Propostas (nunca uma chamada por proposta)
-   * e a visão do bloqueio por proposta que a US-09 valida os lotes contra.
+   * para o indicador do Painel de Propostas (nunca uma chamada por proposta).
+   * Fonte ÚNICA do bloqueio por proposta (US-09): a lista cobre requisições
+   * INDIVIDUAIS e itens de LOTE de movimentação — `lote`/`itemId` distinguem.
    * Ativa = pendente, executando ou falha (ESTADOS_BLOQUEIO_MOVIMENTACAO).
    */
   app.get("/api/sod/movimentacoes-ativas", async (req, reply) => {
@@ -461,6 +462,8 @@ export async function registerSodRoutes(
         criadoEm: r.criadoEm,
         origem: mov.origem ?? null,
         destino: mov.destino ?? null,
+        lote: r.itemId !== null,
+        ...(r.itemId ? { itemId: r.itemId } : {}),
         ...(r.estado === "falha" && typeof resultado?.causa === "string"
           ? { causaFalha: resultado.causa }
           : {}),

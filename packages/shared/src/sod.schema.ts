@@ -92,6 +92,7 @@ export function transicaoItemPermitida(de: EstadoRequisicao, para: EstadoRequisi
 export const TIPO_ITEM_DO_LOTE: Partial<Record<TipoAcaoSod, TipoAcaoSod>> = {
   "tomador.cadastrar_lote": "tomador.cadastrar",
   "proposta.criar_lote": "proposta.criar",
+  "proposta.movimentar_massa": "proposta.movimentar",
 };
 
 /**
@@ -104,6 +105,7 @@ export const TIPO_ITEM_DO_LOTE: Partial<Record<TipoAcaoSod, TipoAcaoSod>> = {
 export const TIPOS_DE_ITEM_DO_LOTE: Partial<Record<TipoAcaoSod, readonly TipoAcaoSod[]>> = {
   "tomador.cadastrar_lote": ["tomador.cadastrar"],
   "proposta.criar_lote": ["tomador.cadastrar", "proposta.criar"],
+  "proposta.movimentar_massa": ["proposta.movimentar"],
 };
 
 export function ehTipoLote(tipo: TipoAcaoSod): boolean {
@@ -232,6 +234,38 @@ export interface MovimentacaoSodPayload {
   };
   /** Request EXATO do transfStatus — a execução o reenvia intacto. */
   request: Record<string, unknown>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Movimentação de propostas em MASSA (US-09)                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Payload canônico da REQUISIÇÃO-LOTE de movimentação (US-09): a transição
+ * ÚNICA do lote (homogeneidade RN02 — todas saem da mesma fila para o mesmo
+ * destino) + a contagem que as listagens exibem. Os dados de cada proposta
+ * vivem nos ITENS (`MovimentacaoLoteItemSodPayload`) — o lote é o envelope.
+ */
+export interface MovimentacaoLoteSodPayload {
+  fila: { nrWf: number; origem: { nrStatus: number; dsStatus: string } };
+  destino: { proxStatus: number; dsStatus: string };
+  dsObserv: string;
+  totalItens: number;
+  /**
+   * Propostas da seleção que ficaram DE FORA por bloqueio ativo (RN04):
+   * o lote só nasce sem elas com confirmação explícita do requisitante.
+   */
+  inelegiveisRemovidas: number;
+}
+
+/**
+ * Payload canônico de um ITEM de movimentação em massa: o MESMO formato da
+ * individual (US-08 — executor e chave de bloqueio reusados item a item) +
+ * posição na seleção e resumo de exibição (`documento` = nº da proposta).
+ */
+export interface MovimentacaoLoteItemSodPayload extends MovimentacaoSodPayload {
+  ordem: number;
+  resumo: { nome: string; documento: string };
 }
 
 /* ------------------------------------------------------------------ */

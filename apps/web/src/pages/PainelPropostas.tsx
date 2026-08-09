@@ -16,7 +16,7 @@ import {
   SlidersHorizontal,
   XCircle,
 } from "lucide-react";
-import { normalizarLogin, ROTULO_TIPO_ACAO } from "@cadastro-lote/shared";
+import { ehTipoLote, normalizarLogin, ROTULO_TIPO_ACAO } from "@cadastro-lote/shared";
 import {
   Card,
   CardContent,
@@ -74,6 +74,7 @@ import {
   type DetalheRequisicao,
   type FilaWf,
   type HistoricoPropostaItem,
+  type InelegivelMovimentacao,
   type MovimentacaoAtiva,
   type PainelCursor,
   type PainelFiltros,
@@ -183,7 +184,10 @@ function IndicadorMovimentacao({
       type="button"
       onClick={() => onAbrir(mov.requisicaoId)}
       className="focus-ring rounded-full"
-      title={`Movimentação em aprovação (SoD) — criada por ${mov.requisitante}. Clique para o detalhe.`}
+      title={
+        `Movimentação ${mov.lote ? "em massa (lote) " : ""}em aprovação (SoD) — criada por ` +
+        `${mov.requisitante}. Clique para o detalhe.`
+      }
     >
       <Badge variant={chip.variant} className="cursor-pointer whitespace-nowrap">
         <ArrowRight className="mr-1 h-3 w-3" />
@@ -258,6 +262,13 @@ export function PainelPropostas({
   });
   const [loteFalhas, setLoteFalhas] = useState<TransferenciaRowResult[]>([]);
   const [loteConcluido, setLoteConcluido] = useState(false);
+  /**
+   * Confirmação de SUBCONJUNTO (US-09, RN04): o backend apontou propostas da
+   * seleção com movimentação ativa — o lote só nasce sem elas com confirmação.
+   * Null = sem pendência de confirmação.
+   */
+  const [loteInelegiveis, setLoteInelegiveis] = useState<InelegivelMovimentacao[] | null>(null);
+  const [loteElegiveis, setLoteElegiveis] = useState(0);
 
   /** Mensagem de sucesso da última transferência. */
   const [info, setInfo] = useState<string | null>(null);
@@ -266,6 +277,8 @@ export function PainelPropostas({
   const { session } = useSession();
   /** Flag `aprovacao.movimentacao_proposta` — liga o gesto de mover por linha. */
   const [aprovacaoMovimentacao, setAprovacaoMovimentacao] = useState(false);
+  /** Flag `aprovacao.movimentacao_proposta_massa` (US-09) — mover selecionadas vira requisição-lote. */
+  const [aprovacaoMovimentacaoMassa, setAprovacaoMovimentacaoMassa] = useState(false);
   /** Movimentações ATIVAS por nº de proposta — UMA chamada agregada (RN05). */
   const [movs, setMovs] = useState<Map<number, MovimentacaoAtiva>>(new Map());
 
@@ -390,7 +403,11 @@ export function PainelPropostas({
     setMovConfirmCancelar(false);
     try {
       await cancelarRequisicao(movDetalheId);
-      setInfo("Requisição de movimentação cancelada — a proposta está liberada para mover.");
+      setInfo(
+        ehLoteMovDetalhe
+          ? "Requisição-lote de movimentação cancelada — as propostas estão liberadas para mover."
+          : "Requisição de movimentação cancelada — a proposta está liberada para mover.",
+      );
       setMovDetalheId(null);
     } catch (e) {
       if (!(e instanceof SessaoExpiradaError)) setMovDetalheErro((e as Error).message);
@@ -407,6 +424,8 @@ export function PainelPropostas({
   }
 
   const movReq = movDetalhe?.requisicao ?? null;
+  /** O indicador pode apontar para um LOTE de movimentação (US-09). */
+  const ehLoteMovDetalhe = !!movReq && ehTipoLote(movReq.tipo);
   const podeCancelarMov =
     !!movReq &&
     movReq.estado === "pendente" &&
@@ -447,6 +466,8 @@ export function PainelPropostas({
     setLoteErro(null);
     setLoteConcluido(false);
     setLoteFalhas([]);
+    setLoteInelegiveis(null);
+    setLoteElegiveis(0);
     setLoteProgress({ processed: 0, total: 0, success: 0, error: 0, naoEnviado: 0 });
     try {
       const res = await getTransicoesProposta(fila.nrWf, fila.nrStatus);
@@ -459,14 +480,32 @@ export function PainelPropostas({
 
   const loteTransicao = loteTransicoes?.find((t) => t.proxStatus === loteDestino) ?? null;
   const loteObsOk = !loteTransicao?.exigeObservacao || loteObservacao.trim() !== "";
-  const loteConfirmOk = !IS_PROD || loteConfirmText.trim().toUpperCase() === "MOVER";
+  // Sob aprovação (US-09), confirmar cria uma requisição PENDENTE (zero
+  // Sinqia) — o gate "digite MOVER" é só do fluxo direto em produção.
+  const loteConfirmOk =
+    !IS_PROD || aprovacaoMovimentacaoMassa || loteConfirmText.trim().toUpperCase() === "MOVER";
   const podeMoverLote =
     !!loteTransicao && loteObsOk && loteConfirmOk && !loteMovendo && selecionadas.size > 0;
 
-  /** Dispara o job de transferência em lote e acompanha pelo SSE no modal. */
-  async function confirmarMoverLote() {
+  /** Propostas da seleção já bloqueadas (indicador local — o backend revalida). */
+  const inelegiveisLocais = useMemo(
+    () =>
+      aprovacaoMovimentacaoMassa
+        ? [...selecionadas].filter((nrProsp) => movs.has(nrProsp))
+        : [],
+    [aprovacaoMovimentacaoMassa, selecionadas, movs],
+  );
+
+  /**
+   * Confirma o lote. Flag da US-09 ativa → cria a REQUISIÇÃO-LOTE de
+   * movimentação (zero Sinqia; decisão bidirecional + execução na sessão do
+   * aprovador); com bloqueadas na seleção, o backend pede a confirmação de
+   * SUBCONJUNTO (RN04) e o modal a exibe antes de reenviar.
+   * Flag OFF → job direto com progresso ao vivo (SSE), como sempre.
+   */
+  async function confirmarMoverLote(confirmarSubconjunto = false) {
     const fila = filas?.find((f) => f.nrStatus === filaSelecionada);
-    if (!fila || !loteTransicao || !podeMoverLote) return;
+    if (!fila || !loteTransicao || (!podeMoverLote && !confirmarSubconjunto)) return;
     const itens = propostas
       .filter((p) => selecionadas.has(p.nrProsp))
       .map((p) => ({
@@ -476,18 +515,70 @@ export function PainelPropostas({
         cdProd: p.cdProd ?? 0,
         nrContra: p.nrContra,
       }));
+
+    if (aprovacaoMovimentacaoMassa) {
+      setLoteMovendo(true);
+      setLoteErro(null);
+      try {
+        const res = await startTransferirLote({
+          nrWf: fila.nrWf,
+          nrStatusAtual: fila.nrStatus,
+          dsStatusAtual: fila.dsStatus,
+          proxStatus: loteTransicao.proxStatus,
+          dsObserv: loteObservacao.trim(),
+          ...(confirmarSubconjunto ? { confirmarSubconjunto: true } : {}),
+          itens,
+        });
+        if (res.confirmacaoNecessaria) {
+          // RN04: nada foi criado — o modal mostra as bloqueadas e pergunta.
+          setLoteInelegiveis(res.inelegiveis ?? []);
+          setLoteElegiveis(res.elegiveis ?? 0);
+          return;
+        }
+        if (res.aprovacao && res.requisicao) {
+          setLoteOpen(false);
+          const removidas = res.inelegiveis?.length ?? 0;
+          setInfo(
+            `Requisição de movimentação em massa criada com ${res.totalItens} proposta(s) — ` +
+              `aguardando a decisão de um segundo operador. As propostas permanecem nesta ` +
+              `etapa, com indicador, até lá.` +
+              (removidas > 0
+                ? ` ${removidas} proposta(s) ficaram de fora por bloqueio ativo.`
+                : ""),
+          );
+          setSelecionadas(new Set());
+          void carregarMovs();
+          return;
+        }
+        // Flag desligada entre a abertura do modal e o envio: job direto.
+        setLoteErro(null);
+        setInfo("A aprovação foi desativada durante o envio — o lote foi movido direto.");
+        setLoteOpen(false);
+        void carregarFilas();
+        void buscar(filaSelecionada);
+      } catch (e) {
+        if (!(e instanceof SessaoExpiradaError)) setLoteErro((e as Error).message);
+        setLoteInelegiveis(null);
+      } finally {
+        setLoteMovendo(false);
+      }
+      return;
+    }
+
     setLoteMovendo(true);
     setLoteErro(null);
     setLoteFalhas([]);
     setLoteProgress({ processed: 0, total: itens.length, success: 0, error: 0, naoEnviado: 0 });
     try {
-      const { jobId, total } = await startTransferirLote({
+      const res = await startTransferirLote({
         nrWf: fila.nrWf,
         nrStatusAtual: fila.nrStatus,
         proxStatus: loteTransicao.proxStatus,
         dsObserv: loteObservacao.trim(),
         itens,
       });
+      const jobId = res.jobId!;
+      const total = res.total ?? itens.length;
       setLoteProgress((p) => ({ ...p, total }));
       streamTransferenciaLote(jobId, {
         onSnapshot: (d) => {
@@ -542,7 +633,10 @@ export function PainelPropostas({
     jaAtivou.current = true;
     // Esteira de Aprovação (US-08): flag do gesto de mover + indicadores.
     void getEnv()
-      .then((e) => setAprovacaoMovimentacao(e.aprovacao?.movimentacaoProposta === true))
+      .then((e) => {
+        setAprovacaoMovimentacao(e.aprovacao?.movimentacaoProposta === true);
+        setAprovacaoMovimentacaoMassa(e.aprovacao?.movimentacaoPropostaMassa === true);
+      })
       .catch(() => {
         /* sem env, o gesto fica oculto — o painel continua íntegro */
       });
@@ -1310,16 +1404,36 @@ export function PainelPropostas({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}>
-              <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
-              Mover {selecionadas.size} proposta(s) em lote
-            </DialogTitle>
-            <DialogDescription>
-              Todas saem de{" "}
-              <strong>{filaAtual ? nomeEtapa(filaAtual.dsStatus) : "—"}</strong> para o mesmo
-              destino, em <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong> — uma
-              chamada por proposta na Sinqia, sem desfazer pela ferramenta.
-            </DialogDescription>
+            {aprovacaoMovimentacaoMassa ? (
+              <>
+                <DialogTitle className="flex items-center gap-2">
+                  <ArrowRight className="h-5 w-5 text-primary" />
+                  Mover {selecionadas.size} proposta(s) em massa
+                </DialogTitle>
+                <DialogDescription>
+                  A movimentação em massa está sob aprovação (SoD): confirmar cria{" "}
+                  <strong>uma requisição-lote pendente</strong> para um segundo operador
+                  decidir. Nada é movido agora — todas permanecem em{" "}
+                  <strong>{filaAtual ? nomeEtapa(filaAtual.dsStatus) : "—"}</strong> com
+                  indicador até a decisão.
+                </DialogDescription>
+              </>
+            ) : (
+              <>
+                <DialogTitle
+                  className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}
+                >
+                  <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
+                  Mover {selecionadas.size} proposta(s) em lote
+                </DialogTitle>
+                <DialogDescription>
+                  Todas saem de{" "}
+                  <strong>{filaAtual ? nomeEtapa(filaAtual.dsStatus) : "—"}</strong> para o
+                  mesmo destino, em <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>{" "}
+                  — uma chamada por proposta na Sinqia, sem desfazer pela ferramenta.
+                </DialogDescription>
+              </>
+            )}
           </DialogHeader>
 
           <div className="space-y-3">
@@ -1330,7 +1444,28 @@ export function PainelPropostas({
               </p>
             )}
 
-            {loteMovendo || loteConcluido ? (
+            {/* Confirmação de SUBCONJUNTO (US-09, RN04): o backend apontou as
+                bloqueadas; nada foi criado ainda — o requisitante decide. */}
+            {loteInelegiveis !== null ? (
+              <div className="space-y-2">
+                <p className="text-body">
+                  <strong>{loteInelegiveis.length} proposta(s)</strong> da seleção já têm
+                  movimentação ativa e <strong>ficarão de fora</strong> do lote:
+                </p>
+                <ul className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border p-2 text-caption">
+                  {loteInelegiveis.map((i) => (
+                    <li key={i.nrProsp} className="tabular-nums">
+                      nº {i.nrProsp}
+                      {i.nmCliente ? ` — ${i.nmCliente}` : ""} · {i.motivo}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-body">
+                  Criar a requisição só com as <strong>{loteElegiveis}</strong> proposta(s)
+                  elegíveis? Cancelar não cria nada.
+                </p>
+              </div>
+            ) : (loteMovendo && !aprovacaoMovimentacaoMassa) || loteConcluido ? (
               <div className="space-y-2">
                 <div className="h-2 overflow-hidden rounded-full bg-muted">
                   <div
@@ -1417,7 +1552,20 @@ export function PainelPropostas({
                   </p>
                 </div>
 
-                {IS_PROD && (
+                {/* Aviso local (US-09): seleção já contém bloqueadas — o
+                    backend revalida e pedirá a confirmação de subconjunto */}
+                {inelegiveisLocais.length > 0 && (
+                  <p className="flex items-start gap-1.5 rounded-lg border border-[var(--warning)] bg-[var(--warning)]/10 px-3 py-2 text-caption">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                    <span>
+                      {inelegiveisLocais.length} proposta(s) da seleção já têm movimentação
+                      ativa (nº {inelegiveisLocais.join(", nº ")}) e ficarão de fora do
+                      lote — você confirmará antes de criar.
+                    </span>
+                  </p>
+                )}
+
+                {IS_PROD && !aprovacaoMovimentacaoMassa && (
                   <div className="space-y-1">
                     <Label htmlFor="lote-confirma" className="text-caption">
                       Digite <strong>MOVER</strong> para liberar:
@@ -1445,13 +1593,35 @@ export function PainelPropostas({
               >
                 Fechar e atualizar a fila
               </Button>
+            ) : loteInelegiveis !== null ? (
+              // Confirmação de SUBCONJUNTO (RN04): cancelar não cria nada.
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setLoteInelegiveis(null)}
+                  disabled={loteMovendo}
+                >
+                  Voltar
+                </Button>
+                <Button
+                  onClick={() => void confirmarMoverLote(true)}
+                  disabled={loteMovendo || loteElegiveis === 0}
+                >
+                  {loteMovendo ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ArrowRight className="h-4 w-4" />
+                  )}
+                  Criar só com as {loteElegiveis} elegíveis
+                </Button>
+              </>
             ) : (
               <>
                 <Button variant="outline" onClick={() => setLoteOpen(false)} disabled={loteMovendo}>
                   Cancelar
                 </Button>
                 <Button
-                  variant={IS_PROD ? "destructive" : "default"}
+                  variant={IS_PROD && !aprovacaoMovimentacaoMassa ? "destructive" : "default"}
                   onClick={() => void confirmarMoverLote()}
                   disabled={!podeMoverLote}
                 >
@@ -1460,7 +1630,9 @@ export function PainelPropostas({
                   ) : (
                     <ArrowRight className="h-4 w-4" />
                   )}
-                  Mover {selecionadas.size} proposta(s)
+                  {aprovacaoMovimentacaoMassa
+                    ? `Criar requisição (${selecionadas.size})`
+                    : `Mover ${selecionadas.size} proposta(s)`}
                 </Button>
               </>
             )}
@@ -1594,7 +1766,10 @@ export function PainelPropostas({
         <DrawerContent>
           <DrawerHeader>
             <DrawerTitle className="flex flex-wrap items-center gap-2">
-              {ROTULO_TIPO_ACAO["proposta.movimentar"]}
+              {/* O bloqueio pode vir de requisição individual OU de lote (US-09) */}
+              {movReq
+                ? (ROTULO_TIPO_ACAO[movReq.tipo] ?? movReq.tipo)
+                : ROTULO_TIPO_ACAO["proposta.movimentar"]}
               {movReq && <BadgeEstado estado={movReq.estado} />}
             </DrawerTitle>
             <DrawerDescription className="break-all font-mono text-caption">
@@ -1619,7 +1794,13 @@ export function PainelPropostas({
 
           {movReq && (
             <div className="space-y-5 text-sm">
-              <RequisicaoDetalhe requisicao={movReq} historico={movDetalhe?.historico ?? []} />
+              <RequisicaoDetalhe
+                requisicao={movReq}
+                historico={movDetalhe?.historico ?? []}
+                itens={movDetalhe?.itens}
+                placar={movDetalhe?.placar}
+                placarPorTipo={movDetalhe?.placarPorTipo}
+              />
 
               {/* Cancelar — só o criador, só pendente (RN06) */}
               {podeCancelarMov && (
@@ -1627,8 +1808,9 @@ export function PainelPropostas({
                   {movConfirmCancelar ? (
                     <div className="space-y-2">
                       <p className="text-body">
-                        Cancelar a requisição? O indicador some do painel e a proposta fica
-                        liberada para nova movimentação.
+                        {ehLoteMovDetalhe
+                          ? "Cancelar a requisição-LOTE? Os indicadores somem do painel e TODAS as propostas do lote ficam liberadas para nova movimentação."
+                          : "Cancelar a requisição? O indicador some do painel e a proposta fica liberada para nova movimentação."}
                       </p>
                       <div className="flex gap-2">
                         <Button

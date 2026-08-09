@@ -81,6 +81,7 @@ export interface EnvInfo {
     cadastroTomadorLote?: boolean;
     criacaoPropostaLote?: boolean;
     movimentacaoProposta?: boolean;
+    movimentacaoPropostaMassa?: boolean;
   };
 }
 
@@ -942,12 +943,32 @@ export interface TransferenciaRowResult {
   detalhe: string;
 }
 
-/** Inicia o job que MOVE várias propostas da mesma fila (1 chamada por proposta). */
+/** Proposta da seleção bloqueada por movimentação ativa (US-09, RN04). */
+export interface InelegivelMovimentacao {
+  nrProsp: number;
+  nmCliente: string;
+  requisicaoId: string;
+  estado: EstadoRequisicao;
+  /** true = o bloqueio vem de um item de OUTRO lote de movimentação. */
+  lote: boolean;
+  motivo: string;
+}
+
+/**
+ * Inicia a movimentação em lote. Fluxo DIRETO (flag OFF): job com progresso
+ * (`jobId`). Sob aprovação (US-09): cria a requisição-LOTE pendente
+ * (`aprovacao: true`) — zero Sinqia; ou pede confirmação de SUBCONJUNTO
+ * (`confirmacaoNecessaria: true`) quando parte da seleção está bloqueada.
+ */
 export async function startTransferirLote(input: {
   nrWf: number;
   nrStatusAtual: number;
+  /** Nome da etapa de origem — exibido no detalhe da requisição (US-09). */
+  dsStatusAtual?: string;
   proxStatus: number;
   dsObserv: string;
+  /** Cria o lote só com as elegíveis, após o usuário confirmar (RN04). */
+  confirmarSubconjunto?: boolean;
   itens: Array<{
     nrProsp: number;
     nrCpf: string;
@@ -956,16 +977,43 @@ export async function startTransferirLote(input: {
     nrContra: number | null;
   }>;
 }): Promise<{
-  jobId: string;
-  total: number;
-  destino: { proxStatus: number; dsStatus: string };
-  env: string;
+  env?: string;
+  /** Fluxo direto (flag OFF). */
+  jobId?: string;
+  total?: number;
+  destino?: { proxStatus: number; dsStatus: string };
+  /** Sob aprovação (US-09): requisição-lote criada. */
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string };
+  totalItens?: number;
+  inelegiveis?: InelegivelMovimentacao[];
+  /** 409 SUBCONJUNTO_NAO_CONFIRMADO: a UI confirma e reenviará. */
+  confirmacaoNecessaria?: boolean;
+  elegiveis?: number;
 }> {
   const res = await fetch("/api/propostas-transferir-lote", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
+  if (res.status === 409) {
+    // clone(): o corpo ainda precisa estar legível para o lerResposta abaixo.
+    const corpo = (await res
+      .clone()
+      .json()
+      .catch(() => null)) as {
+      code?: string;
+      inelegiveis?: InelegivelMovimentacao[];
+      elegiveis?: number;
+    } | null;
+    if (corpo?.code === "SUBCONJUNTO_NAO_CONFIRMADO") {
+      return {
+        confirmacaoNecessaria: true,
+        inelegiveis: corpo.inelegiveis ?? [],
+        elegiveis: corpo.elegiveis ?? 0,
+      };
+    }
+  }
   return lerResposta(res, "Falha ao iniciar a transferência em lote");
 }
 
@@ -1086,7 +1134,9 @@ export async function transferirProposta(input: {
 
 /**
  * Movimentação de proposta em requisição ATIVA (US-08, RN05): pendente,
- * executando ou em falha — é o que segura o bloqueio por proposta.
+ * executando ou em falha — é o que segura o bloqueio por proposta. Fonte
+ * ÚNICA (US-09): cobre requisições individuais E itens de lote de
+ * movimentação — `lote`/`itemId` distinguem a morada.
  */
 export interface MovimentacaoAtiva {
   requisicaoId: string;
@@ -1096,6 +1146,9 @@ export interface MovimentacaoAtiva {
   criadoEm: string;
   origem: { nrStatus: number; dsStatus: string } | null;
   destino: { proxStatus: number; dsStatus: string } | null;
+  /** true = item de requisição-LOTE de movimentação (US-09). */
+  lote?: boolean;
+  itemId?: string;
   causaFalha?: string;
 }
 
