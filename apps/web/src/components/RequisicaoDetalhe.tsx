@@ -223,6 +223,12 @@ export function RequisicaoDetalhe({
   placarPorTipo?: Partial<Record<TipoAcaoSod, PlacarLote>>;
   /** Habilita a marcação de exceções (aprovador, lote pendente). */
   marcacao?: MarcacaoExcecoes;
+  /** Habilita ações de retry/descarte para itens em falha no lote. */
+  acoesFalha?: {
+    isMinhaRequisicao: boolean;
+    onRetry: (itemId: string) => void;
+    onDescarte: (itemId: string, motivo: string) => void;
+  };
 }) {
   const [verJson, setVerJson] = useState(false);
   const [verJsonResultado, setVerJsonResultado] = useState(false);
@@ -332,6 +338,7 @@ export function RequisicaoDetalhe({
             placar={placar}
             placarPorTipo={placarPorTipo}
             marcacao={req.estado === "pendente" ? marcacao : undefined}
+            acoesFalha={acoesFalha}
           />
         </>
       ) : ehProposta ? (
@@ -832,6 +839,11 @@ function LoteItens({
   placar?: PlacarLote;
   placarPorTipo?: Partial<Record<TipoAcaoSod, PlacarLote>>;
   marcacao?: MarcacaoExcecoes;
+  acoesFalha?: {
+    isMinhaRequisicao: boolean;
+    onRetry: (itemId: string) => void;
+    onDescarte: (itemId: string, motivo: string) => void;
+  };
 }) {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState<FiltroItem>("todos");
@@ -846,7 +858,7 @@ function LoteItens({
 
   // Lote COMPOSTO (US-07): itens de dois tipos com vínculo tomador→proposta.
   const misto = useMemo(() => new Set(itens.map((i) => i.tipo)).size > 1, [itens]);
-  const colunas = (misto ? 6 : 5) + (marcacao ? 1 : 0);
+  const colunas = (misto ? 6 : 5) + (marcacao || acoesFalha ? 1 : 0);
   const ordemPorId = useMemo(() => new Map(itens.map((i) => [i.id, i.ordem])), [itens]);
   /** Propostas vinculadas por item de tomador — alimenta o aviso de impacto. */
   const dependentesPorId = useMemo(() => {
@@ -889,6 +901,8 @@ function LoteItens({
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+
+  const [motivoDescarte, setMotivoDescarte] = useState<Record<string, string>>({});
 
   return (
     <section>
@@ -975,7 +989,7 @@ function LoteItens({
               <TableHead>Documento</TableHead>
               <TableHead>Estado</TableHead>
               <TableHead>Desfecho</TableHead>
-              {marcacao && <TableHead className="text-right">Exceção</TableHead>}
+              {(marcacao || acoesFalha) && <TableHead className="text-right">Ações</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1053,9 +1067,9 @@ function LoteItens({
                         "—"
                       )}
                     </TableCell>
-                    {marcacao && (
+                    {(marcacao || acoesFalha) && (
                       <TableCell className="text-right">
-                        {item.estado === "pendente" ? (
+                        {item.estado === "pendente" && marcacao ? (
                           <Button
                             variant={marcado ? "destructive" : "outline"}
                             size="sm"
@@ -1063,6 +1077,33 @@ function LoteItens({
                           >
                             {marcado ? "Desmarcar" : "Marcar exceção"}
                           </Button>
+                        ) : item.estado === "falha" && acoesFalha && acoesFalha.isMinhaRequisicao ? (
+                          <span className="text-caption text-muted-foreground" title="Apenas outro operador pode decidir a falha">Sem permissão</span>
+                        ) : item.estado === "falha" && acoesFalha && !acoesFalha.isMinhaRequisicao ? (
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => acoesFalha.onRetry(item.id)}
+                            >
+                              Reprocessar
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                const m = motivoDescarte[item.id];
+                                if (!m?.trim()) {
+                                  alert("Preencha o motivo do descarte no detalhe expandido do item antes de descartá-lo.");
+                                  if (!abertos.has(item.id)) toggleAberto(item.id);
+                                  return;
+                                }
+                                acoesFalha.onDescarte(item.id, m.trim());
+                              }}
+                            >
+                              Descartar
+                            </Button>
+                          </div>
                         ) : (
                           "—"
                         )}
@@ -1123,6 +1164,23 @@ function LoteItens({
                           {typeof item.resultado?.duracaoMs === "number" && (
                             <div className="text-muted-foreground">
                               executado em {item.resultado.duracaoMs} ms
+                            </div>
+                          )}
+                          {item.estado === "falha" && acoesFalha && !acoesFalha.isMinhaRequisicao && (
+                            <div className="mt-2 space-y-1.5 pt-2 border-t border-border/50">
+                              <label
+                                htmlFor={`motivo-descarte-${item.id}`}
+                                className="text-caption font-medium"
+                              >
+                                Motivo do descarte (obrigatório para descartar)
+                              </label>
+                              <Input
+                                id={`motivo-descarte-${item.id}`}
+                                value={motivoDescarte[item.id] ?? ""}
+                                onChange={(e) => setMotivoDescarte(p => ({ ...p, [item.id]: e.target.value }))}
+                                placeholder="Ex.: erro no arquivo enviado"
+                                className="max-w-sm h-8 text-xs"
+                              />
                             </div>
                           )}
                         </div>

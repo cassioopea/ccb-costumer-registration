@@ -440,6 +440,170 @@ export async function registerSodRoutes(
     }
   });
 
+  app.post("/api/sod/requisicoes/:id/retry", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    const params = idParamsSchema.safeParse(req.params);
+    if (!params.success) return reply.code(400).send({ error: "Id inválido." });
+    const { id } = params.data;
+    const ator = session.username;
+
+    try {
+      const sessaoSinqia = await verificarSessaoSinqiaFn(session.token);
+      if (sessaoSinqia === "invalida") {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({ error: "Sua sessão na Sinqia não é mais válida. Entre novamente e repita a decisão.", code: CODE_SESSAO_EXPIRADA, motivo: "token" });
+      }
+      if (sessaoSinqia === "indisponivel") return reply.code(502).send({ error: "A Sinqia está indisponível — não foi possível confirmar sua sessão." });
+
+      const aprovada = servico.retryFalha(id, ator);
+      servico.registrarInicioExecucao(id, ator);
+      const executor = EXECUTORES[aprovada.tipo];
+      const execucao = executor
+        ? await executor(aprovada, { token: session.token, ator }, execucaoDeps)
+        : falhaExecucao({ causa: "tipo_sem_executor", tipo: aprovada.tipo }, { httpStatus: null, mensagens: `Tipo ${aprovada.tipo} sem executor.` });
+      
+      const requisicao = servico.concluirExecucao(id, ator, execucao.desfecho, execucao.resultado);
+
+      if (execucao.sessaoExpirou) {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({
+          error: "O token expirou durante a execução.",
+          code: CODE_SESSAO_EXPIRADA,
+          motivo: "token",
+          requisicao,
+          execucao: execucao.publico,
+        });
+      }
+      return reply.send({ requisicao, execucao: execucao.publico });
+    } catch (e) {
+      return responderErroSod(reply, e);
+    }
+  });
+
+  app.post("/api/sod/requisicoes/:id/descarte", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    const params = idParamsSchema.safeParse(req.params);
+    if (!params.success) return reply.code(400).send({ error: "Id inválido." });
+    const body = z.object({ motivo: z.string().trim().min(1, "Motivo obrigatório") }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.issues[0]?.message ?? "Decisão inválida." });
+
+    try {
+      return reply.send({ requisicao: servico.descartarFalha(params.data.id, session.username, body.data.motivo) });
+    } catch (e) {
+      return responderErroSod(reply, e);
+    }
+  });
+
+  app.post("/api/sod/requisicoes/:id/retry-lote", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    const params = idParamsSchema.safeParse(req.params);
+    if (!params.success) return reply.code(400).send({ error: "Id inválido." });
+    const { id } = params.data;
+    const ator = session.username;
+
+    try {
+      const lote = servico.obterRequisicao(id);
+      if (!lote || !ehTipoLote(lote.tipo)) {
+         return reply.code(400).send({ error: "Requisição não encontrada ou não é lote." });
+      }
+
+      const sessaoSinqia = await verificarSessaoSinqiaFn(session.token);
+      if (sessaoSinqia === "invalida") {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({ error: "Sua sessão na Sinqia não é mais válida.", code: CODE_SESSAO_EXPIRADA, motivo: "token" });
+      }
+      if (sessaoSinqia === "indisponivel") return reply.code(502).send({ error: "A Sinqia está indisponível." });
+
+      const itens = servico.itensDoLote(id);
+      let disparou = 0;
+      for (const item of itens) {
+         if (item.estado !== "falha") continue;
+         if (item.dependeDeItemId) {
+            const pai = servico.obterItem(item.dependeDeItemId);
+            if (pai && pai.estado !== "executada") continue;
+         }
+         servico.retryItemFalha(item.id, ator);
+         disparou++;
+      }
+
+      if (disparou > 0) {
+        servico.registrarInicioExecucao(id, ator);
+        void iniciarExecucaoLote(lote, { token: session.token, ator: normalizarLogin(ator), sessionId: session.id }, { servico, deps: execucaoDeps });
+      } else {
+        throw new SodError("TRANSICAO_INVALIDA", "Nenhum item elegível para reprocessamento.");
+      }
+      
+      const detalhe = servico.detalharRequisicao(id);
+      return reply.send({
+        requisicao: detalhe.requisicao,
+        placar: detalhe.placar,
+        execucao: disparou > 0 ? { emAndamento: true, aprovados: disparou } : undefined
+      });
+    } catch (e) {
+      return responderErroSod(reply, e);
+    }
+  });
+
+  app.post("/api/sod/requisicoes/:id/itens/:itemId/retry", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    const parsed = z.object({ id: z.string().uuid(), itemId: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) return reply.code(400).send({ error: "Id inválido." });
+    const { id, itemId } = parsed.data;
+    const ator = session.username;
+
+    try {
+      const sessaoSinqia = await verificarSessaoSinqiaFn(session.token);
+      if (sessaoSinqia === "invalida") {
+        destroySession(session.id);
+        reply.clearCookie(COOKIE_SID, { path: "/" });
+        return reply.code(401).send({ error: "Sua sessão na Sinqia não é mais válida.", code: CODE_SESSAO_EXPIRADA, motivo: "token" });
+      }
+      if (sessaoSinqia === "indisponivel") return reply.code(502).send({ error: "A Sinqia está indisponível." });
+
+      servico.retryItemFalha(itemId, ator);
+      
+      const lote = servico.obterRequisicao(id);
+      if (lote) {
+         servico.registrarInicioExecucao(id, ator);
+         void iniciarExecucaoLote(lote, { token: session.token, ator: normalizarLogin(ator), sessionId: session.id }, { servico, deps: execucaoDeps });
+      }
+
+      const detalhe = servico.detalharRequisicao(id);
+      return reply.send({
+        requisicao: detalhe.requisicao,
+        placar: detalhe.placar,
+        execucao: { emAndamento: true, aprovados: 1 }
+      });
+    } catch (e) {
+      return responderErroSod(reply, e);
+    }
+  });
+
+  app.post("/api/sod/requisicoes/:id/itens/:itemId/descarte", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    const parsed = z.object({ id: z.string().uuid(), itemId: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) return reply.code(400).send({ error: "Id inválido." });
+    const body = z.object({ motivo: z.string().trim().min(1, "Motivo obrigatório") }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.issues[0]?.message ?? "Decisão inválida." });
+
+    try {
+      servico.descartarItemFalha(parsed.data.itemId, session.username, body.data.motivo);
+      const detalhe = servico.detalharRequisicao(parsed.data.id);
+      return reply.send({ requisicao: detalhe.requisicao, placar: detalhe.placar });
+    } catch (e) {
+      return responderErroSod(reply, e);
+    }
+  });
+
+
   /**
    * Movimentações ATIVAS do ambiente (US-08, RN05) — UMA consulta agregada
    * para o indicador do Painel de Propostas (nunca uma chamada por proposta).

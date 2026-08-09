@@ -350,17 +350,18 @@ export async function cancelarRequisicao(id: string): Promise<{ requisicao: Requ
 /* --- Painel de pendências (US-03, lado do aprovador) --- */
 
 /**
- * Requisições PENDENTES de todos os operadores, da mais antiga para a mais
- * nova (RN01), com filtros por tipo e criador.
+ * Requisições de todos os operadores, da mais antiga para a mais nova,
+ * filtrando por estado (pendente ou falha), tipo e criador.
  */
 export async function listarPendencias(f: {
   tipo?: string;
   requisitante?: string;
+  estado?: "pendente" | "falha";
   limit: number;
   offset: number;
 }): Promise<{ itens: RequisicaoSod[]; total: number }> {
   const qs = new URLSearchParams({
-    estado: "pendente",
+    estado: f.estado || "pendente",
     ordem: "asc",
     limit: String(f.limit),
     offset: String(f.offset),
@@ -371,9 +372,9 @@ export async function listarPendencias(f: {
   return lerResposta(res, "Falha ao listar as pendências");
 }
 
-/** Criadores distintos das requisições pendentes — alimenta o filtro "criador". */
-export async function listarRequisitantesPendentes(): Promise<string[]> {
-  const res = await fetch("/api/sod/requisitantes?estado=pendente");
+/** Criadores distintos das requisições — alimenta o filtro "criador". */
+export async function listarRequisitantesPendentes(estado: "pendente" | "falha" = "pendente"): Promise<string[]> {
+  const res = await fetch(`/api/sod/requisitantes?estado=${estado}`);
   const json = await lerResposta<{ requisitantes: string[] }>(
     res,
     "Falha ao listar os criadores",
@@ -434,6 +435,83 @@ export async function decidirLote(
   });
   return lerResposta(res, "Falha ao aplicar a decisão do lote");
 }
+
+/**
+ * Retry manual de uma requisição em falha (US-10).
+ */
+export async function reprocessarFalha(
+  id: string,
+): Promise<{ requisicao: RequisicaoSod; execucao?: ExecucaoResumo }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+  });
+  return lerResposta(res, "Falha ao reprocessar a requisição");
+}
+
+/**
+ * Descarte de uma requisição em falha (US-10). Motivo obrigatório.
+ */
+export async function descartarFalha(
+  id: string,
+  motivo: string,
+): Promise<{ requisicao: RequisicaoSod }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/descarte`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ motivo }),
+  });
+  return lerResposta(res, "Falha ao descartar a requisição");
+}
+
+/**
+ * Conveniência de lote: reprocessar todas as falhas elegíveis do lote (US-10).
+ */
+export async function reprocessarFalhasLote(
+  id: string,
+): Promise<{
+  requisicao: RequisicaoSod;
+  placar: PlacarLote;
+  execucao?: { emAndamento: boolean; aprovados: number };
+}> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/retry-lote`, {
+    method: "POST",
+  });
+  return lerResposta(res, "Falha ao reprocessar o lote");
+}
+
+/**
+ * Retry manual de um item de lote em falha (US-10).
+ */
+export async function reprocessarItemLote(
+  requisicaoId: string,
+  itemId: string,
+): Promise<{
+  requisicao: RequisicaoSod;
+  placar: PlacarLote;
+  execucao?: { emAndamento: boolean; aprovados: number };
+}> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(requisicaoId)}/itens/${encodeURIComponent(itemId)}/retry`, {
+    method: "POST",
+  });
+  return lerResposta(res, "Falha ao reprocessar o item");
+}
+
+/**
+ * Descarte de um item de lote em falha (US-10).
+ */
+export async function descartarItemLote(
+  requisicaoId: string,
+  itemId: string,
+  motivo: string,
+): Promise<{ requisicao: RequisicaoSod; placar: PlacarLote }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(requisicaoId)}/itens/${encodeURIComponent(itemId)}/descarte`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ motivo }),
+  });
+  return lerResposta(res, "Falha ao descartar o item");
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Situação de cliente                                                 */

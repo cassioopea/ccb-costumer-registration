@@ -59,6 +59,11 @@ import {
   detalharRequisicao,
   listarPendencias,
   listarRequisitantesPendentes,
+  reprocessarFalha,
+  descartarFalha,
+  reprocessarFalhasLote,
+  reprocessarItemLote,
+  descartarItemLote,
   type DetalheRequisicao,
   type ExecucaoResumo,
   type RequisicaoSod,
@@ -84,13 +89,14 @@ import {
 const PAGE_SIZE = 20;
 
 /** Fase da decisão em andamento — dirige a UI de progresso do drawer. */
-type FaseDecisao = "aprovando" | "reprovando" | null;
+type FaseDecisao = "aprovando" | "reprovando" | "reprocessando" | "descartando" | null;
 
 export function PainelPendencias({ ativa }: { ativa: boolean }) {
   const { session } = useSession();
   const meuLogin = session ? normalizarLogin(session.username) : "";
 
   /* --------------------------- listagem --------------------------- */
+  const [estadoFiltro, setEstadoFiltro] = useState<"pendente" | "falha">("pendente");
   const [filtroTipo, setFiltroTipo] = useState("");
   const [filtroCriador, setFiltroCriador] = useState("");
   const [criadores, setCriadores] = useState<string[]>([]);
@@ -107,10 +113,11 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
         listarPendencias({
           tipo: filtroTipo || undefined,
           requisitante: filtroCriador || undefined,
+          estado: estadoFiltro,
           limit: PAGE_SIZE,
           offset: pagina * PAGE_SIZE,
         }),
-        listarRequisitantesPendentes(),
+        listarRequisitantesPendentes(estadoFiltro),
       ]);
       setDados(lista);
       setCriadores(reqs);
@@ -119,7 +126,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
     } finally {
       setCarregando(false);
     }
-  }, [filtroTipo, filtroCriador, pagina]);
+  }, [filtroTipo, filtroCriador, estadoFiltro, pagina]);
 
   useEffect(() => {
     if (!ativa) return;
@@ -281,6 +288,55 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
     void carregar();
   }
 
+  async function executarRetry() {
+    if (!req) return;
+    setFase("reprocessando");
+    setAvisoDecisao(null);
+    setDesfecho(null);
+    try {
+      if (ehLote) {
+        await reprocessarFalhasLote(req.id);
+      } else {
+        const r = await reprocessarFalha(req.id);
+        if (r.execucao) setDesfecho(r.execucao);
+      }
+    } catch (e) {
+      if (e instanceof SessaoExpiradaError) {
+        setFase(null);
+        void recarregarDetalhe(req.id);
+        void carregar();
+        return;
+      }
+      setAvisoDecisao((e as Error).message);
+    }
+    await recarregarDetalhe(req.id);
+    setFase(null);
+    void carregar();
+  }
+
+  async function executarDescarte() {
+    if (!req) return;
+    setReprovarAberto(false);
+    setFase("descartando");
+    setAvisoDecisao(null);
+    setDesfecho(null);
+    try {
+      await descartarFalha(req.id, motivo.trim());
+    } catch (e) {
+      if (e instanceof SessaoExpiradaError) {
+        setFase(null);
+        void recarregarDetalhe(req.id);
+        void carregar();
+        return;
+      }
+      setAvisoDecisao((e as Error).message);
+    }
+    await recarregarDetalhe(req.id);
+    setFase(null);
+    setMotivo("");
+    void carregar();
+  }
+
   /* ---------------------------- render ----------------------------- */
 
   const opcoesTipo = useMemo(
@@ -301,10 +357,9 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
   return (
     <div className="space-y-6">
       <div className="reveal">
-        <h1 className="text-display text-foreground">Pendências de aprovação</h1>
+        <h1 className="text-display text-foreground">Pendências e Falhas</h1>
         <p className="mt-1 text-body text-muted-foreground">
-          Requisições aguardando decisão de um segundo operador. Ao aprovar, a execução
-          acontece na Sinqia com a SUA sessão — confira o mérito antes de decidir.
+          Requisições aguardando decisão de um segundo operador, ou requisições que falharam na Sinqia e podem ser reprocessadas.
         </p>
       </div>
 
@@ -326,7 +381,23 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-end gap-3">
-              <div className="w-64 space-y-1.5">
+              <div className="w-48 space-y-1.5">
+                <Label htmlFor="filtro-estado-pend">Estado</Label>
+                <Combobox
+                  id="filtro-estado-pend"
+                  value={estadoFiltro}
+                  onChange={(v) => {
+                    setEstadoFiltro((v || "pendente") as "pendente" | "falha");
+                    setFiltroCriador(""); // Limpa criador ao mudar estado
+                    setPagina(0);
+                  }}
+                  options={[
+                    { value: "pendente", label: "Pendentes" },
+                    { value: "falha", label: "Falhas (Retry)" },
+                  ]}
+                />
+              </div>
+              <div className="w-56 space-y-1.5">
                 <Label htmlFor="filtro-tipo-pend">Tipo de ação</Label>
                 <Combobox
                   id="filtro-tipo-pend"
@@ -422,7 +493,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                             size="sm"
                             onClick={() => void abrirDetalhe(r.id)}
                           >
-                            {minha ? "Detalhes" : "Revisar e decidir"}
+                            {minha ? "Detalhes" : estadoFiltro === "falha" ? "Analisar Falha" : "Revisar e decidir"}
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -559,6 +630,43 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                     ? { excecoes, onMarcar: marcarExcecao }
                     : undefined
                 }
+                acoesFalha={
+                  ehLote && req.estado === "falha"
+                    ? {
+                        isMinhaRequisicao: minhaRequisicao,
+                        onRetry: async (itemId) => {
+                          setFase("reprocessando");
+                          try {
+                            await reprocessarItemLote(req.id, itemId);
+                            await recarregarDetalhe(req.id);
+                          } catch (e) {
+                            if (e instanceof SessaoExpiradaError) {
+                              void carregar();
+                              return;
+                            }
+                            alert((e as Error).message);
+                          } finally {
+                            setFase(null);
+                          }
+                        },
+                        onDescarte: async (itemId, motivo) => {
+                          setFase("descartando");
+                          try {
+                            await descartarItemLote(req.id, itemId, motivo);
+                            await recarregarDetalhe(req.id);
+                          } catch (e) {
+                            if (e instanceof SessaoExpiradaError) {
+                              void carregar();
+                              return;
+                            }
+                            alert((e as Error).message);
+                          } finally {
+                            setFase(null);
+                          }
+                        },
+                      }
+                    : undefined
+                }
               />
 
               {/* Decisão — só requisição pendente de OUTRO operador */}
@@ -664,6 +772,64 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                   )}
                 </div>
               )}
+
+              {/* Retry / Descarte — requisição em falha de OUTRO operador */}
+              {req.estado === "falha" && (
+                <div className="border-t border-border pt-4">
+                  {minhaRequisicao ? (
+                    <>
+                      <div className="flex gap-2">
+                        <Button disabled>
+                          <RefreshCw className="h-4 w-4" />
+                          Reprocessar
+                        </Button>
+                        <Button variant="outline" disabled>
+                          <Ban className="h-4 w-4" />
+                          Descartar
+                        </Button>
+                      </div>
+                      <p className="mt-2 flex items-start gap-1.5 text-caption text-muted-foreground">
+                        <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        Você criou esta requisição — outro operador precisa avaliar a falha e decidir o reprocessamento.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex gap-2">
+                        <Button
+                          disabled={fase !== null}
+                          onClick={() => void executarRetry()}
+                        >
+                          {fase === "reprocessando" ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-4 w-4" />
+                          )}
+                          {ehLote ? "Reprocessar falhas elegíveis" : "Reprocessar"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          disabled={fase !== null || ehLote} // TODO: Descarte de lote todo ainda não suportado, apenas item
+                          onClick={() => {
+                            setMotivo("");
+                            setReprovarAberto(true); // Reusa o modal de reprovação para descarte
+                          }}
+                        >
+                          <Ban className="h-4 w-4" />
+                          Descartar
+                        </Button>
+                      </div>
+                      <p className="mt-2 text-caption text-muted-foreground">
+                        {ehLote ? (
+                          "O reprocessamento de lote tentará executar novamente todas as falhas elegíveis na Sinqia, usando a sua sessão."
+                        ) : (
+                          "O reprocessamento tentará executar o cadastro novamente na Sinqia, usando a sua sessão. Descartar encerra a requisição permanentemente e exige um motivo."
+                        )}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </DrawerContent>
@@ -727,9 +893,19 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
       <Dialog open={reprovarAberto} onOpenChange={setReprovarAberto}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{ehLote ? "Reprovar este lote?" : "Reprovar esta requisição?"}</DialogTitle>
+            <DialogTitle>
+              {req?.estado === "falha"
+                ? "Descartar esta falha?"
+                : ehLote
+                  ? "Reprovar este lote?"
+                  : "Reprovar esta requisição?"}
+            </DialogTitle>
             <DialogDescription>
-              {ehLote ? (
+              {req?.estado === "falha" ? (
+                <>
+                  A requisição será encerrada como <em>descartada</em> e nenhuma nova tentativa será feita. O motivo é obrigatório e ficará visível ao requisitante.
+                </>
+              ) : ehLote ? (
                 totalExcecoes > 0 ? (
                   <>
                     <strong>{Math.max(0, pendentesLote - totalExcecoes)}</strong> item(ns) serão
@@ -752,7 +928,9 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
-            <Label htmlFor="motivo-reprovacao">Motivo da reprovação</Label>
+            <Label htmlFor="motivo-reprovacao">
+              {req?.estado === "falha" ? "Motivo do descarte" : "Motivo da reprovação"}
+            </Label>
             <textarea
               id="motivo-reprovacao"
               value={motivo}
@@ -763,7 +941,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
             />
             {!motivo.trim() && (
               <p className="text-caption text-muted-foreground">
-                Informe o motivo para habilitar a reprovação.
+                Informe o motivo para habilitar a ação.
               </p>
             )}
           </div>
@@ -772,12 +950,12 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
               Voltar
             </Button>
             <Button
-              variant="destructive"
+              variant={req?.estado === "falha" ? "outline" : "destructive"}
               disabled={!motivo.trim()}
-              onClick={() => void executarDecisao("reprovar")}
+              onClick={() => void (req?.estado === "falha" ? executarDescarte() : executarDecisao("reprovar"))}
             >
-              <ThumbsDown className="h-4 w-4" />
-              Reprovar
+              {req?.estado === "falha" ? <Ban className="h-4 w-4" /> : <ThumbsDown className="h-4 w-4" />}
+              {req?.estado === "falha" ? "Descartar" : "Reprovar"}
             </Button>
           </DialogFooter>
         </DialogContent>

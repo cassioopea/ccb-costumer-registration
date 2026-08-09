@@ -1255,6 +1255,173 @@ export function criarSodServico(
     },
 
     /**
+     * Retry manual de UM item de lote (US-10): falha → aprovada/executando.
+     * Elegibilidade RN04: proposta só pode ser reprocessada se o tomador vinculado
+     * (dependeDeItemId) estiver `executada`.
+     */
+    retryItemFalha(itemId: string, aprovador: string): ItemLoteSod {
+      const ator = normalizarLogin(aprovador);
+      const item = repo.obterItem(itemId);
+      if (!item) throw new SodError("REQUISICAO_NAO_ENCONTRADA", `Item ${itemId} não encontrado.`);
+      
+      const req = repo.obterRequisicao(item.requisicaoId);
+      if (!req) throw new Error("Lote pai não encontrado.");
+      exigirSegundoOperador(req, aprovador, "retry_item");
+
+      if (!transicaoItemPermitida(item.estado, "aprovada/executando")) {
+        rejeitar("TRANSICAO_INVALIDA", `Transição inválida: ${item.estado} → aprovada/executando (item ${itemId}).`, {
+          requisicaoId: req.id,
+          ator,
+          detalhe: { decisao: "retry_item", itemId, de: item.estado, para: "aprovada/executando" },
+        });
+      }
+
+      if (item.dependeDeItemId) {
+        const pai = repo.obterItem(item.dependeDeItemId);
+        if (pai && pai.estado !== "executada") {
+           rejeitar("LOTE_INVALIDO", `Item inelegível: o tomador vinculado (item ${pai.ordem}) está em "${pai.estado}" (precisa estar "executada").`, {
+             requisicaoId: req.id,
+             ator,
+             detalhe: { decisao: "retry_item", itemId, dependeDeItemId: item.dependeDeItemId, estadoPai: pai.estado }
+           });
+        }
+      }
+
+      const ok = repo.transicionarItem({
+        id: itemId,
+        de: "falha",
+        para: "aprovada/executando",
+        agora: agora(),
+        evento: {
+          requisicaoId: req.id,
+          ator,
+          acao: ACAO_AUDITORIA.transicao,
+          detalhe: {
+            itemId,
+            ordem: item.ordem,
+            decisao: "retry",
+            de: "falha",
+            para: "aprovada/executando"
+          },
+          resultado: "ok",
+          ts: agora(),
+        }
+      });
+      
+      if (!ok) {
+        const atual = repo.obterItem(itemId);
+        rejeitar("TRANSICAO_INVALIDA", `Decisão não aplicada: o item ${itemId} já saiu de "falha" (estado atual: "${atual?.estado ?? "desconhecido"}").`, {
+          requisicaoId: req.id, ator, detalhe: { decisao: "retry_item", itemId, de: "falha", para: "aprovada/executando", estadoAtual: atual?.estado ?? null }
+        });
+      }
+      
+      if (req.estado === "falha") {
+         repo.transicionar({
+           id: req.id,
+           de: "falha",
+           para: "aprovada/executando",
+           agora: agora(),
+           evento: {
+             requisicaoId: req.id,
+             ator,
+             acao: ACAO_AUDITORIA.transicao,
+             detalhe: {
+               decisao: "retry_lote_implicito",
+               de: "falha",
+               para: "aprovada/executando"
+             },
+             resultado: "ok",
+             ts: agora(),
+           }
+         });
+      }
+
+      const depois = repo.obterItem(itemId);
+      if (!depois) throw new Error(`Item ${itemId} sumiu após retry.`);
+      return depois;
+    },
+
+    /** Descarte de UM item de lote (US-10): falha → descartada, motivo obrigatório. */
+    descartarItemFalha(itemId: string, ator: string, motivo: string | undefined): ItemLoteSod {
+      const normalizado = normalizarLogin(ator);
+      const item = repo.obterItem(itemId);
+      if (!item) throw new SodError("REQUISICAO_NAO_ENCONTRADA", `Item ${itemId} não encontrado.`);
+      
+      const req = repo.obterRequisicao(item.requisicaoId);
+      if (!req) throw new Error("Lote pai não encontrado.");
+      
+      const limpo = exigirMotivo(req, ator, "descartar_item", motivo);
+      
+      if (!transicaoItemPermitida(item.estado, "descartada")) {
+        rejeitar("TRANSICAO_INVALIDA", `Transição inválida: ${item.estado} → descartada (item ${itemId}).`, {
+          requisicaoId: req.id,
+          ator: normalizado,
+          detalhe: { decisao: "descartar_item", itemId, de: item.estado, para: "descartada" },
+        });
+      }
+
+      const ok = repo.transicionarItem({
+        id: itemId,
+        de: "falha",
+        para: "descartada",
+        motivo: limpo,
+        agora: agora(),
+        evento: {
+          requisicaoId: req.id,
+          ator: normalizado,
+          acao: ACAO_AUDITORIA.transicao,
+          detalhe: {
+            itemId,
+            ordem: item.ordem,
+            decisao: "descartar",
+            de: "falha",
+            para: "descartada",
+            motivo: limpo
+          },
+          resultado: "ok",
+          ts: agora(),
+        }
+      });
+      
+      if (!ok) {
+        const atual = repo.obterItem(itemId);
+        rejeitar("TRANSICAO_INVALIDA", `Decisão não aplicada: o item ${itemId} já saiu de "falha" (estado atual: "${atual?.estado ?? "desconhecido"}").`, {
+          requisicaoId: req.id, ator: normalizado, detalhe: { decisao: "descartar_item", itemId, de: "falha", para: "descartada", estadoAtual: atual?.estado ?? null }
+        });
+      }
+      
+      if (req.estado === "falha") {
+         const placar = repo.placarDoLote(req.id);
+         const novoDesfecho = derivarDesfechoLote(placar);
+         if (novoDesfecho !== "falha") {
+             repo.transicionar({
+               id: req.id,
+               de: "falha",
+               para: novoDesfecho,
+               agora: agora(),
+               evento: {
+                 requisicaoId: req.id,
+                 ator: normalizado,
+                 acao: ACAO_AUDITORIA.transicao,
+                 detalhe: {
+                   decisao: "concluir_lote_implicito",
+                   de: "falha",
+                   para: novoDesfecho,
+                   placar
+                 },
+                 resultado: "ok",
+                 ts: agora(),
+               }
+             });
+         }
+      }
+
+      const depois = repo.obterItem(itemId);
+      if (!depois) throw new Error(`Item ${itemId} sumiu após descarte.`);
+      return depois;
+    },
+
+    /**
      * Conclusão do LOTE (RN01, estado derivado): agrega o placar dos itens e
      * transiciona `aprovada/executando → executada|falha` com o placar (e o
      * contexto de interrupção, se houve) anexado ao resultado.
