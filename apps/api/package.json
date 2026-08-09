@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke": "tsx src/_smoke.ts",
     "sod:flag": "tsx src/sod/flag-cli.ts",
-    "test": "tsx --test src/sod/dominio.test.ts src/sod/rotas.test.ts src/sod/us02-cadastro.test.ts src/sod/us03-aprovacao.test.ts src/sod/us04-proposta.test.ts src/sod/us05-flags.test.ts src/sod/us06-lote.test.ts src/sod/us07-proposta-lote.test.ts",
+    "test": "tsx --test src/sod/dominio.test.ts src/sod/rotas.test.ts src/sod/us02-cadastro.test.ts src/sod/us03-aprovacao.test.ts src/sod/us04-proposta.test.ts src/sod/us05-flags.test.ts src/sod/us06-lote.test.ts src/sod/us07-proposta-lote.test.ts src/sod/us08-movimentacao.test.ts",
     "env:hml": "node ../../scripts/use-env.mjs hml",
     "env:prod": "node ../../scripts/use-env.mjs prod"
   },

@@ -144,6 +144,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
       criacaoPropostaIndividual: aprovacaoAtivaFn("proposta.criar"),
       cadastroTomadorLote: aprovacaoAtivaFn("tomador.cadastrar_lote"),
       criacaoPropostaLote: aprovacaoAtivaFn("proposta.criar_lote"),
+      movimentacaoProposta: aprovacaoAtivaFn("proposta.movimentar"),
     },
   }));
 

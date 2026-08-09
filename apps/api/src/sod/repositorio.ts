@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  ESTADOS_BLOQUEIO_MOVIMENTACAO,
   ESTADOS_REQUISICAO,
   montarPlacar,
   type EstadoRequisicao,
@@ -186,6 +187,20 @@ export function criarSchemaSod(db: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sod_req_doc_pendente
       ON sod_requisicoes (ambiente, tipo, documento)
       WHERE estado = 'pendente' AND documento IS NOT NULL;
+  `);
+
+  // Bloqueio de movimentação por proposta (US-08, RN03) NO BANCO: no máximo
+  // UMA requisição de movimentação ATIVA (pendente/executando/FALHA — falha
+  // segura o bloqueio até retry/descarte na US-10) por (ambiente, documento =
+  // nº da proposta). É esta restrição que decide a corrida de criação
+  // simultânea (Cenário 3): a segunda INSERT aborta aqui. Índice parcial com
+  // sintaxe idêntica no PostgreSQL.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sod_req_mov_ativa
+      ON sod_requisicoes (ambiente, documento)
+      WHERE tipo = 'proposta.movimentar'
+        AND estado IN ('pendente', 'aprovada/executando', 'falha')
+        AND documento IS NOT NULL;
   `);
 
   db.exec(`
@@ -462,6 +477,43 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
         )
         .get(ambiente, tipo, documento) as LinhaRequisicao | undefined;
       return linha ? paraRequisicao(linha) : null;
+    },
+
+    /**
+     * Requisição de movimentação ATIVA da proposta (US-08, RN03): pendente,
+     * executando ou em FALHA — a mesma definição do índice de bloqueio
+     * (`idx_sod_req_mov_ativa`). `documento` = nº da proposta em dígitos.
+     */
+    movimentacaoAtivaPorDocumento(documento: string): RequisicaoSod | null {
+      const estados = ESTADOS_BLOQUEIO_MOVIMENTACAO.map(() => "?").join(", ");
+      const linha = db
+        .prepare(
+          `SELECT * FROM sod_requisicoes
+            WHERE ambiente = ? AND tipo = 'proposta.movimentar'
+              AND documento = ? AND estado IN (${estados})
+            LIMIT 1`,
+        )
+        .get(ambiente, documento, ...ESTADOS_BLOQUEIO_MOVIMENTACAO) as
+        | LinhaRequisicao
+        | undefined;
+      return linha ? paraRequisicao(linha) : null;
+    },
+
+    /**
+     * TODAS as movimentações ativas do ambiente, em uma consulta — alimenta o
+     * indicador do Painel de Propostas (RN05, agregado: nunca uma chamada por
+     * proposta) e é a visão que a US-09 valida os lotes contra.
+     */
+    listarMovimentacoesAtivas(): RequisicaoSod[] {
+      const estados = ESTADOS_BLOQUEIO_MOVIMENTACAO.map(() => "?").join(", ");
+      const linhas = db
+        .prepare(
+          `SELECT * FROM sod_requisicoes
+            WHERE ambiente = ? AND tipo = 'proposta.movimentar' AND estado IN (${estados})
+            ORDER BY criado_em`,
+        )
+        .all(ambiente, ...ESTADOS_BLOQUEIO_MOVIMENTACAO) as unknown as LinhaRequisicao[];
+      return linhas.map(paraRequisicao);
     },
 
     listarRequisicoes(f: FiltrosRequisicao): { itens: RequisicaoSod[]; total: number } {
@@ -923,6 +975,22 @@ export function ehViolacaoDuplicidadePendente(e: unknown): boolean {
   return (
     msg.includes("UNIQUE constraint failed") &&
     (msg.includes("idx_sod_req_doc_pendente") || msg.includes("sod_requisicoes.documento"))
+  );
+}
+
+/**
+ * O INSERT perdeu a corrida do BLOQUEIO de movimentação (US-08, Cenário 3):
+ * duas requisições simultâneas para a MESMA proposta — a primeira insere, a
+ * segunda cai aqui (índice `idx_sod_req_mov_ativa`). A mensagem do SQLite
+ * cita as colunas do índice, as mesmas da guarda de pendentes — quem chama
+ * já sabe o tipo (`proposta.movimentar`), então a distinção é do chamador.
+ * MIGRATION-NOTE: no PostgreSQL vira o código 23505 (unique_violation).
+ */
+export function ehViolacaoBloqueioMovimentacao(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : "";
+  return (
+    msg.includes("UNIQUE constraint failed") &&
+    (msg.includes("idx_sod_req_mov_ativa") || msg.includes("sod_requisicoes.documento"))
   );
 }
 

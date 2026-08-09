@@ -260,7 +260,40 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   Sinqia mockada); teste de escopo da US-05 atualizado (exemplo de tipo fora
   do corte → `proposta.movimentar`). Observação: validação de integração real
   em HML PENDENTE — entregue fora da janela Sinqia (mesmo caso das US-03..06).
-- US-08: `pendente`
+- US-08: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-257).
+  Decisões: tipo = `proposta.movimentar` (entrada do enum reservada desde a US-01; o nome
+  de negócio "movimentação individual de proposta" segue o padrão das US-02/04: tipo
+  `entidade.acao` + chave `aprovacao.movimentacao_proposta`); bloqueio RN03 por proposta
+  com definição ÚNICA em `ESTADOS_BLOQUEIO_MOVIMENTACAO` (shared: pendente |
+  aprovada/executando | falha — `falha` MANTÉM) e guarda ATÔMICA no banco: índice único
+  parcial `idx_sod_req_mov_ativa` sobre (ambiente, documento) restrito ao tipo/estados —
+  a corrida de criação simultânea (Cenário 3) é decidida pelo próprio banco; erro
+  `MOVIMENTACAO_BLOQUEADA` (409, `requisicaoExistente` estruturada); chave na coluna
+  `documento` = nº da proposta. Payload RN02 = `MovimentacaoSodPayload` (shared):
+  `movimentacao` (proposta, origem, destino, observação) + `request` EXATO do
+  transfStatus; a criação revalida o destino no consultarStatusTransf (a MESMA validação
+  do fluxo direto), zero transfStatus. Execução (executor em sod/execucao.ts): confere o
+  status ATUAL da proposta via consultarHistoricoProposta ANTES de mover — divergência
+  externa → `falha` causa `divergencia_externa` com esperado × atual + `etapasValidas`
+  capturadas do status atual; rejeição da Sinqia no transfStatus → `falha` causa
+  `movimentacao_rejeitada` com a resposta integral. Indicador RN05 por endpoint AGREGADO
+  `GET /api/sod/movimentacoes-ativas` (UMA chamada por carga de fila, nunca por proposta;
+  2,2 ms com 155 ativas nos testes) — chip clicável no painel ("pendente (→ destino)" /
+  "executando" / "falhou") abre o detalhe em drawer com cancelamento RN06 (criador,
+  pendente). Gesto individual de mover na UI só existe com a flag ativa; flag OFF =
+  painel intacto (mover direto segue morando no lote).
+  Para as próximas US: bloqueio CONSULTÁVEL para a US-09 em
+  `movimentacaoAtivaPorProposta(nrProsp)` e `listarMovimentacoesAtivas()` (serviço) —
+  mesma definição do índice; a rota de transferência em LOTE segue SEM corte até a US-09
+  (tipo `proposta.movimentar_massa`) — mover 1 proposta pelo caminho do lote ainda é
+  direto (gap conhecido, fecha na US-09); para a US-10, retry reexecuta o MESMO payload
+  persistido e `falha → descartada` libera o bloqueio pela própria máquina de estados.
+  MIGRATION-NOTE novo: `ehViolacaoBloqueioMovimentacao` → 23505 no PostgreSQL
+  (repositorio.ts). Teste de escopo da US-05 atualizado (exemplo fora do corte →
+  `proposta.movimentar_massa`). Observação: validação de integração real em HML PENDENTE
+  — entregue no sábado, fora da janela Sinqia (mesmo caso das US-03..07); sem infra de
+  teste de frontend no repo (registrado desde a US-02), a medição do painel é a do BFF +
+  análise de render (indicador = 1 Map.get por linha, zero fetch por proposta).
 - US-09: `pendente`
 - US-10: `pendente`
 - US-11: `pendente`

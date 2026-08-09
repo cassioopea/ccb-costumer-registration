@@ -13,6 +13,7 @@ import {
   CAMPOS,
   ehTipoLote,
   type LoteSodPayload,
+  type MovimentacaoSodPayload,
   type PlacarLote,
   type PropostaSodPayload,
   type TipoAcaoSod,
@@ -65,6 +66,13 @@ function loteDoPayload(payload: Record<string, unknown>): Partial<LoteSodPayload
   return payload as unknown as Partial<LoteSodPayload>;
 }
 
+/** Payload de movimentação (US-08), tolerante a formato inesperado. */
+function movimentacaoDoPayload(
+  payload: Record<string, unknown>,
+): MovimentacaoSodPayload["movimentacao"] | undefined {
+  return (payload as unknown as Partial<MovimentacaoSodPayload>).movimentacao;
+}
+
 /** Identificação principal (nome do tomador / arquivo) da requisição, por tipo. */
 export function nomeDoPayload(
   tipo: TipoAcaoSod | string,
@@ -79,6 +87,11 @@ export function nomeDoPayload(
     if (proposta?.nome?.trim()) return proposta.nome;
     if (proposta?.cpf) return formatCpf(proposta.cpf);
     return "—";
+  }
+  if (tipo === "proposta.movimentar") {
+    const mov = movimentacaoDoPayload(payload);
+    if (!mov?.nrProsp) return "—";
+    return `Proposta nº ${mov.nrProsp}${mov.nmCliente?.trim() ? ` — ${mov.nmCliente}` : ""}`;
   }
   const campos = payload.campos;
   if (campos && typeof campos === "object" && !Array.isArray(campos)) {
@@ -108,6 +121,9 @@ const ROTULO_CAUSA: Record<string, string> = {
     "Conferência automática reprovada — cálculo oficial divergiu da planilha (nada foi criado)",
   tomador_nao_criado: "Tomador vinculado não foi criado — nada foi enviado à Sinqia",
   duplicidade_sinqia: "Proposta idêntica já existia na Sinqia — nada foi criado",
+  divergencia_externa:
+    "A proposta mudou de etapa por fora da plataforma — nada foi movido (resolução na US-10)",
+  movimentacao_rejeitada: "A Sinqia rejeitou a movimentação — nada foi movido",
   erro_negocio: "Erro de negócio na Sinqia",
   indisponibilidade_ou_timeout: "Sinqia indisponível ou timeout",
   sessao_expirada_durante_execucao: "A sessão do aprovador expirou durante a execução",
@@ -193,7 +209,12 @@ export function RequisicaoDetalhe({
   const [verJsonResultado, setVerJsonResultado] = useState(false);
 
   const ehProposta = req.tipo === "proposta.criar";
+  const ehMovimentacao = req.tipo === "proposta.movimentar";
   const ehLote = ehTipoLote(req.tipo);
+  /** Etapas válidas capturadas na falha de movimentação (US-08, Cenário 4). */
+  const etapasValidas = Array.isArray(req.resultado?.etapasValidas)
+    ? (req.resultado.etapasValidas as Array<{ proxStatus?: number; dsStatus?: string }>)
+    : null;
   const causaFalha =
     req.estado === "falha" && typeof req.resultado?.causa === "string"
       ? (ROTULO_CAUSA[req.resultado.causa] ?? req.resultado.causa)
@@ -251,6 +272,16 @@ export function RequisicaoDetalhe({
           {resumoResultado(req.resultado) && (
             <p className="mt-0.5 break-all">{resumoResultado(req.resultado)}</p>
           )}
+          {/* Etapas que o workflow permite HOJE — devolvidas na falha (US-08) */}
+          {req.estado === "falha" && etapasValidas && etapasValidas.length > 0 && (
+            <p className="mt-0.5">
+              Etapas válidas a partir da etapa atual:{" "}
+              {etapasValidas
+                .map((t) => t.dsStatus || `status ${t.proxStatus ?? "?"}`)
+                .join(", ")}
+              .
+            </p>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -282,6 +313,8 @@ export function RequisicaoDetalhe({
         </>
       ) : ehProposta ? (
         <PayloadProposta payload={req.payload} />
+      ) : ehMovimentacao ? (
+        <PayloadMovimentacao payload={req.payload} />
       ) : (
         <PayloadTomador payload={req.payload} />
       )}
@@ -495,6 +528,65 @@ function PayloadProposta({ payload }: { payload: Record<string, unknown> }) {
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * Payload de `proposta.movimentar` (US-08): identificação da proposta e a
+ * transição pedida (origem → destino), com a observação que irá para o
+ * histórico do workflow — tudo que o aprovador precisa para conferir mérito.
+ */
+function PayloadMovimentacao({ payload }: { payload: Record<string, unknown> }) {
+  const mov = movimentacaoDoPayload(payload);
+
+  if (!mov?.nrProsp) {
+    return (
+      <section>
+        <h3 className="mb-2 text-subheading text-foreground">Dados da movimentação</h3>
+        <p className="text-muted-foreground">
+          O payload desta requisição não está no formato canônico de movimentação — consulte
+          o JSON integral abaixo.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h3 className="mb-2 text-subheading text-foreground">Dados da movimentação</h3>
+      <div className="grid gap-1 rounded-lg border border-border p-3">
+        <LinhaDetalhe rotulo="Proposta" valor={`nº ${mov.nrProsp}`} />
+        <LinhaDetalhe rotulo="Tomador" valor={mov.nmCliente?.trim() || "—"} />
+        <LinhaDetalhe rotulo="CPF/CNPJ" valor={formatCpf(mov.nrCpf ?? "")} />
+        <LinhaDetalhe
+          rotulo="Etapa de origem"
+          valor={
+            mov.origem
+              ? `${mov.origem.dsStatus || "—"} (status ${mov.origem.nrStatus})`
+              : "—"
+          }
+        />
+        <LinhaDetalhe
+          rotulo="Etapa de destino"
+          valor={
+            mov.destino
+              ? `${mov.destino.dsStatus || "—"} (status ${mov.destino.proxStatus})`
+              : "—"
+          }
+        />
+        <LinhaDetalhe rotulo="Observação" valor={mov.dsObserv?.trim() || "—"} />
+        <LinhaDetalhe rotulo="Workflow" valor={String(mov.nrWf ?? "—")} />
+        <LinhaDetalhe rotulo="Produto" valor={String(mov.cdProd ?? "—")} />
+        {mov.nrContra !== null && mov.nrContra !== undefined && (
+          <LinhaDetalhe rotulo="Contrato" valor={String(mov.nrContra)} />
+        )}
+      </div>
+      <p className="mt-2 text-caption text-muted-foreground">
+        A proposta permanece na etapa de origem até a aprovação. A execução confere na
+        Sinqia se ela ainda está lá — mudança por fora da plataforma vira falha registrada,
+        sem mover nada.
+      </p>
+    </section>
   );
 }
 

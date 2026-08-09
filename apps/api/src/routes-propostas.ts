@@ -157,6 +157,9 @@ export interface RegisterPropostasDeps {
   calcProspFn?: typeof calcProsp;
   buscarClientePorCpfFn?: typeof buscarClientePorCpf;
   criarUmaFn?: typeof criarUma;
+  /** Movimentação individual (US-08) — spies provam "zero transfStatus" no desvio. */
+  transferirStatusFn?: typeof transferirStatus;
+  consultarStatusTransfFn?: typeof consultarStatusTransf;
   /** Preguiçoso: só abre o banco quando o toggle está ativo. */
   sodServico?: () => SodServico;
   aprovacaoAtivaFn?: AprovacaoAtivaFn;
@@ -169,6 +172,8 @@ export async function registerPropostasRoutes(
   const calcProspFn = deps.calcProspFn ?? calcProsp;
   const buscarClientePorCpfFn = deps.buscarClientePorCpfFn ?? buscarClientePorCpf;
   const criarUmaFn = deps.criarUmaFn ?? criarUma;
+  const transferirStatusFn = deps.transferirStatusFn ?? transferirStatus;
+  const consultarStatusTransfFn = deps.consultarStatusTransfFn ?? consultarStatusTransf;
   const sodServico = deps.sodServico ?? sodServicoPadrao;
   const aprovacaoAtivaFn = deps.aprovacaoAtivaFn ?? aprovacaoAtiva;
   /**
@@ -1439,8 +1444,10 @@ export async function registerPropostasRoutes(
     }
     const b = parsed.data;
 
-    // Revalida o destino no workflow — o front não é fonte de verdade.
-    const permitidas = await consultarStatusTransf(session.token, b.nrWf, b.nrStatusAtual);
+    // Revalida o destino no workflow — o front não é fonte de verdade. A
+    // MESMA validação vale para o fluxo direto e para o desvio de requisição
+    // (decisão 7 do CONTEXTO: o aprovador confere mérito, não formato).
+    const permitidas = await consultarStatusTransfFn(session.token, b.nrWf, b.nrStatusAtual);
     if (permitidas.httpStatus === 401) return responder401(reply, session.id);
     const destino = permitidas.transicoes.find((t) => t.proxStatus === b.proxStatus);
     if (!destino) {
@@ -1456,7 +1463,66 @@ export async function registerPropostasRoutes(
       });
     }
 
-    const res = await transferirStatus(session.token, {
+    /*
+     * Esteira de Aprovação (US-08): com a flag ativa, a movimentação vira
+     * requisição `pendente` com o payload da RN02 — identificação completa
+     * (proposta, origem, destino, observação) + o request EXATO do
+     * transfStatus. ZERO movimentação na Sinqia neste caminho; a execução
+     * acontece na sessão do aprovador (executor da US-08). O bloqueio de UMA
+     * requisição ativa por proposta é verificado no domínio E garantido no
+     * banco (índice parcial — corrida de criação simultânea coberta).
+     */
+    if (aprovacaoAtivaFn("proposta.movimentar")) {
+      const payloadSod = {
+        movimentacao: {
+          nrProsp: b.nrProsp,
+          nmCliente: b.nmCliente,
+          nrCpf: b.nrCpf,
+          nrWf: b.nrWf,
+          origem: { nrStatus: b.nrStatusAtual, dsStatus: b.dsStatusAtual ?? "" },
+          destino: { proxStatus: destino.proxStatus, dsStatus: destino.dsStatus },
+          dsObserv: b.dsObserv.trim(),
+          cdProd: b.cdProd,
+          nrContra: b.nrContra ?? null,
+        },
+        request: {
+          nrStatus: b.proxStatus,
+          dsObserv: b.dsObserv.trim(),
+          nrCpf: b.nrCpf,
+          nrProsp: b.nrProsp,
+          nmCliente: b.nmCliente,
+          nrWf: b.nrWf,
+          cdProd: b.cdProd,
+          nrContra: b.nrContra ?? 0,
+        },
+      };
+      try {
+        const requisicao = sodServico().criarRequisicao({
+          tipo: "proposta.movimentar",
+          payload: payloadSod as unknown as Record<string, unknown>,
+          requisitante: session.username,
+        });
+        return reply.code(201).send({
+          env: env.SINQIA_ENV,
+          aprovacao: true,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+          },
+          destino: { proxStatus: destino.proxStatus, dsStatus: destino.dsStatus },
+        });
+      } catch (e) {
+        // Bloqueio por proposta (RN03) → 409 com a requisição existente.
+        return responderErroSod(reply, e);
+      }
+    }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — segura flag ativada entre as duas leituras.
+    if (guardarExecucaoDireta("proposta.movimentar", reply, aprovacaoAtivaFn)) return;
+
+    const res = await transferirStatusFn(session.token, {
       nrStatus: b.proxStatus,
       dsObserv: b.dsObserv.trim(),
       nrCpf: b.nrCpf,
@@ -1873,6 +1939,8 @@ const transferirBodySchema = z.object({
   nrProsp: z.number().int().positive(),
   nrWf: z.number().int(),
   nrStatusAtual: z.number().int(),
+  /** Nome da etapa de ORIGEM (exibição) — vai no payload da requisição US-08. */
+  dsStatusAtual: z.string().max(120).optional(),
   proxStatus: z.number().int(),
   dsObserv: z.string().max(500).default(""),
   nrCpf: z.string().min(11).max(14),

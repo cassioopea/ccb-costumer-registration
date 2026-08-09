@@ -787,6 +787,16 @@ describe("US-07 — idempotência e falha parcial herdadas (dois tipos)", () => 
           },
           calcProspFn: calcSpy,
           criarUmaFn: criarUmaSpy,
+          // Movimentação (US-08) não participa de lote de propostas.
+          transferirStatusFn: async () => {
+            throw new Error("não deve mover proposta em lote de propostas");
+          },
+          consultarStatusTransfFn: async () => {
+            throw new Error("não deve consultar transições em lote de propostas");
+          },
+          consultarHistoricoPropostaFn: async () => {
+            throw new Error("não deve consultar histórico em lote de propostas");
+          },
         },
         destroySessionFn: () => {},
       },

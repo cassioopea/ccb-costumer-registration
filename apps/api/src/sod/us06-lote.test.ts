@@ -589,6 +589,16 @@ describe("US-06 — Cenário 4: interrupção no item K e reexecução forçada"
           criarUmaFn: async () => {
             throw new Error("não deve criar proposta em lote de tomadores");
           },
+          // Movimentação (US-08) não participa de lote de tomadores.
+          transferirStatusFn: async () => {
+            throw new Error("não deve mover proposta em lote de tomadores");
+          },
+          consultarStatusTransfFn: async () => {
+            throw new Error("não deve consultar transições em lote de tomadores");
+          },
+          consultarHistoricoPropostaFn: async () => {
+            throw new Error("não deve consultar histórico em lote de tomadores");
+          },
         },
         destroySessionFn: () => {},
       },

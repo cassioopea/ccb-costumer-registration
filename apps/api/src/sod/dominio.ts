@@ -14,6 +14,7 @@ import {
   type TipoAcaoSod,
 } from "@cadastro-lote/shared";
 import {
+  ehViolacaoBloqueioMovimentacao,
   ehViolacaoDuplicidadeItemPendente,
   ehViolacaoDuplicidadePendente,
   type ItemLoteSod,
@@ -37,6 +38,7 @@ export type CodigoErroSod =
   | "MOTIVO_OBRIGATORIO"
   | "CANCELAMENTO_NEGADO"
   | "DUPLICIDADE_PENDENTE"
+  | "MOVIMENTACAO_BLOQUEADA"
   | "LOTE_INVALIDO";
 
 export class SodError extends Error {
@@ -411,11 +413,55 @@ export function criarSodServico(
     );
   }
 
+  /**
+   * Bloqueio de movimentação (US-08, RN03): já existe requisição ATIVA
+   * (pendente/executando/falha) de movimentação para a proposta — audita a
+   * tentativa e rejeita com a requisição existente estruturada.
+   */
+  function rejeitarMovimentacaoBloqueada(params: {
+    existente: RequisicaoSod;
+    documento: string;
+    ator: string;
+  }): never {
+    const { existente, documento, ator } = params;
+    const emFalha = existente.estado === "falha";
+    rejeitar(
+      "MOVIMENTACAO_BLOQUEADA",
+      `A proposta ${documento} já tem uma requisição de movimentação ativa ` +
+        `(requisição ${existente.id}, estado "${existente.estado}", criada por ` +
+        `${existente.requisitante} em ${existente.criadoEm}). ` +
+        (emFalha
+          ? "A falha precisa ser resolvida (retry ou descarte) antes de nova movimentação."
+          : "Aguarde a decisão dela ou cancele-a antes de mover novamente."),
+      {
+        requisicaoId: existente.id,
+        ator,
+        detalhe: {
+          operacao: "criar",
+          tipo: "proposta.movimentar",
+          documento,
+          requisicaoExistente: existente.id,
+          estadoExistente: existente.estado,
+        },
+        extra: {
+          requisicaoExistente: {
+            id: existente.id,
+            estado: existente.estado,
+            requisitante: existente.requisitante,
+            criadoEm: existente.criadoEm,
+          },
+        },
+      },
+    );
+  }
+
   return {
     /**
      * Cria a requisição em `pendente` com payload integral e identidade
      * normalizada. Tipos com documento passam pela guarda de duplicidade
      * (RN02): já havendo pendente do mesmo documento, nada é criado.
+     * `proposta.movimentar` (US-08) tem guarda própria, mais larga: uma
+     * requisição ATIVA por proposta (falha inclusive — RN03).
      */
     criarRequisicao(entrada: {
       tipo: TipoAcaoSod;
@@ -426,7 +472,17 @@ export function criarSodServico(
       if (!requisitante) throw new Error("Requisitante vazio — sessão sem login utilizável.");
 
       const documento = extrairDocumentoSod(entrada.tipo, entrada.payload);
-      if (documento) {
+      if (entrada.tipo === "proposta.movimentar") {
+        if (!documento) {
+          throw new Error(
+            "Payload de movimentação sem o nº da proposta — a guarda de bloqueio é obrigatória.",
+          );
+        }
+        const ativa = repo.movimentacaoAtivaPorDocumento(documento);
+        if (ativa) {
+          rejeitarMovimentacaoBloqueada({ existente: ativa, documento, ator: requisitante });
+        }
+      } else if (documento) {
         const existente = repo.pendentePorDocumento(entrada.tipo, documento);
         if (existente) {
           rejeitarDuplicidade({ existente, tipo: entrada.tipo, documento, ator: requisitante });
@@ -477,6 +533,19 @@ export function criarSodServico(
           },
         );
       } catch (e) {
+        // Corrida perdida (US-08, Cenário 3): outra movimentação da MESMA
+        // proposta inseriu entre a checagem e o INSERT — exatamente uma vence,
+        // decidido pelo índice `idx_sod_req_mov_ativa` no banco.
+        if (
+          entrada.tipo === "proposta.movimentar" &&
+          documento &&
+          ehViolacaoBloqueioMovimentacao(e)
+        ) {
+          const ativa = repo.movimentacaoAtivaPorDocumento(documento);
+          if (ativa) {
+            rejeitarMovimentacaoBloqueada({ existente: ativa, documento, ator: requisitante });
+          }
+        }
         // Corrida perdida: outra submissão do mesmo documento inseriu entre a
         // checagem e o INSERT — o índice único parcial garantiu a RN02.
         if (documento && ehViolacaoDuplicidadePendente(e)) {
@@ -1200,6 +1269,17 @@ export function criarSodServico(
      * proposta para tomador ainda em aprovação é bloqueada na criação.
      */
     pendentePorDocumento: repo.pendentePorDocumento.bind(repo),
+
+    /**
+     * Bloqueio de movimentação CONSULTÁVEL (US-08, RN03 — insumo da US-09):
+     * a requisição ativa de uma proposta e a lista completa do ambiente. A
+     * definição de "ativa" é ESTADOS_BLOQUEIO_MOVIMENTACAO (shared) — a mesma
+     * do índice que decide a corrida de criação.
+     */
+    movimentacaoAtivaPorProposta(nrProsp: number | string): RequisicaoSod | null {
+      return repo.movimentacaoAtivaPorDocumento(String(nrProsp).replace(/\D/g, ""));
+    },
+    listarMovimentacoesAtivas: repo.listarMovimentacoesAtivas.bind(repo),
   };
 }
 

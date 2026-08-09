@@ -80,6 +80,7 @@ export interface EnvInfo {
     criacaoPropostaIndividual?: boolean;
     cadastroTomadorLote?: boolean;
     criacaoPropostaLote?: boolean;
+    movimentacaoProposta?: boolean;
   };
 }
 
@@ -1050,24 +1051,64 @@ export async function salvarPersona(input: {
   return lerResposta(res, "Falha ao salvar a persona");
 }
 
-/** MOVE a proposta de fila (transfStatus — efeito real no workflow). */
+/**
+ * MOVE a proposta de fila (transfStatus — efeito real no workflow). Com a
+ * Esteira de Aprovação ativa (US-08), NADA vai à Sinqia: a resposta traz
+ * `aprovacao: true` + a requisição pendente criada, e a proposta permanece
+ * na etapa de origem com o indicador do painel até a decisão.
+ */
 export async function transferirProposta(input: {
   nrProsp: number;
   nrWf: number;
   nrStatusAtual: number;
+  /** Nome da etapa de origem — exibido no detalhe da requisição (US-08). */
+  dsStatusAtual?: string;
   proxStatus: number;
   dsObserv: string;
   nrCpf: string;
   nmCliente: string;
   cdProd: number;
   nrContra: number | null;
-}): Promise<{ env: string; ok: boolean; destino: { proxStatus: number; dsStatus: string } }> {
+}): Promise<{
+  env: string;
+  ok?: boolean;
+  destino: { proxStatus: number; dsStatus: string };
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string };
+}> {
   const res = await fetch("/api/propostas-transferir", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
   return lerResposta(res, "Falha ao transferir a proposta");
+}
+
+/**
+ * Movimentação de proposta em requisição ATIVA (US-08, RN05): pendente,
+ * executando ou em falha — é o que segura o bloqueio por proposta.
+ */
+export interface MovimentacaoAtiva {
+  requisicaoId: string;
+  estado: EstadoRequisicao;
+  nrProsp: number | null;
+  requisitante: string;
+  criadoEm: string;
+  origem: { nrStatus: number; dsStatus: string } | null;
+  destino: { proxStatus: number; dsStatus: string } | null;
+  causaFalha?: string;
+}
+
+/**
+ * TODAS as movimentações ativas do ambiente em UMA chamada — o Painel de
+ * Propostas desenha os indicadores a partir daqui (nunca uma consulta por
+ * proposta; requisito de performance da US-08).
+ */
+export async function getMovimentacoesAtivas(): Promise<{
+  movimentacoes: MovimentacaoAtiva[];
+}> {
+  const res = await fetch("/api/sod/movimentacoes-ativas");
+  return lerResposta(res, "Falha ao consultar as movimentações em aprovação");
 }
 
 /* --- Proposta individual (fluxo unitário) --- */

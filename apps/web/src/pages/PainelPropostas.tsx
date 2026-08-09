@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
+  Ban,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -15,6 +16,7 @@ import {
   SlidersHorizontal,
   XCircle,
 } from "lucide-react";
+import { normalizarLogin, ROTULO_TIPO_ACAO } from "@cadastro-lote/shared";
 import {
   Card,
   CardContent,
@@ -43,20 +45,36 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer";
+import { RequisicaoDetalhe } from "@/components/RequisicaoDetalhe";
+import { BadgeEstado } from "@/pages/MinhasRequisicoes";
 import { IS_PROD } from "@/components/Topbar";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { CATEGORIAS, categoriaDaEtapa } from "@/lib/esteira";
 import { Hint } from "@/components/onboarding/Hint";
 import { cn } from "@/lib/utils";
 import {
+  cancelarRequisicao,
+  detalharRequisicao,
+  getEnv,
   getFilasPropostas,
   getHistoricoProposta,
+  getMovimentacoesAtivas,
   getTransicoesProposta,
   painelPropostas,
   startTransferirLote,
   streamTransferenciaLote,
+  transferirProposta,
+  type DetalheRequisicao,
   type FilaWf,
   type HistoricoPropostaItem,
+  type MovimentacaoAtiva,
   type PainelCursor,
   type PainelFiltros,
   type PropostaPainel,
@@ -65,7 +83,7 @@ import {
 } from "@/lib/api";
 import { exportPainelCsv } from "@/lib/export-csv";
 import { formatBRL, formatCpf, formatDataAAAAMMDD } from "@/lib/format";
-import { SessaoExpiradaError } from "@/lib/session";
+import { SessaoExpiradaError, useSession } from "@/lib/session";
 
 /** Filtros digitados (strings; convertidos no envio). */
 interface FiltrosForm {
@@ -141,6 +159,40 @@ function horasNaEtapa(dtEntrad: number | null, hrEntrad: number | null): number 
   return Math.max(0, (Date.now() - d.getTime()) / 3_600_000);
 }
 
+/**
+ * Indicador de movimentação em aprovação (US-08, RN05): a proposta permanece
+ * na etapa de ORIGEM; o chip mostra o estado da requisição — "pendente
+ * (→ destino)", "executando" ou "falhou" — e clica para o detalhe.
+ */
+function IndicadorMovimentacao({
+  mov,
+  onAbrir,
+}: {
+  mov: MovimentacaoAtiva;
+  onAbrir: (requisicaoId: string) => void;
+}) {
+  const destino = (mov.destino?.dsStatus ?? "").replace(/\s*\(.*\)\s*$/, "") || "destino";
+  const chip =
+    mov.estado === "pendente"
+      ? { label: `pendente (→ ${destino})`, variant: "warning" as const }
+      : mov.estado === "aprovada/executando"
+        ? { label: "executando", variant: "default" as const }
+        : { label: "falhou", variant: "destructive" as const };
+  return (
+    <button
+      type="button"
+      onClick={() => onAbrir(mov.requisicaoId)}
+      className="focus-ring rounded-full"
+      title={`Movimentação em aprovação (SoD) — criada por ${mov.requisitante}. Clique para o detalhe.`}
+    >
+      <Badge variant={chip.variant} className="cursor-pointer whitespace-nowrap">
+        <ArrowRight className="mr-1 h-3 w-3" />
+        {chip.label}
+      </Badge>
+    </button>
+  );
+}
+
 /** Régua de SLA: acima disso na mesma etapa, a proposta entra em atenção. */
 const SLA_HORAS_ATENCAO = 72;
 
@@ -209,6 +261,157 @@ export function PainelPropostas({
 
   /** Mensagem de sucesso da última transferência. */
   const [info, setInfo] = useState<string | null>(null);
+
+  /* --- Esteira de Aprovação (US-08): mover individual vira requisição --- */
+  const { session } = useSession();
+  /** Flag `aprovacao.movimentacao_proposta` — liga o gesto de mover por linha. */
+  const [aprovacaoMovimentacao, setAprovacaoMovimentacao] = useState(false);
+  /** Movimentações ATIVAS por nº de proposta — UMA chamada agregada (RN05). */
+  const [movs, setMovs] = useState<Map<number, MovimentacaoAtiva>>(new Map());
+
+  /** Modal "mover proposta" (individual, flag ON). */
+  const [moverProposta, setMoverProposta] = useState<PropostaPainel | null>(null);
+  const [moverTransicoes, setMoverTransicoes] = useState<TransicaoStatus[] | null>(null);
+  const [moverDestino, setMoverDestino] = useState<number | null>(null);
+  const [moverObservacao, setMoverObservacao] = useState("");
+  const [moverEnviando, setMoverEnviando] = useState(false);
+  const [moverErro, setMoverErro] = useState<string | null>(null);
+
+  /** Drawer do detalhe da requisição de movimentação (indicador clicado). */
+  const [movDetalheId, setMovDetalheId] = useState<string | null>(null);
+  const [movDetalhe, setMovDetalhe] = useState<DetalheRequisicao | null>(null);
+  const [movDetalheCarregando, setMovDetalheCarregando] = useState(false);
+  const [movDetalheErro, setMovDetalheErro] = useState<string | null>(null);
+  const [movCancelando, setMovCancelando] = useState(false);
+  const [movConfirmCancelar, setMovConfirmCancelar] = useState(false);
+
+  /** Recarrega o mapa de movimentações ativas — nunca derruba o painel. */
+  async function carregarMovs() {
+    try {
+      const res = await getMovimentacoesAtivas();
+      setMovs(
+        new Map(
+          res.movimentacoes
+            .filter((m) => m.nrProsp !== null)
+            .map((m) => [m.nrProsp as number, m]),
+        ),
+      );
+    } catch {
+      /* indicador é apoio: falha na consulta não pode esconder a fila */
+    }
+  }
+
+  /** Abre o modal de mover UMA proposta e busca os destinos permitidos. */
+  async function abrirMover(p: PropostaPainel) {
+    const fila = filas?.find((f) => f.nrStatus === filaSelecionada);
+    if (!fila) return;
+    setMoverProposta(p);
+    setMoverTransicoes(null);
+    setMoverDestino(null);
+    setMoverObservacao("");
+    setMoverErro(null);
+    try {
+      const res = await getTransicoesProposta(fila.nrWf, fila.nrStatus);
+      setMoverTransicoes(res.transicoes);
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setMoverErro((e as Error).message);
+      setMoverTransicoes([]);
+    }
+  }
+
+  const moverTransicao = moverTransicoes?.find((t) => t.proxStatus === moverDestino) ?? null;
+  const moverObsOk = !moverTransicao?.exigeObservacao || moverObservacao.trim() !== "";
+  const podeConfirmarMover = !!moverProposta && !!moverTransicao && moverObsOk && !moverEnviando;
+
+  /**
+   * Confirma o gesto: cria a REQUISIÇÃO de movimentação (zero Sinqia — a
+   * execução acontece na aprovação). A proposta segue na etapa de origem com
+   * o indicador "pendente (→ destino)".
+   */
+  async function confirmarMover() {
+    const fila = filas?.find((f) => f.nrStatus === filaSelecionada);
+    if (!fila || !moverProposta || !moverTransicao || !podeConfirmarMover) return;
+    setMoverEnviando(true);
+    setMoverErro(null);
+    try {
+      const res = await transferirProposta({
+        nrProsp: moverProposta.nrProsp,
+        nrWf: fila.nrWf,
+        nrStatusAtual: fila.nrStatus,
+        dsStatusAtual: fila.dsStatus,
+        proxStatus: moverTransicao.proxStatus,
+        dsObserv: moverObservacao.trim(),
+        nrCpf: moverProposta.nrCpfCnpj,
+        nmCliente: moverProposta.nmClient,
+        cdProd: moverProposta.cdProd ?? 0,
+        nrContra: moverProposta.nrContra,
+      });
+      setMoverProposta(null);
+      if (res.aprovacao) {
+        setInfo(
+          `Requisição de movimentação da proposta nº ${moverProposta.nrProsp} criada — ` +
+            `aguardando a decisão de um segundo operador. A proposta permanece nesta etapa até lá.`,
+        );
+      } else {
+        // Flag desligada entre a abertura do modal e o envio: moveu direto.
+        setInfo(`Proposta nº ${moverProposta.nrProsp} movida.`);
+        void carregarFilas();
+        void buscar(filaSelecionada);
+      }
+      void carregarMovs();
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setMoverErro((e as Error).message);
+    } finally {
+      setMoverEnviando(false);
+    }
+  }
+
+  /** Abre o drawer com o detalhe da requisição de movimentação (RN05). */
+  async function abrirMovDetalhe(requisicaoId: string) {
+    setMovDetalheId(requisicaoId);
+    setMovDetalhe(null);
+    setMovDetalheErro(null);
+    setMovConfirmCancelar(false);
+    setMovDetalheCarregando(true);
+    try {
+      setMovDetalhe(await detalharRequisicao(requisicaoId));
+    } catch (e) {
+      if (e instanceof SessaoExpiradaError) setMovDetalheId(null);
+      else setMovDetalheErro((e as Error).message);
+    } finally {
+      setMovDetalheCarregando(false);
+    }
+  }
+
+  /** Cancela a requisição (RN06): remove o indicador e libera o bloqueio. */
+  async function cancelarMovimentacao() {
+    if (!movDetalheId) return;
+    setMovCancelando(true);
+    setMovConfirmCancelar(false);
+    try {
+      await cancelarRequisicao(movDetalheId);
+      setInfo("Requisição de movimentação cancelada — a proposta está liberada para mover.");
+      setMovDetalheId(null);
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setMovDetalheErro((e as Error).message);
+      // Estado atual (ex.: já decidida) volta no refresh do detalhe.
+      try {
+        setMovDetalhe(await detalharRequisicao(movDetalheId));
+      } catch {
+        /* melhor-esforço */
+      }
+    } finally {
+      setMovCancelando(false);
+      void carregarMovs();
+    }
+  }
+
+  const movReq = movDetalhe?.requisicao ?? null;
+  const podeCancelarMov =
+    !!movReq &&
+    movReq.estado === "pendente" &&
+    !!session &&
+    normalizarLogin(session.username) === movReq.requisitante;
 
   /* --- Helpers da seleção em lote --- */
   const toggleSelecionada = (nrProsp: number) =>
@@ -337,6 +540,13 @@ export function PainelPropostas({
   useEffect(() => {
     if (!ativa || jaAtivou.current) return;
     jaAtivou.current = true;
+    // Esteira de Aprovação (US-08): flag do gesto de mover + indicadores.
+    void getEnv()
+      .then((e) => setAprovacaoMovimentacao(e.aprovacao?.movimentacaoProposta === true))
+      .catch(() => {
+        /* sem env, o gesto fica oculto — o painel continua íntegro */
+      });
+    void carregarMovs();
     // Carrega as etapas e abre a fila pedida pelo Início — ou a primeira com propostas.
     void carregarFilas().then((lista) => {
       const pedida = filaExterna
@@ -413,6 +623,8 @@ export function PainelPropostas({
     setCursor(null);
     setExpandidas(new Set());
     setSelecionadas(new Set());
+    // Indicadores (US-08) atualizados junto com a fila — mesma chamada única.
+    void carregarMovs();
     try {
       const res = await painelPropostas({ filtros: filtrosEfetivos(status, filtrosBase) });
       setPropostas(res.propostas);
@@ -944,7 +1156,17 @@ export function PainelPropostas({
                           {formatBRL(p.vlSolic)}
                         </TableCell>
                         <TableCell>
-                          <StatusPill nrStatus={p.nrStatus} dsStatus={p.dsStatus} />
+                          <span className="inline-flex flex-wrap items-center gap-1.5">
+                            <StatusPill nrStatus={p.nrStatus} dsStatus={p.dsStatus} />
+                            {/* Movimentação em aprovação (US-08, RN05): a proposta
+                                segue NESTA etapa; o chip mostra a requisição ativa */}
+                            {movs.has(p.nrProsp) && (
+                              <IndicadorMovimentacao
+                                mov={movs.get(p.nrProsp)!}
+                                onAbrir={(id) => void abrirMovDetalhe(id)}
+                              />
+                            )}
+                          </span>
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">
                           {formatDataAAAAMMDD(p.dtEntrad)} {formatHora(p.hrEntrad)}
@@ -977,19 +1199,42 @@ export function PainelPropostas({
                           {p.nrContra ?? "—"}
                         </TableCell>
                         <TableCell>
-                          {/* Mover mora no lote: marque o checkbox e use o CTA. */}
-                          <button
-                            type="button"
-                            onClick={() => void toggleHistorico(p.nrProsp)}
-                            className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
-                          >
-                            {aberta ? (
-                              <ChevronDown className="h-3 w-3" />
-                            ) : (
-                              <ChevronRight className="h-3 w-3" />
-                            )}
-                            histórico
-                          </button>
+                          <span className="flex items-center gap-2">
+                            {/* Mover direto mora no lote (checkbox + CTA); com a
+                                Esteira de Aprovação ativa, o gesto INDIVIDUAL
+                                cria uma requisição (US-08). */}
+                            <button
+                              type="button"
+                              onClick={() => void toggleHistorico(p.nrProsp)}
+                              className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
+                            >
+                              {aberta ? (
+                                <ChevronDown className="h-3 w-3" />
+                              ) : (
+                                <ChevronRight className="h-3 w-3" />
+                              )}
+                              histórico
+                            </button>
+                            {aprovacaoMovimentacao &&
+                              (movs.has(p.nrProsp) ? (
+                                <span
+                                  className="cursor-not-allowed text-caption text-muted-foreground"
+                                  title="Já existe uma requisição de movimentação ativa para esta proposta — decida, cancele ou resolva a falha antes de mover de novo."
+                                >
+                                  mover
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => void abrirMover(p)}
+                                  className="focus-ring flex items-center gap-1 text-caption text-primary hover:underline"
+                                  title="Cria uma requisição de movimentação para aprovação de um segundo operador"
+                                >
+                                  <ArrowRight className="h-3 w-3" />
+                                  mover
+                                </button>
+                              ))}
+                          </span>
                         </TableCell>
                       </TableRow>
                       {aberta && (
@@ -1222,6 +1467,212 @@ export function PainelPropostas({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Mover INDIVIDUAL sob aprovação (US-08): confirmação → requisição
+          pendente, ZERO Sinqia — a execução acontece na sessão do aprovador */}
+      <Dialog
+        open={moverProposta !== null}
+        onOpenChange={(o) => {
+          if (!o && !moverEnviando) setMoverProposta(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ArrowRight className="h-5 w-5 text-primary" />
+              Mover proposta nº {moverProposta?.nrProsp}
+            </DialogTitle>
+            <DialogDescription>
+              A movimentação está sob aprovação (SoD): confirmar cria uma{" "}
+              <strong>requisição pendente</strong> para um segundo operador decidir. Nada é
+              movido agora — a proposta permanece em{" "}
+              <strong>{filaAtual ? nomeEtapa(filaAtual.dsStatus) : "—"}</strong> com um
+              indicador até a decisão.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {moverErro && (
+              <p className="flex items-start gap-1.5 text-caption text-destructive">
+                <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {moverErro}
+              </p>
+            )}
+
+            {moverTransicoes === null ? (
+              <div className="space-y-2">
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+            ) : moverTransicoes.length === 0 ? (
+              <p className="text-body text-muted-foreground">
+                O workflow não permite mover propostas a partir desta etapa.
+              </p>
+            ) : (
+              <>
+                <div
+                  className="space-y-1"
+                  role="radiogroup"
+                  aria-label="Etapa de destino da movimentação"
+                >
+                  {moverTransicoes.map((t) => (
+                    <label
+                      key={t.proxStatus}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-body transition-colors duration-150",
+                        moverDestino === t.proxStatus
+                          ? "border-primary bg-accent"
+                          : "border-border hover:border-primary/50",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="destino-individual"
+                        className="focus-ring h-4 w-4 accent-[var(--primary)]"
+                        checked={moverDestino === t.proxStatus}
+                        onChange={() => setMoverDestino(t.proxStatus)}
+                      />
+                      <PontoCategoria nrStatus={t.proxStatus} dsStatus={t.dsStatus} />
+                      <span className="flex-1 font-medium">{nomeEtapa(t.dsStatus)}</span>
+                      {t.exigeObservacao && (
+                        <span className="text-caption text-muted-foreground">
+                          exige observação
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="mover-obs" className="text-caption">
+                    Observação
+                    {moverTransicao?.exigeObservacao ? (
+                      <span className="text-destructive"> (obrigatória)</span>
+                    ) : (
+                      " (opcional)"
+                    )}
+                  </Label>
+                  <Input
+                    id="mover-obs"
+                    value={moverObservacao}
+                    maxLength={500}
+                    placeholder="Ex.: Contrato assinado"
+                    onChange={(e) => setMoverObservacao(e.target.value)}
+                  />
+                  <p className="text-caption text-muted-foreground">
+                    Vai para o histórico da proposta quando a movimentação for aprovada e
+                    executada.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMoverProposta(null)}
+              disabled={moverEnviando}
+            >
+              Cancelar
+            </Button>
+            <Button onClick={() => void confirmarMover()} disabled={!podeConfirmarMover}>
+              {moverEnviando ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ArrowRight className="h-4 w-4" />
+              )}
+              Criar requisição de movimentação
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Detalhe da requisição de movimentação (indicador clicado — RN05),
+          com cancelamento pelo criador (RN06: libera o bloqueio) */}
+      <Drawer open={movDetalheId !== null} onOpenChange={(o) => !o && setMovDetalheId(null)}>
+        <DrawerContent>
+          <DrawerHeader>
+            <DrawerTitle className="flex flex-wrap items-center gap-2">
+              {ROTULO_TIPO_ACAO["proposta.movimentar"]}
+              {movReq && <BadgeEstado estado={movReq.estado} />}
+            </DrawerTitle>
+            <DrawerDescription className="break-all font-mono text-caption">
+              {movDetalheId}
+            </DrawerDescription>
+          </DrawerHeader>
+
+          {movDetalheCarregando && (
+            <div className="space-y-2">
+              <Skeleton className="h-6 w-2/3" />
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          )}
+
+          {movDetalheErro && (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{movDetalheErro}</span>
+            </div>
+          )}
+
+          {movReq && (
+            <div className="space-y-5 text-sm">
+              <RequisicaoDetalhe requisicao={movReq} historico={movDetalhe?.historico ?? []} />
+
+              {/* Cancelar — só o criador, só pendente (RN06) */}
+              {podeCancelarMov && (
+                <div className="border-t border-border pt-4">
+                  {movConfirmCancelar ? (
+                    <div className="space-y-2">
+                      <p className="text-body">
+                        Cancelar a requisição? O indicador some do painel e a proposta fica
+                        liberada para nova movimentação.
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="destructive"
+                          disabled={movCancelando}
+                          onClick={() => void cancelarMovimentacao()}
+                        >
+                          {movCancelando ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Ban className="h-4 w-4" />
+                          )}
+                          Confirmar cancelamento
+                        </Button>
+                        <Button
+                          variant="outline"
+                          disabled={movCancelando}
+                          onClick={() => setMovConfirmCancelar(false)}
+                        >
+                          Voltar
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <Button
+                        variant="destructive"
+                        disabled={movCancelando}
+                        onClick={() => setMovConfirmCancelar(true)}
+                      >
+                        <Ban className="h-4 w-4" />
+                        Cancelar requisição
+                      </Button>
+                      <p className="mt-1.5 text-caption text-muted-foreground">
+                        Disponível porque a requisição é sua e ainda está pendente.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </DrawerContent>
+      </Drawer>
 
     </div>
   );

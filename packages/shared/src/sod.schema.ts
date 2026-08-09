@@ -192,6 +192,49 @@ export const ROTULO_TIPO_ACAO: Record<TipoAcaoSod, string> = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Movimentação de proposta (US-08)                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Estados em que uma requisição de `proposta.movimentar` BLOQUEIA nova
+ * movimentação da mesma proposta (US-08, RN03): pendente e executando pelo
+ * ciclo natural, e `falha` DE PROPÓSITO — a divergência precisa ser resolvida
+ * (retry ou descarte, US-10) antes de qualquer nova tentativa. Terminais
+ * (executada/reprovada/cancelada/descartada) liberam. A US-09 valida os lotes
+ * de movimentação contra esta MESMA definição.
+ */
+export const ESTADOS_BLOQUEIO_MOVIMENTACAO: readonly EstadoRequisicao[] = [
+  "pendente",
+  "aprovada/executando",
+  "falha",
+];
+
+/**
+ * Payload canônico de `proposta.movimentar` (US-08, RN02): a identificação
+ * completa da movimentação para o aprovador conferir o mérito (proposta,
+ * etapa de origem e de destino, observação) + o `request` EXATO do
+ * transfStatus que a execução reenvia na sessão do aprovador (RN05/RN08 —
+ * nunca reconstruído). O destino foi validado contra o consultarStatusTransf
+ * (as transições que o workflow permite) na CRIAÇÃO, na sessão do
+ * requisitante — a execução revalida a origem antes de mover (Cenário 4).
+ */
+export interface MovimentacaoSodPayload {
+  movimentacao: {
+    nrProsp: number;
+    nmCliente: string;
+    nrCpf: string;
+    nrWf: number;
+    origem: { nrStatus: number; dsStatus: string };
+    destino: { proxStatus: number; dsStatus: string };
+    dsObserv: string;
+    cdProd: number;
+    nrContra: number | null;
+  };
+  /** Request EXATO do transfStatus — a execução o reenvia intacto. */
+  request: Record<string, unknown>;
+}
+
+/* ------------------------------------------------------------------ */
 /* Chave de duplicidade (guarda de pendentes — RN02 US-02 / RN04 US-04) */
 /* ------------------------------------------------------------------ */
 
@@ -289,6 +332,20 @@ export function chaveDuplicidadeProposta(payload: Record<string, unknown>): stri
 }
 
 /**
+ * Chave de bloqueio de `proposta.movimentar` (US-08, RN03): o número da
+ * proposta em dígitos — uma requisição de movimentação ATIVA por proposta,
+ * independentemente do destino. Payload fora do formato → null (sem guarda).
+ */
+export function chaveBloqueioMovimentacao(payload: Record<string, unknown>): string | null {
+  const movimentacao = payload.movimentacao as
+    | MovimentacaoSodPayload["movimentacao"]
+    | undefined;
+  const nrProsp = movimentacao?.nrProsp;
+  if (typeof nrProsp !== "number" || !Number.isInteger(nrProsp) || nrProsp <= 0) return null;
+  return String(nrProsp);
+}
+
+/**
  * Extrai a CHAVE DE DUPLICIDADE do payload de uma requisição, por tipo — o
  * valor vai para a coluna `documento`, coberta pelo índice único parcial de
  * pendentes (uma pendente por (ambiente, tipo, chave)).
@@ -298,6 +355,9 @@ export function chaveDuplicidadeProposta(payload: Record<string, unknown>): stri
  * - `proposta.criar` (US-04): a assinatura da proposta (mesma chave da guarda
  *   do fluxo direto) — pendentes de propostas DIFERENTES do mesmo CPF são
  *   permitidas, como na Sinqia (decisão "Opção A" do PM no checkpoint da US-04).
+ * - `proposta.movimentar` (US-08): o nº da proposta — a guarda aqui é de
+ *   BLOQUEIO (uma movimentação ativa por proposta, `falha` inclusive), não só
+ *   de pendente; ver ESTADOS_BLOQUEIO_MOVIMENTACAO.
  *
  * Demais tipos (e payloads em formato inesperado) devolvem null — sem chave
  * não há guarda.
@@ -307,6 +367,7 @@ export function extrairDocumentoSod(
   payload: Record<string, unknown>,
 ): string | null {
   if (tipo === "proposta.criar") return chaveDuplicidadeProposta(payload);
+  if (tipo === "proposta.movimentar") return chaveBloqueioMovimentacao(payload);
   if (tipo !== "tomador.cadastrar") return null;
   const campos = payload.campos;
   if (!campos || typeof campos !== "object" || Array.isArray(campos)) return null;

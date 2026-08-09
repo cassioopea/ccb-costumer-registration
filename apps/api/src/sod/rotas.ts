@@ -13,6 +13,9 @@ import { destroySession, getSession, motivoTexto, type Session } from "./../sess
 import {
   cadastrarCliente,
   calcProsp,
+  consultarHistoricoProposta,
+  consultarStatusTransf,
+  transferirStatus,
   verificarSessaoSinqia,
 } from "./../sinqia-client.js";
 import { criarUma } from "./../criacao-job.js";
@@ -60,6 +63,7 @@ const STATUS_POR_CODIGO: Record<CodigoErroSod, number> = {
   CANCELAMENTO_NEGADO: 403,
   MOTIVO_OBRIGATORIO: 400,
   DUPLICIDADE_PENDENTE: 409,
+  MOVIMENTACAO_BLOQUEADA: 409,
   LOTE_INVALIDO: 400,
 };
 
@@ -161,6 +165,10 @@ export interface RegisterSodRoutesDeps {
   verificarSessaoSinqiaFn?: typeof verificarSessaoSinqia;
   calcProspFn?: typeof calcProsp;
   criarUmaFn?: typeof criarUma;
+  /** Movimentação de proposta (US-08) — o MESMO cliente do fluxo direto. */
+  transferirStatusFn?: typeof transferirStatus;
+  consultarStatusTransfFn?: typeof consultarStatusTransf;
+  consultarHistoricoPropostaFn?: typeof consultarHistoricoProposta;
 }
 
 export async function registerSodRoutes(
@@ -173,6 +181,9 @@ export async function registerSodRoutes(
     cadastrarClienteFn: deps.cadastrarClienteFn ?? cadastrarCliente,
     calcProspFn: deps.calcProspFn ?? calcProsp,
     criarUmaFn: deps.criarUmaFn ?? criarUma,
+    transferirStatusFn: deps.transferirStatusFn ?? transferirStatus,
+    consultarStatusTransfFn: deps.consultarStatusTransfFn ?? consultarStatusTransf,
+    consultarHistoricoPropostaFn: deps.consultarHistoricoPropostaFn ?? consultarHistoricoProposta,
   };
   const verificarSessaoSinqiaFn = deps.verificarSessaoSinqiaFn ?? verificarSessaoSinqia;
   /** Criar requisição — o requisitante é SEMPRE a sessão, nunca o body. */
@@ -427,6 +438,35 @@ export async function registerSodRoutes(
     } catch (e) {
       return responderErroSod(reply, e);
     }
+  });
+
+  /**
+   * Movimentações ATIVAS do ambiente (US-08, RN05) — UMA consulta agregada
+   * para o indicador do Painel de Propostas (nunca uma chamada por proposta)
+   * e a visão do bloqueio por proposta que a US-09 valida os lotes contra.
+   * Ativa = pendente, executando ou falha (ESTADOS_BLOQUEIO_MOVIMENTACAO).
+   */
+  app.get("/api/sod/movimentacoes-ativas", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const movimentacoes = servico.listarMovimentacoesAtivas().map((r) => {
+      const mov = (r.payload as { movimentacao?: Record<string, unknown> }).movimentacao ?? {};
+      const resultado = r.resultado as { causa?: unknown } | null;
+      return {
+        requisicaoId: r.id,
+        estado: r.estado,
+        nrProsp: Number(r.documento) || null,
+        requisitante: r.requisitante,
+        criadoEm: r.criadoEm,
+        origem: mov.origem ?? null,
+        destino: mov.destino ?? null,
+        ...(r.estado === "falha" && typeof resultado?.causa === "string"
+          ? { causaFalha: resultado.causa }
+          : {}),
+      };
+    });
+    return reply.send({ movimentacoes });
   });
 
   /**

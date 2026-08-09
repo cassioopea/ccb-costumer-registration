@@ -483,13 +483,13 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
     try {
       const repoApp = criarSodRepositorio(dbApp, "hml");
       repoApp.definirFlag({
-        tipo: "proposta.movimentar",
+        tipo: "proposta.movimentar_massa",
         ativa: true,
         ator: "seguranca.ops",
         agora: new Date().toISOString(),
       });
-      assert.equal(aprovacaoAtiva("proposta.movimentar"), false, "US-08 fora do corte");
-      assert.equal(aprovacaoAtiva("proposta.movimentar_massa"), false);
+      assert.equal(aprovacaoAtiva("proposta.movimentar_massa"), false, "US-09 fora do corte");
+      assert.equal(aprovacaoAtiva("tomador.alterar_situacao"), false);
 
       // E o caminho REAL de ponta a ponta funciona para os tipos da Onda 1:
       // linha na tabela → aprovacaoAtiva default (sodServicoPadrao) → true.
@@ -537,11 +537,26 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
       resolverTipoComFlag("aprovacao.criacao_proposta_lote"),
       "proposta.criar_lote",
     );
-    assert.equal(resolverTipoComFlag("proposta.movimentar"), null, "US-08 sem flag");
+    assert.equal(
+      resolverTipoComFlag("proposta.movimentar"),
+      "proposta.movimentar",
+      "US-08 sob flag",
+    );
+    assert.equal(
+      resolverTipoComFlag("aprovacao.movimentacao_proposta"),
+      "proposta.movimentar",
+    );
+    assert.equal(resolverTipoComFlag("proposta.movimentar_massa"), null, "US-09 sem flag");
     assert.equal(resolverTipoComFlag("qualquer.coisa"), null);
     assert.deepEqual(
       [...TIPOS_COM_FLAG],
-      ["tomador.cadastrar", "proposta.criar", "tomador.cadastrar_lote", "proposta.criar_lote"],
+      [
+        "tomador.cadastrar",
+        "proposta.criar",
+        "tomador.cadastrar_lote",
+        "proposta.criar_lote",
+        "proposta.movimentar",
+      ],
     );
   });
 });
