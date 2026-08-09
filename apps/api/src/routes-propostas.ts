@@ -3,13 +3,23 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   aprovadaNoFunil,
+  batchControlSchema,
   categoriaDaEtapa,
+  chaveDuplicidadeProposta,
   dateInt,
   emissaoRowSchema,
+  normalizarDocumento,
+  ROTULO_CONFERENCIA_PLANILHA,
   ROTULO_REFERENCIA_CALCULO,
+  type BatchControl,
   type CalcProspCalculo,
   type CalcProspRequest,
+  type Cliente,
+  type ItemLoteSodPayload,
+  type PropostaLoteItemSodPayload,
+  type PropostaLoteSodPayload,
   type PropostaSodPayload,
+  type TipoAcaoSod,
 } from "@cadastro-lote/shared";
 import {
   ajustePersonasTomadores,
@@ -25,6 +35,8 @@ import {
 } from "./transferencia-job.js";
 import { env } from "./env.js";
 import { parseEmissoesXlsx } from "./emissoes.js";
+import { buildTemplatePropostasCsv } from "./template.js";
+import { buildRequest, parseByFilename, validateRows } from "./parse-input.js";
 import {
   buildCalcRequestDados,
   getCalculoCompleto,
@@ -96,6 +108,30 @@ function exigirSessao(req: FastifyRequest, reply: FastifyReply): Session | null 
   return res.session;
 }
 
+/**
+ * Lê o multipart do arquivo de TOMADORES do lote composto (US-07): texto
+ * CSV/JSON + campo control (JSON) — mesmo contrato do readUpload de routes.ts.
+ */
+async function readUploadTomadores(
+  req: any,
+): Promise<{ filename: string; content: string; control: BatchControl }> {
+  let filename = "";
+  let content = "";
+  let controlRaw = "{}";
+
+  const parts = req.parts();
+  for await (const part of parts) {
+    if (part.type === "file") {
+      filename = part.filename ?? "";
+      content = (await part.toBuffer()).toString("utf8");
+    } else if (part.fieldname === "control") {
+      controlRaw = (part.value as string) || "{}";
+    }
+  }
+  if (!filename || !content) throw new Error("Arquivo não enviado.");
+  return { filename, content, control: batchControlSchema.parse(JSON.parse(controlRaw)) };
+}
+
 /** Lê o multipart preservando o binário (xlsx NÃO pode virar string utf8). */
 async function readBinaryUpload(req: any): Promise<{ filename: string; buffer: Buffer }> {
   let filename = "";
@@ -151,9 +187,13 @@ export async function registerPropostasRoutes(
     }
 
     const lower = upload.filename.toLowerCase();
-    if (!lower.endsWith(".xlsx") && !lower.endsWith(".xls")) {
+    // US-07: além do Excel, o mesmo layout em CSV (template para download em
+    // /api/propostas/template.csv) — o parser lê os dois formatos.
+    if (!lower.endsWith(".xlsx") && !lower.endsWith(".xls") && !lower.endsWith(".csv")) {
       return reply.code(400).send({
-        error: `"${upload.filename}" não é uma planilha Excel — o lote de propostas espera o Emissoes.xlsx.`,
+        error:
+          `"${upload.filename}" não é uma planilha — o lote de propostas espera o ` +
+          `Emissoes.xlsx ou um CSV com as mesmas colunas (baixe o modelo na tela).`,
       });
     }
 
@@ -172,6 +212,104 @@ export async function registerPropostasRoutes(
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message, stage: "parse-xlsx" });
     }
+  });
+
+  /** Modelo CSV do lote de propostas (mesmas colunas do Emissoes.xlsx). */
+  app.get("/api/propostas/template.csv", async (_req, reply) => {
+    reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", 'attachment; filename="template-propostas.csv"')
+      .send("﻿" + buildTemplatePropostasCsv()); // BOM para o Excel abrir acentos
+  });
+
+  /**
+   * LOTE COMPOSTO (US-07): recebe o arquivo de TOMADORES (CSV/JSON, mesmo
+   * formato do módulo Tomadores — parser e validações reusados) e o retém no
+   * servidor por sessão. A criação da requisição-lote referencia o upload por
+   * id — a fonte da verdade é o servidor, nunca linhas reenviadas pelo front.
+   * Sob aprovação não há "pular inválidas": arquivo com erro volta inteiro.
+   */
+  app.post("/api/propostas/tomadores/parse", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    if (!aprovacaoAtivaFn("proposta.criar_lote")) {
+      return reply.code(409).send({
+        error:
+          "O lote composto (tomadores + propostas) só existe com a aprovação de " +
+          "propostas em lote ativa. No fluxo direto, cadastre os tomadores no módulo Tomadores.",
+      });
+    }
+
+    let upload: { filename: string; content: string; control: BatchControl };
+    try {
+      upload = await readUploadTomadores(req);
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+
+    let clientes: Cliente[];
+    try {
+      clientes = parseByFilename(upload.filename, upload.content);
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message, stage: "parse" });
+    }
+
+    const rows = validateRows(clientes);
+    const invalidas = rows.filter((r) => r.errors.length > 0);
+    if (invalidas.length > 0) {
+      return reply.code(422).send({
+        error:
+          "O arquivo de tomadores tem linhas inválidas. Sob aprovação, o lote só vira " +
+          "requisição com todas as linhas válidas — corrija e envie novamente.",
+        total: rows.length,
+        invalidas: invalidas.length,
+        rows: invalidas.map((r) => ({
+          index: r.index,
+          nome: r.nome,
+          documento: r.documento,
+          errors: r.errors,
+        })),
+      });
+    }
+
+    // Monta o request Sinqia de cada linha JÁ AQUI (falha de montagem volta
+    // agora, não na criação) — o retido guarda o request pronto (RN08).
+    let tomadores: TomadorRetido[];
+    try {
+      tomadores = rows.map((r) => ({
+        index: r.index,
+        nome: r.nome,
+        documento: r.documento,
+        tipo: r.tipo,
+        request: buildRequest(r.cliente, upload.control) as unknown as Record<string, unknown>,
+      }));
+    } catch (e) {
+      return reply.code(422).send({
+        error: `Falha ao montar o request de uma das linhas: ${(e as Error).message}`,
+      });
+    }
+
+    const uploadId = reterTomadoresUpload({
+      sessionId: session.id,
+      filename: upload.filename,
+      control: upload.control,
+      tomadores,
+      criadoEm: Date.now(),
+    });
+
+    return reply.send({
+      env: env.SINQIA_ENV,
+      uploadId,
+      arquivo: upload.filename,
+      total: tomadores.length,
+      tomadores: tomadores.map((t) => ({
+        index: t.index,
+        nome: t.nome,
+        documento: t.documento,
+        tipo: t.tipo,
+      })),
+    });
   });
 
   /**
@@ -203,6 +341,7 @@ export async function registerPropostasRoutes(
       params: parsed.data.params,
       token: session.token,
       sessionId: session.id,
+      calcProspFn,
     });
 
     return reply.send({
@@ -373,6 +512,227 @@ export async function registerPropostasRoutes(
         error: "Nenhuma linha OK disponível para criação (recalcule se necessário).",
       });
     }
+
+    /*
+     * Esteira de Aprovação (SoD, US-07): flag do lote de propostas ativa → o
+     * lote VÁLIDO (linhas OK do cálculo, validações RN existentes já
+     * passaram) vira requisição-LOTE pendente, possivelmente COMPOSTA
+     * (tomadores do arquivo opcional + propostas vinculadas por CPF).
+     * ZERO Sinqia neste caminho; a execução — cálculo oficial + conferência
+     * automática + criação — acontece na sessão do aprovador, tomadores
+     * primeiro (encadeamento persistido em `depende_de_item_id`).
+     */
+    if (aprovacaoAtivaFn("proposta.criar_lote")) {
+      const { tomadoresUploadId, arquivo } = parsed.data;
+
+      let tomadoresRetido: TomadoresUploadRetido | undefined;
+      if (tomadoresUploadId) {
+        tomadoresRetido = tomadoresUploads.get(tomadoresUploadId);
+        if (!tomadoresRetido) {
+          return reply.code(410).send({
+            error:
+              "O arquivo de tomadores não está mais em memória — reenvie-o antes de requisitar.",
+          });
+        }
+        if (tomadoresRetido.sessionId !== session.id) {
+          return reply.code(403).send({ error: "Este arquivo pertence a outra sessão." });
+        }
+      }
+
+      // Vínculo por CPF: proposta cujo documento está no arquivo de
+      // tomadores depende do cadastro dele (RN03).
+      const ordemTomadorPorDoc = new Map<string, number>();
+      const docsPropostas = new Set(items.map((i) => normalizarDocumento(i.cpf)));
+
+      // Tomador sem NENHUMA proposta vinculada não pertence ao composto —
+      // provável engano de arquivo; volta inteiro (mesma régua da decisão 7).
+      const semVinculo = (tomadoresRetido?.tomadores ?? []).filter(
+        (t) => !docsPropostas.has(normalizarDocumento(t.documento)),
+      );
+      if (semVinculo.length > 0) {
+        return reply.code(422).send({
+          error:
+            `${semVinculo.length} tomador(es) do arquivo não têm proposta correspondente na ` +
+            "planilha (vínculo por CPF) — remova-os do arquivo ou confira os CPFs.",
+          tomadoresSemVinculo: semVinculo.map((t) => ({
+            index: t.index,
+            nome: t.nome,
+            documento: t.documento,
+          })),
+        });
+      }
+
+      // RN05 (herdada da US-04): proposta SEM vínculo neste lote cujo tomador
+      // está pendente em OUTRA requisição aguarda a decisão de lá.
+      const docsNoArquivo = new Set(
+        (tomadoresRetido?.tomadores ?? []).map((t) => normalizarDocumento(t.documento)),
+      );
+      const bloqueadas: Array<{ linha: number; requisicaoId: string }> = [];
+      for (const item of items) {
+        const docItem = normalizarDocumento(item.cpf);
+        if (docsNoArquivo.has(docItem)) continue;
+        const individual = sodServico().pendentePorDocumento("tomador.cadastrar", docItem);
+        const emLote = individual
+          ? null
+          : sodServico().itemPendentePorDocumento("tomador.cadastrar", docItem);
+        if (individual || emLote) {
+          bloqueadas.push({
+            linha: item.linha,
+            requisicaoId: individual ? individual.id : emLote!.requisicaoId,
+          });
+        }
+      }
+      if (bloqueadas.length > 0) {
+        return reply.code(409).send({
+          error:
+            `${bloqueadas.length} linha(s) têm tomador com cadastro pendente de aprovação em ` +
+            "outra requisição — aguarde a decisão (ou inclua o tomador no arquivo deste lote).",
+          code: "TOMADOR_PENDENTE",
+          linhas: bloqueadas,
+        });
+      }
+
+      // Itens: tomadores PRIMEIRO (ordem de execução do encadeamento).
+      const itensLote: Array<{
+        ordem: number;
+        tipo: TipoAcaoSod;
+        payload: Record<string, unknown>;
+        documento: string | null;
+        dependeDeOrdem?: number;
+      }> = [];
+      let ordem = 0;
+      for (const t of tomadoresRetido?.tomadores ?? []) {
+        ordem++;
+        const payloadTomador: ItemLoteSodPayload = {
+          ordem,
+          resumo: { nome: t.nome, documento: t.documento, tipo: t.tipo as "PF" | "PJ" | "?" },
+          control: tomadoresRetido!.control as unknown as Record<string, unknown>,
+          request: t.request,
+        };
+        ordemTomadorPorDoc.set(normalizarDocumento(t.documento), ordem);
+        itensLote.push({
+          ordem,
+          tipo: "tomador.cadastrar",
+          payload: payloadTomador as unknown as Record<string, unknown>,
+          documento: normalizarDocumento(t.documento) || null,
+        });
+      }
+      for (const item of items) {
+        ordem++;
+        const r = porLinha.get(item.linha)!;
+        const calcRequest = r.request;
+        const payloadProposta: PropostaLoteItemSodPayload = {
+          ordem,
+          resumo: { nome: item.nome, documento: item.cpf, linha: item.linha },
+          proposta: {
+            cpf: item.cpf,
+            nome: item.nome,
+            dados: {
+              vlLiquido: calcRequest.vlContra,
+              qtParcelas: calcRequest.qtPrest,
+              dtVct1Ap: calcRequest.dtVct1Ap,
+              ...(calcRequest.vlTac ? { vlTac: calcRequest.vlTac } : {}),
+              ...(calcRequest.vlSeguro ? { vlSeguro: calcRequest.vlSeguro } : {}),
+              ...(calcRequest.vlOutvlr ? { vlOutros: calcRequest.vlOutvlr } : {}),
+            },
+            params,
+            forcarDuplicada: forcarDuplicadas,
+          },
+          calcRequest: calcRequest as unknown as Record<string, unknown>,
+          // Cálculo do REQUISITANTE (fase 2), rotulado — o oficial é da execução.
+          referencia: {
+            rotulo: ROTULO_REFERENCIA_CALCULO,
+            calculadoEm: new Date(calcJob.startedAt).toISOString(),
+            resumo: {
+              vlPresta: item.calculo.vlPresta,
+              vlFinanciado: item.calculo.vlContra,
+              vlLiquid: item.calculo.vlLiquid,
+              vlIof: item.calculo.vlIof,
+              vlTotal: item.calculo.vlTotal,
+              txAm: item.calculo.txAm,
+              txCetAm: item.calculo.txCetAm,
+              qtPrest: item.calculo.qtPrest,
+              dtVct1ap: item.calculo.dtVct1ap,
+              dtVctult: item.calculo.dtVctult,
+              vlTac: item.calculo.vlTac ?? 0,
+              vlSeguro: item.calculo.vlSeguro ?? 0,
+              vlOutvlr: item.calculo.vlOutvlr ?? 0,
+            },
+          },
+          // Valores da PLANILHA, rotulados — a conferência que BLOQUEIA (RN02).
+          conferencia: {
+            rotulo: ROTULO_CONFERENCIA_PLANILHA,
+            linha: item.linha,
+            vlParcelaInicial: r.vlPrestaExcel,
+            vlLiquido: r.vlLiquidoExcel,
+            vlFinanciado: r.vlFinanciadoExcel,
+          },
+        };
+        itensLote.push({
+          ordem,
+          tipo: "proposta.criar",
+          payload: payloadProposta as unknown as Record<string, unknown>,
+          documento: chaveDuplicidadeProposta(
+            payloadProposta as unknown as Record<string, unknown>,
+          ),
+          ...(ordemTomadorPorDoc.has(normalizarDocumento(item.cpf))
+            ? { dependeDeOrdem: ordemTomadorPorDoc.get(normalizarDocumento(item.cpf)) }
+            : {}),
+        });
+      }
+
+      const vinculos = itensLote.filter((i) => i.dependeDeOrdem !== undefined).length;
+      const lotePayload: PropostaLoteSodPayload = {
+        arquivo: { nome: arquivo?.trim() || "Emissões", totalItens: itensLote.length },
+        ...(tomadoresRetido
+          ? {
+              arquivoTomadores: {
+                nome: tomadoresRetido.filename,
+                totalItens: tomadoresRetido.tomadores.length,
+              },
+              control: tomadoresRetido.control as unknown as Record<string, unknown>,
+            }
+          : {}),
+        params: params as unknown as Record<string, unknown>,
+        composto: !!tomadoresRetido,
+        vinculos,
+      };
+
+      try {
+        const requisicao = sodServico().criarRequisicaoLote({
+          tipo: "proposta.criar_lote",
+          payload: lotePayload as unknown as Record<string, unknown>,
+          requisitante: session.username,
+          itens: itensLote,
+        });
+        // Consumidos: os insumos agora vivem na requisição.
+        if (tomadoresUploadId) tomadoresUploads.delete(tomadoresUploadId);
+        app.log.info(
+          `Lote de propostas virou requisição SoD ${requisicao.id} ` +
+            `(${itensLote.length} item(ns), ${vinculos} vínculo(s)` +
+            `${tomadoresRetido ? ", COMPOSTO" : ""}) — ambiente ${env.SINQIA_ENV.toUpperCase()}`,
+        );
+        return reply.code(201).send({
+          env: env.SINQIA_ENV,
+          aprovacao: true,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+            totalItens: itensLote.length,
+            composto: !!tomadoresRetido,
+            vinculos,
+          },
+        });
+      } catch (e) {
+        // Duplicidade RN06 → 409 com as três dimensões estruturadas.
+        return responderErroSod(reply, e);
+      }
+    }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — segura flag ativada entre as duas leituras.
+    if (guardarExecucaoDireta("proposta.criar_lote", reply, aprovacaoAtivaFn)) return;
 
     const selecionados = piloto ? items.slice(0, 1) : items;
     const jobId = startCriacaoJob({
@@ -1346,6 +1706,41 @@ interface CalculoIndividualRetido {
 const calculosIndividuais = new Map<string, CalculoIndividualRetido>();
 const MAX_CALCULOS_INDIVIDUAIS = 20;
 
+/* -------- Arquivo de TOMADORES retido (lote composto — US-07) -------- */
+
+/** Linha VÁLIDA do arquivo de tomadores, com o request Sinqia já montado. */
+interface TomadorRetido {
+  index: number;
+  nome: string;
+  documento: string;
+  tipo: string;
+  request: Record<string, unknown>;
+}
+
+interface TomadoresUploadRetido {
+  sessionId: string;
+  filename: string;
+  control: BatchControl;
+  tomadores: TomadorRetido[];
+  criadoEm: number;
+}
+
+const tomadoresUploads = new Map<string, TomadoresUploadRetido>();
+const MAX_TOMADORES_UPLOADS = 10;
+
+function reterTomadoresUpload(entry: TomadoresUploadRetido): string {
+  while (tomadoresUploads.size >= MAX_TOMADORES_UPLOADS) {
+    const maisAntigo = [...tomadoresUploads.entries()].sort(
+      (a, b) => a[1].criadoEm - b[1].criadoEm,
+    )[0];
+    if (!maisAntigo) break;
+    tomadoresUploads.delete(maisAntigo[0]);
+  }
+  const id = randomUUID();
+  tomadoresUploads.set(id, entry);
+  return id;
+}
+
 function reterCalculoIndividual(entry: CalculoIndividualRetido): string {
   while (calculosIndividuais.size >= MAX_CALCULOS_INDIVIDUAIS) {
     const maisAntigo = [...calculosIndividuais.entries()].sort(
@@ -1385,6 +1780,13 @@ const criarBodySchema = z.object({
    * (reemissão consciente). Default: pular duplicadas.
    */
   forcarDuplicadas: z.boolean().default(false),
+  /**
+   * US-07 (sob aprovação): id do arquivo de TOMADORES retido no servidor —
+   * presença = lote COMPOSTO (tomadores + propostas vinculadas por CPF).
+   */
+  tomadoresUploadId: z.string().uuid().optional(),
+  /** US-07 (sob aprovação): nome do arquivo de propostas, para exibição. */
+  arquivo: z.string().max(200).optional(),
 });
 
 /** Body do POST /api/propostas/verificar-clientes. */

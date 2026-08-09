@@ -80,6 +80,8 @@ function itemParaLista(item: ItemLoteSod) {
     tipo: item.tipo,
     estado: item.estado,
     documento: item.documento,
+    // Vínculo tomador→proposta do lote composto (US-07) — a UI agrupa por ele.
+    dependeDeItemId: item.dependeDeItemId,
     motivo: item.motivo,
     resumo,
     resultado: resultado
@@ -242,6 +244,8 @@ export async function registerSodRoutes(
         historico: detalhe.historico,
         ...(detalhe.itens ? { itens: detalhe.itens.map(itemParaLista) } : {}),
         ...(detalhe.placar ? { placar: detalhe.placar } : {}),
+        // Dois níveis (US-07): placar por tipo de item (tomadores × propostas).
+        ...(detalhe.placarPorTipo ? { placarPorTipo: detalhe.placarPorTipo } : {}),
       });
     } catch (e) {
       return responderErroSod(reply, e);

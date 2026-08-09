@@ -106,6 +106,17 @@ export interface ItemLoteSod {
   payload: Record<string, unknown>;
   /** Chave de duplicidade do item (documento normalizado). */
   documento: string | null;
+  /**
+   * Vínculo tomador→proposta do lote COMPOSTO (US-07, RN03): id do item de
+   * `tomador.cadastrar` DESTE MESMO lote do qual esta proposta depende. A
+   * proposta só executa após `executada` do tomador; tomador falho/reprovado
+   * derruba a proposta sem tocar a Sinqia. Coluna própria (não payload) de
+   * propósito: o vínculo é CONSULTÁVEL — a US-10 decide a elegibilidade de
+   * retry por ele (RN05: retry de proposta exige tomador executado; retry de
+   * tomador reabilita as propostas em falha vinculadas). Null = item sem
+   * dependência (tomador, ou proposta de tomador já existente — RN04).
+   */
+  dependeDeItemId: string | null;
   estado: EstadoRequisicao;
   /** Motivo da reprovação (exceção ou reprovação do lote). */
   motivo: string | null;
@@ -239,6 +250,27 @@ export function criarSchemaSod(db: DatabaseSync): void {
       WHERE estado = 'pendente' AND documento IS NOT NULL;
   `);
 
+  // Vínculo tomador→proposta do lote COMPOSTO (US-07): FK autorreferente com
+  // profundidade fixa 1 (proposta → tomador do MESMO lote) — nenhuma consulta
+  // recursiva/CTE é necessária, aqui ou no PostgreSQL. Bases criadas pela
+  // US-06 não têm a coluna — adiciona se faltar (mesmo padrão de `documento`).
+  // MIGRATION-NOTE: PRAGMA table_info é SQLite; no PostgreSQL a checagem vira
+  // information_schema.columns (ou ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
+  // com REFERENCES sod_lote_itens(id)).
+  const colunasItens = db.prepare(`PRAGMA table_info(sod_lote_itens)`).all() as Array<{
+    name: string;
+  }>;
+  if (!colunasItens.some((c) => c.name === "depende_de_item_id")) {
+    db.exec(
+      `ALTER TABLE sod_lote_itens ADD COLUMN depende_de_item_id TEXT REFERENCES sod_lote_itens(id)`,
+    );
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sod_itens_dependencia
+      ON sod_lote_itens (ambiente, depende_de_item_id)
+      WHERE depende_de_item_id IS NOT NULL;
+  `);
+
   // Cinto de segurança do append-only (RN06): além de a camada não expor
   // update/delete, o PRÓPRIO BANCO os rejeita.
   // MIGRATION-NOTE: RAISE(ABORT) é sintaxe SQLite — no PostgreSQL vira uma
@@ -282,6 +314,7 @@ interface LinhaItemLote {
   tipo: string;
   payload: string;
   documento: string | null;
+  depende_de_item_id: string | null;
   estado: string;
   motivo: string | null;
   resultado: string | null;
@@ -325,6 +358,7 @@ function paraItemLote(l: LinhaItemLote): ItemLoteSod {
     tipo: l.tipo as TipoAcaoSod,
     payload: JSON.parse(l.payload) as Record<string, unknown>,
     documento: l.documento,
+    dependeDeItemId: l.depende_de_item_id ?? null,
     estado: l.estado as EstadoRequisicao,
     motivo: l.motivo,
     resultado: l.resultado ? (JSON.parse(l.resultado) as Record<string, unknown>) : null,
@@ -594,7 +628,10 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
      */
     criarRequisicaoLote(
       req: Pick<RequisicaoSod, "id" | "tipo" | "payload" | "requisitante" | "criadoEm">,
-      itens: Array<Pick<ItemLoteSod, "id" | "ordem" | "tipo" | "payload" | "documento">>,
+      itens: Array<
+        Pick<ItemLoteSod, "id" | "ordem" | "tipo" | "payload" | "documento"> &
+          Partial<Pick<ItemLoteSod, "dependeDeItemId">>
+      >,
       evento: NovoEventoAuditoria,
     ): void {
       emTransacao(() => {
@@ -613,9 +650,11 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
         );
         const insereItem = db.prepare(
           `INSERT INTO sod_lote_itens
-             (id, ambiente, requisicao_id, ordem, tipo, payload, documento, estado, criado_em, atualizado_em)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?)`,
+             (id, ambiente, requisicao_id, ordem, tipo, payload, documento, depende_de_item_id, estado, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?)`,
         );
+        // Itens em ordem: tomadores (sem dependência) antes das propostas que
+        // os referenciam — a FK autorreferente exige o pai já inserido.
         for (const item of itens) {
           insereItem.run(
             item.id,
@@ -625,6 +664,7 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
             item.tipo,
             JSON.stringify(item.payload),
             item.documento,
+            item.dependeDeItemId ?? null,
             req.criadoEm,
             req.criadoEm,
           );
@@ -671,6 +711,39 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
         )
         .all(ambiente, requisicaoId) as unknown as Array<{ estado: EstadoRequisicao; n: number }>;
       return montarPlacar(linhas);
+    },
+
+    /**
+     * Placar de DOIS NÍVEIS do lote composto (US-07): um placar por tipo de
+     * item (tomadores × propostas). Lote de um tipo só devolve uma entrada.
+     */
+    placarPorTipo(requisicaoId: string): Partial<Record<TipoAcaoSod, PlacarLote>> {
+      const linhas = db
+        .prepare(
+          `SELECT tipo, estado, COUNT(*) AS n FROM sod_lote_itens
+            WHERE ambiente = ? AND requisicao_id = ? GROUP BY tipo, estado`,
+        )
+        .all(ambiente, requisicaoId) as unknown as Array<{
+        tipo: TipoAcaoSod;
+        estado: EstadoRequisicao;
+        n: number;
+      }>;
+      const porTipo: Partial<Record<TipoAcaoSod, PlacarLote>> = {};
+      for (const tipo of new Set(linhas.map((l) => l.tipo))) {
+        porTipo[tipo] = montarPlacar(linhas.filter((l) => l.tipo === tipo));
+      }
+      return porTipo;
+    },
+
+    /** Itens que DEPENDEM de um item (propostas vinculadas a um tomador — US-07/US-10). */
+    itensDependentes(itemId: string): ItemLoteSod[] {
+      const linhas = db
+        .prepare(
+          `SELECT * FROM sod_lote_itens
+            WHERE ambiente = ? AND depende_de_item_id = ? ORDER BY ordem`,
+        )
+        .all(ambiente, itemId) as unknown as LinhaItemLote[];
+      return linhas.map(paraItemLote);
     },
 
     /**

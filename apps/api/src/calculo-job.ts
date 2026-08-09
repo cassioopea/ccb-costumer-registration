@@ -88,6 +88,8 @@ interface CalculoJobInput {
   params: CalculoParams;
   token: string;
   sessionId: string;
+  /** Injetável nos testes (US-07); o runtime usa o calcProsp real. */
+  calcProspFn?: typeof calcProsp;
 }
 
 const jobs = new Map<string, CalculoJobState>();
@@ -245,7 +247,13 @@ async function processJob(id: string, input: CalculoJobInput) {
 
     let result: CalculoRowResult;
     try {
-      result = await calcularComPoliticas(id, input.token, row, request);
+      result = await calcularComPoliticas(
+        id,
+        input.token,
+        row,
+        request,
+        input.calcProspFn ?? calcProsp,
+      );
     } catch (e) {
       if (e instanceof SessaoExpiradaError) {
         destroySession(input.sessionId);
@@ -312,13 +320,14 @@ async function calcularComPoliticas(
   token: string,
   row: EmissaoRow,
   request: CalcProspRequest,
+  calcProspFn: typeof calcProsp,
 ): Promise<CalculoRowResult> {
   const maxAttempts = env.RETRY_COUNT + 1;
   let lastError: string | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const { httpStatus, calculo, analysis, rawBody } = await calcProsp(token, request);
+      const { httpStatus, calculo, analysis, rawBody } = await calcProspFn(token, request);
 
       if (httpStatus === 401) throw new SessaoExpiradaError();
 

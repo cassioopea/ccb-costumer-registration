@@ -31,6 +31,12 @@ import {
 /** Causa registrada nos itens que a interrupção deixou para trás. */
 export const CAUSA_LOTE_INTERROMPIDO = "lote_interrompido";
 
+/**
+ * Causa da proposta cujo tomador vinculado não chegou a `executada`
+ * (US-07, Cenário 3) — zero chamadas Sinqia para ela.
+ */
+export const CAUSA_TOMADOR_NAO_CRIADO = "tomador_nao_criado";
+
 const MENSAGEM_INTERROMPIDO =
   "A execução do lote foi interrompida antes deste item — nada foi enviado à Sinqia para ele.";
 
@@ -92,6 +98,31 @@ async function executarLote(
   for (const item of servico.itensDoLote(requisicao.id)) {
     if (interrupcao) break;
     if (item.estado !== "pendente") continue; // reprovado por exceção, ou já processado
+
+    /*
+     * ENCADEAMENTO do lote composto (US-07, RN03/Cenário 3): proposta
+     * vinculada só executa depois de `executada` do seu tomador — os itens
+     * são persistidos com os tomadores ANTES das propostas, então o estado
+     * do tomador aqui já é final. Tomador em falha/reprovado (ou qualquer
+     * estado ≠ executada) → a proposta cai em `falha` com a causa, SEM
+     * reivindicar e SEM tocar a Sinqia. Elegibilidade de retry por vínculo
+     * (RN05) é decidida sobre esta mesma coluna na US-10.
+     */
+    if (item.dependeDeItemId) {
+      const tomador = servico.obterItem(item.dependeDeItemId);
+      if (!tomador || tomador.estado !== "executada") {
+        servico.falharItemPendente(
+          item.id,
+          ctx.ator,
+          CAUSA_TOMADOR_NAO_CRIADO,
+          `Tomador não criado — item ${tomador?.ordem ?? "?"}` +
+            (tomador ? ` (${tomador.estado})` : "") +
+            `: nada foi enviado à Sinqia para esta proposta.`,
+          { itemTomador: tomador?.ordem ?? null, estadoTomador: tomador?.estado ?? null },
+        );
+        continue;
+      }
+    }
 
     // RN05: reivindicação atômica — se este item já saiu de `pendente`
     // (reexecução forçada, corrida), pula SEM tocar a Sinqia.

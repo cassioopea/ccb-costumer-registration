@@ -104,6 +104,9 @@ export function contagemDoPayload(
  */
 const ROTULO_CAUSA: Record<string, string> = {
   calculo_reprovado: "Cálculo oficial reprovado pela Sinqia — reveja os insumos da requisição",
+  conferencia_reprovada:
+    "Conferência automática reprovada — cálculo oficial divergiu da planilha (nada foi criado)",
+  tomador_nao_criado: "Tomador vinculado não foi criado — nada foi enviado à Sinqia",
   duplicidade_sinqia: "Proposta idêntica já existia na Sinqia — nada foi criado",
   erro_negocio: "Erro de negócio na Sinqia",
   indisponibilidade_ou_timeout: "Sinqia indisponível ou timeout",
@@ -173,6 +176,7 @@ export function RequisicaoDetalhe({
   historico,
   itens,
   placar,
+  placarPorTipo,
   marcacao,
 }: {
   requisicao: RequisicaoSod;
@@ -180,6 +184,8 @@ export function RequisicaoDetalhe({
   /** Itens do lote (US-06) — presentes só em requisições de lote. */
   itens?: ItemLoteResumo[];
   placar?: PlacarLote;
+  /** Placar de DOIS NÍVEIS (US-07): por tipo de item, no lote composto. */
+  placarPorTipo?: Partial<Record<TipoAcaoSod, PlacarLote>>;
   /** Habilita a marcação de exceções (aprovador, lote pendente). */
   marcacao?: MarcacaoExcecoes;
 }) {
@@ -265,11 +271,12 @@ export function RequisicaoDetalhe({
       {/* Payload em campos nomeados — renderer por tipo de ação */}
       {ehLote ? (
         <>
-          <PayloadLote payload={req.payload} />
+          <PayloadLote tipo={req.tipo} payload={req.payload} />
           <LoteItens
             requisicao={req}
             itens={itens ?? []}
             placar={placar}
+            placarPorTipo={placarPorTipo}
             marcacao={req.estado === "pendente" ? marcacao : undefined}
           />
         </>
@@ -491,9 +498,32 @@ function PayloadProposta({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-/** Payload de lote (US-06): arquivo + controles — os tomadores estão nos ITENS. */
-function PayloadLote({ payload }: { payload: Record<string, unknown> }) {
+/**
+ * Payload de lote: arquivo + controles — os dados vivem nos ITENS.
+ * US-06 (tomadores): arquivo único. US-07 (propostas): possivelmente COMPOSTO —
+ * planilha de propostas + arquivo de tomadores, com vínculos por CPF.
+ */
+function PayloadLote({
+  tipo,
+  payload,
+}: {
+  tipo: TipoAcaoSod | string;
+  payload: Record<string, unknown>;
+}) {
   const lote = loteDoPayload(payload);
+  const composto = payload.composto === true;
+  const arquivoTomadores = payload.arquivoTomadores as
+    | { nome?: string; totalItens?: number }
+    | undefined;
+  const vinculos = typeof payload.vinculos === "number" ? payload.vinculos : null;
+  const params = payload.params;
+  const paramsDoPayload = useMemo(() => {
+    if (!params || typeof params !== "object" || Array.isArray(params)) return [];
+    return Object.entries(params as Record<string, unknown>).map(([chave, valor]) => ({
+      chave,
+      valor: String(valor ?? ""),
+    }));
+  }, [params]);
   const controlDoPayload = useMemo(() => {
     const control = payload.control;
     if (!control || typeof control !== "object" || Array.isArray(control)) return [];
@@ -503,12 +533,43 @@ function PayloadLote({ payload }: { payload: Record<string, unknown> }) {
     }));
   }, [payload]);
 
+  const ehLotePropostas = tipo === "proposta.criar_lote";
   return (
     <section>
       <h3 className="mb-2 text-subheading text-foreground">Dados do lote</h3>
       <div className="grid gap-1 rounded-lg border border-border p-3">
-        <LinhaDetalhe rotulo="Arquivo" valor={lote.arquivo?.nome || "—"} />
-        <LinhaDetalhe rotulo="Total de tomadores" valor={String(lote.arquivo?.totalItens ?? "—")} />
+        <LinhaDetalhe
+          rotulo={ehLotePropostas ? "Planilha de propostas" : "Arquivo"}
+          valor={lote.arquivo?.nome || "—"}
+        />
+        {composto && (
+          <LinhaDetalhe
+            rotulo="Arquivo de tomadores"
+            valor={
+              arquivoTomadores?.nome
+                ? `${arquivoTomadores.nome} (${arquivoTomadores.totalItens ?? "?"} tomador(es))`
+                : "—"
+            }
+          />
+        )}
+        <LinhaDetalhe
+          rotulo={ehLotePropostas ? "Total de itens" : "Total de tomadores"}
+          valor={String(lote.arquivo?.totalItens ?? "—")}
+        />
+        {composto && vinculos !== null && (
+          <LinhaDetalhe
+            rotulo="Vínculos tomador→proposta"
+            valor={`${vinculos} proposta(s) dependem do cadastro do tomador neste lote`}
+          />
+        )}
+        {paramsDoPayload.map((c) => (
+          <div key={c.chave} className="flex gap-2">
+            <span className="min-w-44 shrink-0 font-mono text-caption text-muted-foreground">
+              {c.chave}
+            </span>
+            <span className="break-all">{c.valor}</span>
+          </div>
+        ))}
         {controlDoPayload.map((c) => (
           <div key={c.chave} className="flex gap-2">
             <span className="min-w-44 shrink-0 font-mono text-caption text-muted-foreground">
@@ -533,6 +594,55 @@ const BADGE_ITEM: Record<string, { label: string; variant: "default" | "secondar
   descartada: { label: "Descartada", variant: "outline" },
 };
 
+/**
+ * Uma linha do placar de DOIS NÍVEIS (US-07): o placar de um tipo de item,
+ * com as falhas de proposta separadas por natureza (conferência automática ×
+ * tomador não criado × Sinqia).
+ */
+function PlacarTipoLinha({
+  rotulo,
+  placar,
+  falhasDetalhadas,
+}: {
+  rotulo: string;
+  placar: PlacarLote;
+  falhasDetalhadas?: { conferencia: number; tomador: number; sinqia: number };
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="min-w-24 text-caption font-semibold uppercase tracking-wide text-muted-foreground">
+        {rotulo} ({placar.total})
+      </span>
+      {placar.pendentes > 0 && <Badge variant="warning">{placar.pendentes} pendente(s)</Badge>}
+      {placar.executando > 0 && <Badge>{placar.executando} executando</Badge>}
+      {placar.executadas > 0 && <Badge variant="success">{placar.executadas} executada(s)</Badge>}
+      {falhasDetalhadas ? (
+        <>
+          {falhasDetalhadas.conferencia > 0 && (
+            <Badge variant="destructive">
+              {falhasDetalhadas.conferencia} falha(s) de conferência
+            </Badge>
+          )}
+          {falhasDetalhadas.tomador > 0 && (
+            <Badge variant="destructive">
+              {falhasDetalhadas.tomador} sem tomador criado
+            </Badge>
+          )}
+          {falhasDetalhadas.sinqia > 0 && (
+            <Badge variant="destructive">{falhasDetalhadas.sinqia} falha(s) Sinqia</Badge>
+          )}
+        </>
+      ) : (
+        placar.falhas > 0 && <Badge variant="destructive">{placar.falhas} falha(s)</Badge>
+      )}
+      {placar.reprovadas > 0 && (
+        <Badge variant="destructive">{placar.reprovadas} reprovada(s)</Badge>
+      )}
+      {placar.canceladas > 0 && <Badge variant="secondary">{placar.canceladas} cancelada(s)</Badge>}
+    </div>
+  );
+}
+
 const FILTROS_ITEM = [
   { chave: "todos", label: "Todos" },
   { chave: "pendente", label: "Pendentes" },
@@ -552,11 +662,13 @@ function LoteItens({
   requisicao,
   itens,
   placar,
+  placarPorTipo,
   marcacao,
 }: {
   requisicao: RequisicaoSod;
   itens: ItemLoteResumo[];
   placar?: PlacarLote;
+  placarPorTipo?: Partial<Record<TipoAcaoSod, PlacarLote>>;
   marcacao?: MarcacaoExcecoes;
 }) {
   const [busca, setBusca] = useState("");
@@ -569,6 +681,31 @@ function LoteItens({
   const alvo = placar ? placar.total - placar.reprovadas - placar.canceladas : itens.length;
   const processados = placar ? placar.executadas + placar.falhas : 0;
   const pct = alvo > 0 ? Math.round((processados / alvo) * 100) : 0;
+
+  // Lote COMPOSTO (US-07): itens de dois tipos com vínculo tomador→proposta.
+  const misto = useMemo(() => new Set(itens.map((i) => i.tipo)).size > 1, [itens]);
+  const colunas = (misto ? 6 : 5) + (marcacao ? 1 : 0);
+  const ordemPorId = useMemo(() => new Map(itens.map((i) => [i.id, i.ordem])), [itens]);
+  /** Propostas vinculadas por item de tomador — alimenta o aviso de impacto. */
+  const dependentesPorId = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const i of itens) {
+      if (!i.dependeDeItemId) continue;
+      m.set(i.dependeDeItemId, (m.get(i.dependeDeItemId) ?? 0) + 1);
+    }
+    return m;
+  }, [itens]);
+  /** Falhas de proposta por natureza: conferência × tomador não criado × Sinqia. */
+  const falhasProposta = useMemo(() => {
+    const f = { conferencia: 0, tomador: 0, sinqia: 0 };
+    for (const i of itens) {
+      if (i.tipo !== "proposta.criar" || i.estado !== "falha") continue;
+      if (i.resultado?.causa === "conferencia_reprovada") f.conferencia++;
+      else if (i.resultado?.causa === "tomador_nao_criado") f.tomador++;
+      else f.sinqia++;
+    }
+    return f;
+  }, [itens]);
 
   const filtrados = useMemo(() => {
     const q = busca.trim().toLowerCase();
@@ -615,6 +752,23 @@ function LoteItens({
         </div>
       )}
 
+      {/* Placar de DOIS NÍVEIS (US-07): tomadores × propostas, com a natureza
+          das falhas de proposta (conferência × tomador não criado × Sinqia) */}
+      {misto && placarPorTipo && (
+        <div className="mb-3 grid gap-1.5 rounded-lg border border-border p-3">
+          {placarPorTipo["tomador.cadastrar"] && (
+            <PlacarTipoLinha rotulo="Tomadores" placar={placarPorTipo["tomador.cadastrar"]} />
+          )}
+          {placarPorTipo["proposta.criar"] && (
+            <PlacarTipoLinha
+              rotulo="Propostas"
+              placar={placarPorTipo["proposta.criar"]}
+              falhasDetalhadas={falhasProposta}
+            />
+          )}
+        </div>
+      )}
+
       {/* Progresso da execução sequencial — atualizado pelo polling da página */}
       {executando && (
         <div className="mb-3 rounded-lg border border-border bg-[var(--muted)]/40 p-3">
@@ -654,6 +808,7 @@ function LoteItens({
           <TableHeader>
             <TableRow>
               <TableHead className="w-14">Linha</TableHead>
+              {misto && <TableHead>Tipo</TableHead>}
               <TableHead>Nome</TableHead>
               <TableHead>Documento</TableHead>
               <TableHead>Estado</TableHead>
@@ -675,6 +830,7 @@ function LoteItens({
               const temDetalhe = !!(causaItem || mensagem || item.motivo);
               const aberto = abertos.has(item.id);
               const marcado = marcacao ? item.id in marcacao.excecoes : false;
+              const dependentes = dependentesPorId.get(item.id) ?? 0;
               return (
                 <Fragment key={item.id}>
                   <TableRow
@@ -689,6 +845,23 @@ function LoteItens({
                     <TableCell className="tabular-nums text-muted-foreground">
                       {item.ordem}
                     </TableCell>
+                    {misto && (
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                          <Badge variant="outline">
+                            {item.tipo === "tomador.cadastrar" ? "Tomador" : "Proposta"}
+                          </Badge>
+                          {item.dependeDeItemId && (
+                            <span
+                              className="text-caption text-muted-foreground"
+                              title="Só executa após o cadastro do tomador vinculado"
+                            >
+                              → item {ordemPorId.get(item.dependeDeItemId) ?? "?"}
+                            </span>
+                          )}
+                        </span>
+                      </TableCell>
+                    )}
                     <TableCell className="max-w-48 truncate font-medium">
                       {item.resumo.nome || "—"}
                     </TableCell>
@@ -738,7 +911,7 @@ function LoteItens({
                   {/* Motivo da exceção — obrigatório, inline (RN03) */}
                   {marcacao && marcado && (
                     <TableRow>
-                      <TableCell colSpan={6} className="bg-[var(--warning)]/10">
+                      <TableCell colSpan={colunas} className="bg-[var(--warning)]/10">
                         <div className="space-y-1 py-1">
                           <label
                             htmlFor={`motivo-excecao-${item.id}`}
@@ -752,6 +925,14 @@ function LoteItens({
                             onChange={(e) => marcacao.onMarcar(item.id, e.target.value)}
                             placeholder="Ex.: documentação divergente para este tomador"
                           />
+                          {/* Aviso de IMPACTO (US-07, Cenário 4): exceção em tomador
+                              com propostas vinculadas as reprova junto */}
+                          {dependentes > 0 && (
+                            <p className="text-caption font-medium text-[var(--destructive)]">
+                              Impacto: {dependentes} proposta(s) vinculada(s) a este tomador
+                              serão REPROVADAS junto, com este motivo propagado.
+                            </p>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -760,7 +941,7 @@ function LoteItens({
                   {/* Desfecho/erro legível por item */}
                   {aberto && temDetalhe && (
                     <TableRow>
-                      <TableCell colSpan={marcacao ? 6 : 5} className="bg-muted/40">
+                      <TableCell colSpan={colunas} className="bg-muted/40">
                         <div className="space-y-1 text-caption">
                           {item.motivo && (
                             <div>
@@ -791,10 +972,7 @@ function LoteItens({
             })}
             {filtrados.length === 0 && (
               <TableRow>
-                <TableCell
-                  colSpan={marcacao ? 6 : 5}
-                  className="py-6 text-center text-muted-foreground"
-                >
+                <TableCell colSpan={colunas} className="py-6 text-center text-muted-foreground">
                   Nenhum item para esta busca/filtro.
                 </TableCell>
               </TableRow>

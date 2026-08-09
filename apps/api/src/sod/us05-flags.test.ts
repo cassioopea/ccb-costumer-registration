@@ -477,19 +477,19 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
   test("escopo: tipos ainda NÃO entregues NUNCA sob aprovação — nem com linha forjada na tabela", async () => {
     // Linha forjada direto no banco que o runtime real usa (env.SQLITE_PATH):
     // mesmo assim, aprovacaoAtiva (flags.ts, com TIPOS_COM_FLAG) devolve false.
-    // (Na entrega da US-05 o exemplo era tomador.cadastrar_lote; a US-06 o
-    // trouxe para o corte, então o teste passou a usar os tipos seguintes.)
+    // (Na entrega da US-05 o exemplo era tomador.cadastrar_lote; cada US da
+    // Onda 2 traz o seu tipo para o corte — o exemplo acompanha os seguintes.)
     const dbApp = abrirBancoSod(process.env.SQLITE_PATH!);
     try {
       const repoApp = criarSodRepositorio(dbApp, "hml");
       repoApp.definirFlag({
-        tipo: "proposta.criar_lote",
+        tipo: "proposta.movimentar",
         ativa: true,
         ator: "seguranca.ops",
         agora: new Date().toISOString(),
       });
-      assert.equal(aprovacaoAtiva("proposta.criar_lote"), false, "US-07 fora do corte");
-      assert.equal(aprovacaoAtiva("proposta.movimentar"), false);
+      assert.equal(aprovacaoAtiva("proposta.movimentar"), false, "US-08 fora do corte");
+      assert.equal(aprovacaoAtiva("proposta.movimentar_massa"), false);
 
       // E o caminho REAL de ponta a ponta funciona para os tipos da Onda 1:
       // linha na tabela → aprovacaoAtiva default (sodServicoPadrao) → true.
@@ -528,11 +528,20 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
       resolverTipoComFlag("aprovacao.cadastro_tomador_lote"),
       "tomador.cadastrar_lote",
     );
-    assert.equal(resolverTipoComFlag("proposta.criar_lote"), null, "US-07 sem flag");
+    assert.equal(
+      resolverTipoComFlag("proposta.criar_lote"),
+      "proposta.criar_lote",
+      "US-07 sob flag",
+    );
+    assert.equal(
+      resolverTipoComFlag("aprovacao.criacao_proposta_lote"),
+      "proposta.criar_lote",
+    );
+    assert.equal(resolverTipoComFlag("proposta.movimentar"), null, "US-08 sem flag");
     assert.equal(resolverTipoComFlag("qualquer.coisa"), null);
     assert.deepEqual(
       [...TIPOS_COM_FLAG],
-      ["tomador.cadastrar", "proposta.criar", "tomador.cadastrar_lote"],
+      ["tomador.cadastrar", "proposta.criar", "tomador.cadastrar_lote", "proposta.criar_lote"],
     );
   });
 });

@@ -83,10 +83,27 @@ export function transicaoItemPermitida(de: EstadoRequisicao, para: EstadoRequisi
 /**
  * Tipos de ação de LOTE e o tipo INDIVIDUAL que cada item executa — os
  * executores registrados (US-03/04) são reusados item a item, sem segundo
- * caminho Sinqia. US-07/09/12 acrescentam as suas entradas aqui.
+ * caminho Sinqia. US-09/12 acrescentam as suas entradas aqui.
+ *
+ * O valor é o tipo PRINCIPAL do lote; o lote COMPOSTO da US-07
+ * (`proposta.criar_lote`) admite TAMBÉM itens `tomador.cadastrar` — ver
+ * `TIPOS_DE_ITEM_DO_LOTE`.
  */
 export const TIPO_ITEM_DO_LOTE: Partial<Record<TipoAcaoSod, TipoAcaoSod>> = {
   "tomador.cadastrar_lote": "tomador.cadastrar",
+  "proposta.criar_lote": "proposta.criar",
+};
+
+/**
+ * Tipos de item ADMITIDOS em cada tipo de lote. O lote de propostas (US-07) é
+ * potencialmente COMPOSTO: tomadores a cadastrar + propostas vinculadas, do
+ * mesmo upload — a ordem de execução (tomadores primeiro) e o vínculo
+ * tomador→proposta são responsabilidade de quem monta os itens (rota) e do
+ * pipeline de execução (execucao-lote.ts), nunca do aprovador.
+ */
+export const TIPOS_DE_ITEM_DO_LOTE: Partial<Record<TipoAcaoSod, readonly TipoAcaoSod[]>> = {
+  "tomador.cadastrar_lote": ["tomador.cadastrar"],
+  "proposta.criar_lote": ["tomador.cadastrar", "proposta.criar"],
 };
 
 export function ehTipoLote(tipo: TipoAcaoSod): boolean {
@@ -387,6 +404,70 @@ export interface ItemLoteSodPayload {
   };
   control: Record<string, unknown>;
   request: Record<string, unknown>;
+}
+
+/**
+ * Payload canônico da REQUISIÇÃO-LOTE de propostas (US-07), possivelmente
+ * COMPOSTA: `arquivo` é a planilha de propostas (Emissões, xlsx/csv);
+ * `arquivoTomadores` só existe no lote composto (tomadores a cadastrar antes
+ * das propostas vinculadas). `arquivo.totalItens` conta TODOS os itens
+ * (tomadores + propostas) — é a contagem que as listagens exibem.
+ */
+export interface PropostaLoteSodPayload {
+  arquivo: {
+    nome: string;
+    totalItens: number;
+  };
+  /** Presente apenas no lote COMPOSTO. */
+  arquivoTomadores?: {
+    nome: string;
+    totalItens: number;
+  };
+  /** Parâmetros de criação do lote (taxa, produto, convênio, loja, contrato). */
+  params: Record<string, unknown>;
+  /** Controles do cadastro dos tomadores (lote composto). */
+  control?: Record<string, unknown>;
+  composto: boolean;
+  /** Quantidade de propostas VINCULADAS a tomadores deste lote (RN03). */
+  vinculos: number;
+}
+
+/** Rótulo fixo da conferência automática da execução (US-07, RN02). */
+export const ROTULO_CONFERENCIA_PLANILHA =
+  "conferência automática na execução — valores da planilha Emissões";
+
+/**
+ * Baseline de CONFERÊNCIA de um item de proposta em lote (US-07, RN02): os
+ * valores da PLANILHA, rotulados. Na execução, o cálculo oficial é conferido
+ * contra estes valores (tolerância de 1 centavo, a mesma da fase de cálculo);
+ * divergência → item em `falha` com o comparativo esperado × calculado.
+ * Campos null = a planilha não tinha o valor (sem baseline, sem conferência).
+ */
+export interface ConferenciaPlanilha {
+  rotulo: string;
+  /** Linha da planilha de onde os valores vieram. */
+  linha: number;
+  vlParcelaInicial: number | null;
+  vlLiquido: number | null;
+  vlFinanciado: number | null;
+}
+
+/**
+ * Payload canônico de um ITEM DE PROPOSTA em lote (US-07): o formato da
+ * proposta individual (US-04 — o executor e a chave de duplicidade são os
+ * MESMOS) + a posição na planilha, o resumo de exibição e a conferência
+ * automática. `dependeDeItemId` NÃO vive aqui — o vínculo tomador→proposta é
+ * coluna própria de `sod_lote_itens`, consultável (insumo do retry da US-10).
+ */
+export interface PropostaLoteItemSodPayload extends PropostaSodPayload {
+  ordem: number;
+  resumo: {
+    nome: string;
+    documento: string;
+    /** Linha da planilha de propostas (1 = primeira linha de dados). */
+    linha: number;
+  };
+  conferencia: ConferenciaPlanilha;
 }
 
 /**

@@ -79,10 +79,13 @@ export interface EnvInfo {
     cadastroTomadorIndividual: boolean;
     criacaoPropostaIndividual?: boolean;
     cadastroTomadorLote?: boolean;
+    criacaoPropostaLote?: boolean;
   };
 }
 
 export const TEMPLATE_URL = "/api/template.csv";
+/** Modelo CSV do lote de propostas — mesmas colunas do Emissoes.xlsx (US-07). */
+export const TEMPLATE_PROPOSTAS_URL = "/api/propostas/template.csv";
 
 export async function getEnv(): Promise<EnvInfo> {
   const res = await fetch("/api/env");
@@ -277,6 +280,8 @@ export interface ItemLoteResumo {
   tipo: TipoAcaoSod;
   estado: EstadoRequisicao;
   documento: string | null;
+  /** Vínculo do lote COMPOSTO (US-07): id do item de tomador do qual esta proposta depende. */
+  dependeDeItemId?: string | null;
   /** Motivo da reprovação do item (exceção ou reprovação do lote). */
   motivo: string | null;
   resumo: { nome?: string; documento?: string; tipo?: string };
@@ -297,6 +302,8 @@ export interface DetalheRequisicao {
   /** Presentes apenas em requisições de LOTE (US-06). */
   itens?: ItemLoteResumo[];
   placar?: PlacarLote;
+  /** Dois níveis (US-07): placar por tipo de item (tomadores × propostas). */
+  placarPorTipo?: Partial<Record<TipoAcaoSod, PlacarLote>>;
 }
 
 /** Detalhe: requisição + histórico; lotes trazem itens + placar (US-06). */
@@ -1194,13 +1201,56 @@ export async function startCriarPropostas(input: {
   piloto: boolean;
   /** true = cria mesmo com proposta idêntica existente (reemissão consciente). */
   forcarDuplicadas: boolean;
-}): Promise<{ jobId: string; total: number; ignoradas: number; piloto: boolean; env: string }> {
+  /** US-07 (sob aprovação): arquivo de tomadores retido — lote COMPOSTO. */
+  tomadoresUploadId?: string;
+  /** US-07 (sob aprovação): nome do arquivo de propostas, para exibição. */
+  arquivo?: string;
+}): Promise<{
+  env: string;
+  /** Fluxo direto: job com SSE. */
+  jobId?: string;
+  total?: number;
+  ignoradas?: number;
+  piloto?: boolean;
+  /** Esteira de Aprovação (US-07): true = virou requisição-lote pendente. */
+  aprovacao?: boolean;
+  requisicao?: {
+    id: string;
+    estado: string;
+    criadoEm: string;
+    totalItens: number;
+    composto: boolean;
+    vinculos: number;
+  };
+}> {
   const res = await fetch("/api/propostas/criar", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
   return lerResposta(res, "Falha ao iniciar a criação");
+}
+
+/**
+ * LOTE COMPOSTO (US-07): envia o arquivo de TOMADORES (CSV/JSON, mesmo
+ * formato do módulo Tomadores) para o servidor reter — a requisição-lote
+ * referencia o upload por id. Sob aprovação apenas.
+ */
+export async function parseTomadoresLote(
+  file: File,
+  control: BatchControlPayload = {},
+): Promise<{
+  env: string;
+  uploadId: string;
+  arquivo: string;
+  total: number;
+  tomadores: Array<{ index: number; nome: string; documento: string; tipo: string }>;
+}> {
+  const res = await fetch("/api/propostas/tomadores/parse", {
+    method: "POST",
+    body: buildForm(file, control),
+  });
+  return lerResposta(res, "Falha ao ler o arquivo de tomadores");
 }
 
 export interface CriacaoStreamHandlers {

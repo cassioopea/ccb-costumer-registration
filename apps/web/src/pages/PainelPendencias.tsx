@@ -201,6 +201,22 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
   const excecoesSemMotivo = Object.values(excecoes).some((m) => !m.trim());
   const pendentesLote = detalhe?.placar?.pendentes ?? 0;
 
+  /**
+   * IMPACTO da propagação (US-07, Cenário 4): na direção APROVAR, exceção em
+   * tomador reprova junto as propostas vinculadas a ele — o aviso aparece
+   * ANTES da confirmação, e o domínio garante a propagação na decisão.
+   */
+  const propostasImpactadas = useMemo(() => {
+    const its = detalhe?.itens ?? [];
+    return its.filter(
+      (i) =>
+        i.estado === "pendente" &&
+        i.dependeDeItemId &&
+        i.dependeDeItemId in excecoes &&
+        !(i.id in excecoes),
+    ).length;
+  }, [detalhe, excecoes]);
+
   function marcarExcecao(itemId: string, motivoItem: string | null) {
     setExcecoes((prev) => {
       const next = { ...prev };
@@ -537,6 +553,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                 historico={detalhe?.historico ?? []}
                 itens={detalhe?.itens}
                 placar={detalhe?.placar}
+                placarPorTipo={detalhe?.placarPorTipo}
                 marcacao={
                   ehLote && req.estado === "pendente" && !minhaRequisicao
                     ? { excecoes, onMarcar: marcarExcecao }
@@ -571,6 +588,13 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                         <p className="mb-2 text-caption">
                           <strong>{totalExcecoes}</strong> exceção(ões) marcada(s) — receberão a
                           direção CONTRÁRIA à decisão do lote.
+                          {propostasImpactadas > 0 && (
+                            <span className="text-[var(--destructive)]">
+                              {" "}
+                              Impacto na aprovação: {propostasImpactadas} proposta(s) vinculada(s)
+                              a tomadores em exceção serão REPROVADAS junto (motivo propagado).
+                            </span>
+                          )}
                           {excecoesSemMotivo && (
                             <span className="text-[var(--destructive)]">
                               {" "}
@@ -655,7 +679,8 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
             <DialogDescription>
               {ehLote ? (
                 <>
-                  A aprovação executa <strong>{Math.max(0, pendentesLote - totalExcecoes)}</strong>{" "}
+                  A aprovação executa{" "}
+                  <strong>{Math.max(0, pendentesLote - totalExcecoes - propostasImpactadas)}</strong>{" "}
                   item(ns) SEQUENCIALMENTE na Sinqia agora, usando a SUA sessão — a Sinqia
                   registrará você como executor.
                   {totalExcecoes > 0 && (
@@ -663,6 +688,15 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                       {" "}
                       As <strong>{totalExcecoes}</strong> exceção(ões) marcada(s) serão
                       REPROVADAS com o motivo informado.
+                    </>
+                  )}
+                  {propostasImpactadas > 0 && (
+                    <>
+                      {" "}
+                      <strong className="text-[var(--destructive)]">
+                        Impacto: {propostasImpactadas} proposta(s) vinculada(s) a tomadores em
+                        exceção serão REPROVADAS junto, com o motivo do tomador propagado.
+                      </strong>
                     </>
                   )}{" "}
                   Falha de um item não interrompe os demais; itens com falha ficam registrados

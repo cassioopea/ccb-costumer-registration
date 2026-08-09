@@ -213,7 +213,53 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   `resultado.duracaoMediaItemMs` grava o tempo real de cada execução (insumo de UX
   para lotes grandes). Teste de escopo da US-05 atualizado: exemplo de tipo fora do
   corte passou a ser `proposta.criar_lote`.
-- US-07: `pendente`
+- US-07: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-262).
+  Decisões (checkpoint A): lote composto pela "Opção (i)" — UMA requisição-lote
+  (`proposta.criar_lote`) com itens de DOIS tipos (`tomador.cadastrar` +
+  `proposta.criar`) e vínculo tomador→proposta em coluna própria
+  `sod_lote_itens.depende_de_item_id` (FK autorreferente, profundidade fixa 1 —
+  sem recursão/CTE aqui nem no PostgreSQL). Decisões de produto do PM: o
+  Emissões passa a ser aceito TAMBÉM em CSV (mesmas colunas, parser único —
+  texto plano lido com raw + decodificação própria: datas dd/mm/aaaa e
+  decimais determinísticos, `toMoney` aceita ponto decimal); lote composto =
+  segundo arquivo OPCIONAL de tomadores (CSV/JSON do módulo Tomadores,
+  parser/validações reusados, retido no servidor por sessão, vínculo
+  automático por CPF); templates para download (`GET
+  /api/propostas/template.csv` + o de tomadores já existente).
+  Desenho do ENCADEAMENTO (insumo da US-10): itens persistidos com tomadores
+  primeiro (ordem 1..T); na execução, proposta com `dependeDeItemId` só é
+  reivindicada se o tomador estiver `executada` — senão cai `pendente → falha`
+  com causa `tomador_nao_criado` ("Tomador não criado — item X"), zero Sinqia
+  (Cenário 3). Decisão bidirecional PROPAGA (Cenário 4): exceção que reprova
+  tomador reprova as propostas vinculadas na MESMA transação (origem
+  `propagacao`, motivo do tomador propagado; aviso de impacto na UI ANTES da
+  confirmação — drawer e diálogo); exceção que aprovaria proposta de tomador
+  reprovado → decisão inteira rejeitada (LOTE_INVALIDO). RN05 (retry por
+  vínculo, US-10) registrada em comentário no repositório/execução: retry de
+  proposta exige tomador `executada`; retry de tomador reabilita as propostas
+  em `falha` vinculadas — consulta pronta em `itensDependentes(itemId)`.
+  Execução do item de proposta: cálculo OFICIAL (`calcRequest` persistido) +
+  CONFERÊNCIA AUTOMÁTICA contra a planilha (RN02 — `payload.conferencia`
+  rotulada `ROTULO_CONFERENCIA_PLANILHA`; `conferirCalculo` reusado, 1 centavo)
+  → divergência = `falha` causa `conferencia_reprovada` com comparativo
+  esperado × calculado; depois `criarUma` (mesmo caminho do fluxo direto —
+  painel e base local iguais). Duplicidade RN06 conferida POR TIPO no lote
+  misto (tomador = documento; proposta = assinatura da US-04); RN05 da US-04
+  herdada na criação (tomador pendente em OUTRA requisição → 409
+  TOMADOR_PENDENTE, salvo se ele vier no arquivo deste lote); tomador no
+  arquivo sem proposta correspondente → 422 (arquivo volta inteiro).
+  Para as próximas US: detalhe devolve `placarPorTipo` (dois níveis; a UI
+  distingue falha de conferência × tomador não criado × Sinqia);
+  `itemParaLista` expõe `dependeDeItemId` (agrupamento na UI);
+  `falharItemPendente` no domínio (transição `pendente → falha` de UM item,
+  atômica); `calcProspFn` injetável no calculo-job (testabilidade da fase 2).
+  Flag `aprovacao.criacao_proposta_lote` + corte na rota direta
+  (POST /api/propostas/criar). MIGRATION-NOTE novo: coluna
+  `depende_de_item_id` via PRAGMA table_info/ADD COLUMN (repositorio.ts).
+  Testes: us07-proposta-lote.test.ts (13 testes; composto 70+70 ≈ 0,8 s com
+  Sinqia mockada); teste de escopo da US-05 atualizado (exemplo de tipo fora
+  do corte → `proposta.movimentar`). Observação: validação de integração real
+  em HML PENDENTE — entregue fora da janela Sinqia (mesmo caso das US-03..06).
 - US-08: `pendente`
 - US-09: `pendente`
 - US-10: `pendente`

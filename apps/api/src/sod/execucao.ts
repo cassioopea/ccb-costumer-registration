@@ -1,8 +1,10 @@
-import type {
-  CadastrarClienteRequest,
-  CalcProspRequest,
-  PropostaSodPayload,
-  TipoAcaoSod,
+import {
+  conferirCalculo,
+  type CadastrarClienteRequest,
+  type CalcProspRequest,
+  type PropostaLoteItemSodPayload,
+  type PropostaSodPayload,
+  type TipoAcaoSod,
 } from "@cadastro-lote/shared";
 import type { cadastrarCliente, calcProsp } from "./../sinqia-client.js";
 import { criarUma, SessaoExpiradaError } from "./../criacao-job.js";
@@ -226,6 +228,53 @@ async function executarCriacaoProposta(
         referencia: ref.vlFinanciado,
         oficial: oficial.vlContra,
       });
+    }
+  }
+
+  /*
+   * CONFERÊNCIA AUTOMÁTICA do lote de propostas (US-07, RN02): itens vindos
+   * do Emissões carregam `conferencia` (valores da PLANILHA, rotulados) e,
+   * diferentemente da referência acima, ela BLOQUEIA: cálculo oficial fora da
+   * tolerância (1 centavo, a mesma da fase de cálculo) → `falha` com o
+   * comparativo esperado × calculado, NADA é criado. Requisições individuais
+   * (US-04) não têm o campo — comportamento intacto.
+   */
+  const conferencia = (payload as Partial<PropostaLoteItemSodPayload>).conferencia;
+  if (conferencia && typeof conferencia === "object") {
+    const reprovadas = conferirCalculo(
+      {
+        vlParcelaInicial: conferencia.vlParcelaInicial ?? null,
+        vlLiquido: conferencia.vlLiquido ?? null,
+        vlFinanciado: conferencia.vlFinanciado ?? null,
+      },
+      oficial,
+    );
+    if (reprovadas.length > 0) {
+      const comparativo = reprovadas.map((d) => ({
+        campo: d.campo,
+        esperado: d.excel,
+        calculado: d.calculado,
+      }));
+      const resumoComparativo = comparativo
+        .map((c) => `${c.campo}: esperado R$ ${c.esperado.toFixed(2)} × calculado R$ ${c.calculado.toFixed(2)}`)
+        .join("; ");
+      return falhaExecucao(
+        {
+          causa: "conferencia_reprovada",
+          etapa: "conferencia",
+          httpStatus: calculoOficial.httpStatus,
+          comparativo,
+          calculoOficial: oficial,
+          conferencia,
+          mensagem: `Conferência automática reprovada — ${resumoComparativo}.`,
+        },
+        {
+          httpStatus: calculoOficial.httpStatus,
+          mensagens: `Conferência automática reprovada — ${resumoComparativo}.`,
+          detalhe:
+            "O cálculo oficial divergiu da planilha além da tolerância de 1 centavo; nada foi criado.",
+        },
+      );
     }
   }
 

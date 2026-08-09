@@ -429,6 +429,7 @@ export function MinhasRequisicoes({ ativa }: { ativa: boolean }) {
                 historico={detalhe?.historico ?? []}
                 itens={detalhe?.itens}
                 placar={detalhe?.placar}
+                placarPorTipo={detalhe?.placarPorTipo}
               />
 
               {/* Cancelar — só o criador, só pendente */}

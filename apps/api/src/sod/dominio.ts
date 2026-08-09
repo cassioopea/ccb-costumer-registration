@@ -628,12 +628,19 @@ export function criarSodServico(
       historico: ReturnType<SodRepositorio["eventosDaRequisicao"]>;
       itens?: ItemLoteSod[];
       placar?: ReturnType<SodRepositorio["placarDoLote"]>;
+      placarPorTipo?: ReturnType<SodRepositorio["placarPorTipo"]>;
     } {
       const req = repo.obterRequisicao(id);
       if (!req) throw new SodError("REQUISICAO_NAO_ENCONTRADA", `Requisição ${id} não encontrada.`);
       const base = { requisicao: req, historico: repo.eventosDaRequisicao(id) };
       if (!ehTipoLote(req.tipo)) return base;
-      return { ...base, itens: repo.itensDoLote(id), placar: repo.placarDoLote(id) };
+      return {
+        ...base,
+        itens: repo.itensDoLote(id),
+        placar: repo.placarDoLote(id),
+        // Dois níveis (US-07): tomadores × propostas no lote composto.
+        placarPorTipo: repo.placarPorTipo(id),
+      };
     },
 
     /**
@@ -678,6 +685,12 @@ export function criarSodServico(
         tipo: TipoAcaoSod;
         payload: Record<string, unknown>;
         documento: string | null;
+        /**
+         * Vínculo tomador→proposta do lote COMPOSTO (US-07): a ORDEM do item
+         * de tomador (deste mesmo arquivo) do qual esta proposta depende —
+         * o domínio resolve a ordem para o id gerado do item.
+         */
+        dependeDeOrdem?: number;
       }>;
     }): RequisicaoSod {
       const requisitante = normalizarLogin(entrada.requisitante);
@@ -719,24 +732,72 @@ export function criarSodServico(
         );
       };
 
-      const tipoItem = entrada.itens[0].tipo;
-      const dups = conferirDuplicidadesLoteInterno(
-        tipoItem,
-        entrada.itens.map((i) => ({ ordem: i.ordem, documento: i.documento })),
-      );
+      // Lote COMPOSTO (US-07): itens de mais de um tipo — a conferência RN06
+      // roda POR TIPO (a chave de tomador é o documento; a de proposta é a
+      // assinatura) e os resultados são somados.
+      const tiposDosItens = [...new Set(entrada.itens.map((i) => i.tipo))];
+      const conferirTodosOsTipos = (): DuplicidadesLote => {
+        const soma: DuplicidadesLote = {
+          intraArquivo: [],
+          pendentesIndividuais: [],
+          pendentesLote: [],
+        };
+        for (const tipoItem of tiposDosItens) {
+          const parcial = conferirDuplicidadesLoteInterno(
+            tipoItem,
+            entrada.itens
+              .filter((i) => i.tipo === tipoItem)
+              .map((i) => ({ ordem: i.ordem, documento: i.documento })),
+          );
+          soma.intraArquivo.push(...parcial.intraArquivo);
+          soma.pendentesIndividuais.push(...parcial.pendentesIndividuais);
+          soma.pendentesLote.push(...parcial.pendentesLote);
+        }
+        return soma;
+      };
+      const dups = conferirTodosOsTipos();
       if (temDuplicidades(dups)) rejeitarDuplicidadeLote(dups);
 
       const id = randomUUID();
       const ts = agora();
+
+      // Vínculos do lote composto (US-07): resolve dependeDeOrdem → id gerado.
+      // Profundidade fixa 1: um item referenciado por outro não pode, ele
+      // próprio, depender de terceiro — vínculo inválido é bug de montagem.
+      const itensComId = entrada.itens.map((i) => ({ ...i, id: randomUUID() }));
+      const porOrdem = new Map(itensComId.map((i) => [i.ordem, i]));
+      const referenciados = new Set(
+        itensComId.map((i) => i.dependeDeOrdem).filter((o): o is number => o !== undefined),
+      );
+      for (const i of itensComId) {
+        if (i.dependeDeOrdem === undefined) continue;
+        const pai = porOrdem.get(i.dependeDeOrdem);
+        // `pai.ordem < i.ordem` também garante a ordem de execução (tomador
+        // antes da proposta) e a ordem de INSERT que a FK autorreferente exige.
+        if (!pai || pai.ordem >= i.ordem || pai.dependeDeOrdem !== undefined) {
+          throw new Error(
+            `Vínculo inválido no lote: o item ${i.ordem} depende do item ${i.dependeDeOrdem}, ` +
+              `que não existe, não vem antes dele ou tem dependência própria (profundidade > 1).`,
+          );
+        }
+        if (referenciados.has(i.ordem)) {
+          throw new Error(
+            `Vínculo inválido no lote: o item ${i.ordem} depende de outro E é dependido — profundidade > 1.`,
+          );
+        }
+      }
+
       try {
         repo.criarRequisicaoLote(
           { id, tipo: entrada.tipo, payload: entrada.payload, requisitante, criadoEm: ts },
-          entrada.itens.map((i) => ({
-            id: randomUUID(),
+          itensComId.map((i) => ({
+            id: i.id,
             ordem: i.ordem,
             tipo: i.tipo,
             payload: i.payload,
             documento: i.documento,
+            dependeDeItemId:
+              i.dependeDeOrdem !== undefined ? porOrdem.get(i.dependeDeOrdem)!.id : null,
           })),
           {
             requisicaoId: id,
@@ -755,11 +816,7 @@ export function criarSodServico(
         // Corrida perdida: outro lote/arquivo inseriu item pendente do mesmo
         // documento entre a conferência e o INSERT — o índice garantiu a RN06.
         if (ehViolacaoDuplicidadeItemPendente(e)) {
-          const atuais = conferirDuplicidadesLoteInterno(
-            tipoItem,
-            entrada.itens.map((i) => ({ ordem: i.ordem, documento: i.documento })),
-          );
-          rejeitarDuplicidadeLote(atuais);
+          rejeitarDuplicidadeLote(conferirTodosOsTipos());
         }
         throw e;
       }
@@ -826,27 +883,73 @@ export function criarSodServico(
           ? exigirMotivo(req, aprovador, "reprovar", entrada.motivo)
           : entrada.motivo?.trim() || undefined;
 
-      const aprovados = pendentes.filter((i) =>
+      let aprovados = pendentes.filter((i) =>
         entrada.decisao === "aprovar" ? !idsExcecao.has(i.id) : idsExcecao.has(i.id),
       );
       const reprovados = pendentes.filter((i) =>
         entrada.decisao === "aprovar" ? idsExcecao.has(i.id) : !idsExcecao.has(i.id),
       );
+      const motivoPorItem = new Map(excecoes.map((e) => [e.itemId, e.motivo.trim()]));
+
+      /*
+       * PROPAGAÇÃO do lote composto (US-07, RN06/Cenário 4): uma proposta
+       * vinculada a um tomador que NÃO vai executar não pode executar.
+       *  - Direção-base aprovar + exceção no tomador → as propostas
+       *    vinculadas são reprovadas JUNTO, com o motivo do tomador propagado
+       *    (a UI avisa o impacto antes da confirmação; aqui é a garantia).
+       *  - Exceção que APROVA uma proposta cujo tomador está sendo reprovado
+       *    é contraditória → decisão inteira rejeitada, nada muda.
+       */
+      const reprovadosIds = new Set(reprovados.map((i) => i.id));
+      const propagados: Array<{ item: ItemLoteSod; paiOrdem: number; motivo: string }> = [];
+      for (const item of aprovados) {
+        const paiId = item.dependeDeItemId;
+        if (!paiId || !reprovadosIds.has(paiId)) continue;
+        const pai = porId.get(paiId)!;
+        if (idsExcecao.has(item.id)) {
+          rejeitar(
+            "LOTE_INVALIDO",
+            `Exceção contraditória: o item ${item.ordem} (proposta) depende do tomador do ` +
+              `item ${pai.ordem}, que está sendo reprovado — aprovar a proposta sem o tomador é impossível.`,
+            {
+              requisicaoId: req.id,
+              ator,
+              detalhe: { decisao: entrada.decisao, itemId: item.id, dependeDeItemId: paiId },
+            },
+          );
+        }
+        propagados.push({
+          item,
+          paiOrdem: pai.ordem,
+          motivo:
+            `Reprovada em propagação: o tomador vinculado (item ${pai.ordem}) foi reprovado — ` +
+            (motivoPorItem.get(paiId) ?? motivoLote ?? "sem motivo registrado"),
+        });
+      }
+      const propagadosIds = new Set(propagados.map((p) => p.item.id));
+      aprovados = aprovados.filter((i) => !propagadosIds.has(i.id));
+
       // Só quando HÁ pendentes: sem nenhum, é decisão concorrente atrasada —
       // o núcleo abaixo responde com o estado atual e quem decidiu (409).
+      // Conta APÓS a propagação: exceções que derrubam todas as propostas
+      // vinculadas também esvaziam a execução.
       if (entrada.decisao === "aprovar" && pendentes.length > 0 && aprovados.length === 0) {
         rejeitar(
           "LOTE_INVALIDO",
-          "Todas as linhas foram marcadas como exceção — para não executar nada, use a reprovação do lote (motivo obrigatório).",
+          "Nenhuma linha restaria para executar (exceções + propagação de tomadores reprovados) — " +
+            "para não executar nada, use a reprovação do lote (motivo obrigatório).",
           {
             requisicaoId: req.id,
             ator,
-            detalhe: { decisao: entrada.decisao, excecoes: excecoes.length },
+            detalhe: {
+              decisao: entrada.decisao,
+              excecoes: excecoes.length,
+              propagados: propagados.length,
+            },
           },
         );
       }
 
-      const motivoPorItem = new Map(excecoes.map((e) => [e.itemId, e.motivo.trim()]));
       const para: EstadoRequisicao = aprovados.length > 0 ? "aprovada/executando" : "reprovada";
       const requisicao = aplicarDecisaoLoteInterno({
         req,
@@ -858,7 +961,7 @@ export function criarSodServico(
         detalheLote: {
           direcaoBase: entrada.decisao,
           aprovados: aprovados.length,
-          reprovados: reprovados.length,
+          reprovados: reprovados.length + propagados.length,
           // Motivo das exceções APROVADAS (base reprovar) só existe aqui e na
           // trilha — item.motivo é reservado à reprovação.
           excecoes: excecoes.map((e) => ({
@@ -866,13 +969,30 @@ export function criarSodServico(
             ordem: porId.get(e.itemId)?.ordem ?? null,
             motivo: e.motivo.trim(),
           })),
+          ...(propagados.length > 0
+            ? {
+                propagados: propagados.map((p) => ({
+                  itemId: p.item.id,
+                  ordem: p.item.ordem,
+                  tomadorOrdem: p.paiOrdem,
+                })),
+              }
+            : {}),
         },
-        itens: reprovados.map((item) => ({
-          item,
-          para: "reprovada" as const,
-          motivo: motivoPorItem.get(item.id) ?? motivoLote,
-          origem: idsExcecao.has(item.id) ? "excecao" : "lote",
-        })),
+        itens: [
+          ...reprovados.map((item) => ({
+            item,
+            para: "reprovada" as const,
+            motivo: motivoPorItem.get(item.id) ?? motivoLote,
+            origem: idsExcecao.has(item.id) ? "excecao" : "lote",
+          })),
+          ...propagados.map(({ item, motivo }) => ({
+            item,
+            para: "reprovada" as const,
+            motivo,
+            origem: "propagacao",
+          })),
+        ],
       });
 
       return { requisicao, aprovados, placar: repo.placarDoLote(id) };
@@ -993,6 +1113,52 @@ export function criarSodServico(
     },
 
     /**
+     * Falha UM item ainda `pendente` sem tocar a Sinqia (US-07, Cenário 3):
+     * a proposta cujo tomador vinculado não chegou a `executada` cai aqui,
+     * com a causa e a referência ao item do tomador no resultado. Atômico
+     * ("primeira vence"): false = o item já não estava pendente.
+     */
+    falharItemPendente(
+      itemId: string,
+      ator: string,
+      causa: string,
+      mensagem: string,
+      extra: Record<string, unknown> = {},
+    ): boolean {
+      const item = repo.obterItem(itemId);
+      if (!item) return false;
+      return repo.transicionarItem({
+        id: itemId,
+        de: "pendente",
+        para: "falha",
+        resultado: {
+          desfecho: "falha",
+          causa,
+          mensagem,
+          ...extra,
+          publico: { desfecho: "falha", httpStatus: null, mensagens: mensagem },
+        },
+        agora: agora(),
+        evento: {
+          requisicaoId: item.requisicaoId,
+          ator: normalizarLogin(ator),
+          acao: ACAO_AUDITORIA.transicao,
+          detalhe: {
+            itemId,
+            ordem: item.ordem,
+            decisao: "falhar_item_dependente",
+            de: "pendente",
+            para: "falha",
+            causa,
+            ...extra,
+          },
+          resultado: "ok",
+          ts: agora(),
+        },
+      });
+    },
+
+    /**
      * Conclusão do LOTE (RN01, estado derivado): agrega o placar dos itens e
      * transiciona `aprovada/executando → executada|falha` com o placar (e o
      * contexto de interrupção, se houve) anexado ao resultado.
@@ -1019,6 +1185,10 @@ export function criarSodServico(
     obterItem: repo.obterItem.bind(repo),
     itensDoLote: repo.itensDoLote.bind(repo),
     placarDoLote: repo.placarDoLote.bind(repo),
+    /** Placar de dois níveis (US-07): um placar por tipo de item do lote. */
+    placarPorTipo: repo.placarPorTipo.bind(repo),
+    /** Propostas vinculadas a um tomador (US-07; insumo do retry da US-10). */
+    itensDependentes: repo.itensDependentes.bind(repo),
     itemPendentePorDocumento: repo.itemPendentePorDocumento.bind(repo),
 
     listarRequisicoes: repo.listarRequisicoes.bind(repo),
