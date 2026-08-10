@@ -2,8 +2,11 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  ESTADOS_BLOQUEIO_MOVIMENTACAO,
   ESTADOS_REQUISICAO,
+  montarPlacar,
   type EstadoRequisicao,
+  type PlacarLote,
   type TipoAcaoSod,
 } from "@cadastro-lote/shared";
 
@@ -89,7 +92,79 @@ export interface FiltrosAuditoria {
 /** Ação da trilha de auditoria para mudança EFETIVA de feature flag (US-05, RN05). */
 export const ACAO_FLAG_ALTERADA = "flag_alterada";
 
+/**
+ * Item de uma requisição-LOTE (US-06): estado próprio espelhando a máquina
+ * individual, payload integral por item e resultado Sinqia integral. `tipo` é
+ * o tipo INDIVIDUAL executável do item (ex.: `tomador.cadastrar`) — é ele que
+ * resolve o executor e a chave de duplicidade.
+ */
+export interface ItemLoteSod {
+  id: string;
+  requisicaoId: string;
+  /** Posição no arquivo (1-based) — a ordem de execução (RN04). */
+  ordem: number;
+  tipo: TipoAcaoSod;
+  payload: Record<string, unknown>;
+  /** Chave de duplicidade do item (documento normalizado). */
+  documento: string | null;
+  /**
+   * Vínculo tomador→proposta do lote COMPOSTO (US-07, RN03): id do item de
+   * `tomador.cadastrar` DESTE MESMO lote do qual esta proposta depende. A
+   * proposta só executa após `executada` do tomador; tomador falho/reprovado
+   * derruba a proposta sem tocar a Sinqia. Coluna própria (não payload) de
+   * propósito: o vínculo é CONSULTÁVEL — a US-10 decide a elegibilidade de
+   * retry por ele (RN05: retry de proposta exige tomador executado; retry de
+   * tomador reabilita as propostas em falha vinculadas). Null = item sem
+   * dependência (tomador, ou proposta de tomador já existente — RN04).
+   */
+  dependeDeItemId: string | null;
+  estado: EstadoRequisicao;
+  /** Motivo da reprovação (exceção ou reprovação do lote). */
+  motivo: string | null;
+  /** Resposta/erro integral da execução Sinqia deste item. */
+  resultado: Record<string, unknown> | null;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+/**
+ * Movimentação de proposta ATIVA (US-08/US-09) — a visão ÚNICA do bloqueio
+ * por proposta, cobrindo as DUAS moradas: requisição individual
+ * (`proposta.movimentar` em sod_requisicoes) e item de lote
+ * (`proposta.movimentar` em sod_lote_itens, US-09). É contra esta visão que
+ * a criação individual E a de lote validam; o Painel de Propostas desenha os
+ * indicadores a partir dela.
+ */
+export interface MovimentacaoAtivaSod {
+  /** Id da REQUISIÇÃO que segura o bloqueio (a individual, ou o LOTE do item). */
+  id: string;
+  /** Preenchidos quando o bloqueio vem de um ITEM de lote (US-09). */
+  itemId: string | null;
+  itemOrdem: number | null;
+  /** Estado que segura o bloqueio (da requisição individual ou do ITEM). */
+  estado: EstadoRequisicao;
+  /** Nº da proposta (dígitos) — a chave do bloqueio. */
+  documento: string;
+  /** Criador da requisição (individual ou lote) — normalizado. */
+  requisitante: string;
+  criadoEm: string;
+  /** Payload da individual ou do item — ambos carregam `movimentacao`. */
+  payload: Record<string, unknown>;
+  resultado: Record<string, unknown> | null;
+}
+
 /** Estado corrente de uma flag por tipo (US-05) — para o CLI operacional. */
+/**
+ * Contagem do badge (US-11), quebrada por estado: `total` alimenta o contador
+ * da navegação e a quebra alimenta a fila de "Pendências e Falhas" — sem ela a
+ * tela abre em "Pendentes" e esconde as falhas que o badge está contando.
+ */
+export interface ContagemPendencias {
+  pendentes: number;
+  falhas: number;
+  total: number;
+}
+
 export interface FlagSod {
   tipo: TipoAcaoSod;
   ativa: boolean;
@@ -151,6 +226,20 @@ export function criarSchemaSod(db: DatabaseSync): void {
       WHERE estado = 'pendente' AND documento IS NOT NULL;
   `);
 
+  // Bloqueio de movimentação por proposta (US-08, RN03) NO BANCO: no máximo
+  // UMA requisição de movimentação ATIVA (pendente/executando/FALHA — falha
+  // segura o bloqueio até retry/descarte na US-10) por (ambiente, documento =
+  // nº da proposta). É esta restrição que decide a corrida de criação
+  // simultânea (Cenário 3): a segunda INSERT aborta aqui. Índice parcial com
+  // sintaxe idêntica no PostgreSQL.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sod_req_mov_ativa
+      ON sod_requisicoes (ambiente, documento)
+      WHERE tipo = 'proposta.movimentar'
+        AND estado IN ('pendente', 'aprovada/executando', 'falha')
+        AND documento IS NOT NULL;
+  `);
+
   db.exec(`
 
     -- MIGRATION-NOTE: AUTOINCREMENT vira GENERATED ALWAYS AS IDENTITY no
@@ -183,6 +272,74 @@ export function criarSchemaSod(db: DatabaseSync): void {
       atualizado_em TEXT NOT NULL,
       PRIMARY KEY (ambiente, tipo)
     );
+  `);
+
+  // Itens de requisição-LOTE (US-06): tabela filha com estado próprio por
+  // item. A guarda de duplicidade de itens (RN06, dimensões intra-arquivo e
+  // entre lotes) vive NO BANCO, no mesmo padrão da individual: no máximo UM
+  // item pendente por (ambiente, tipo, documento) — como todos os itens de um
+  // lote nascem `pendente` na mesma transação, documento repetido no arquivo
+  // também aborta aqui. Índice parcial com sintaxe idêntica no PostgreSQL.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sod_lote_itens (
+      id            TEXT PRIMARY KEY,
+      ambiente      TEXT NOT NULL,
+      requisicao_id TEXT NOT NULL REFERENCES sod_requisicoes(id),
+      ordem         INTEGER NOT NULL,
+      tipo          TEXT NOT NULL,
+      payload       TEXT NOT NULL,
+      documento     TEXT,
+      estado        TEXT NOT NULL CHECK (estado IN (${estados})),
+      motivo        TEXT,
+      resultado     TEXT,
+      criado_em     TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sod_itens_requisicao
+      ON sod_lote_itens (ambiente, requisicao_id, ordem);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sod_itens_doc_pendente
+      ON sod_lote_itens (ambiente, tipo, documento)
+      WHERE estado = 'pendente' AND documento IS NOT NULL;
+  `);
+
+  // Vínculo tomador→proposta do lote COMPOSTO (US-07): FK autorreferente com
+  // profundidade fixa 1 (proposta → tomador do MESMO lote) — nenhuma consulta
+  // recursiva/CTE é necessária, aqui ou no PostgreSQL. Bases criadas pela
+  // US-06 não têm a coluna — adiciona se faltar (mesmo padrão de `documento`).
+  // MIGRATION-NOTE: PRAGMA table_info é SQLite; no PostgreSQL a checagem vira
+  // information_schema.columns (ou ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
+  // com REFERENCES sod_lote_itens(id)).
+  const colunasItens = db.prepare(`PRAGMA table_info(sod_lote_itens)`).all() as Array<{
+    name: string;
+  }>;
+  if (!colunasItens.some((c) => c.name === "depende_de_item_id")) {
+    db.exec(
+      `ALTER TABLE sod_lote_itens ADD COLUMN depende_de_item_id TEXT REFERENCES sod_lote_itens(id)`,
+    );
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sod_itens_dependencia
+      ON sod_lote_itens (ambiente, depende_de_item_id)
+      WHERE depende_de_item_id IS NOT NULL;
+  `);
+
+  // Bloqueio de movimentação por proposta ESTENDIDO aos itens de lote (US-09):
+  // a MESMA definição da US-08 (pendente/executando/FALHA seguram o bloqueio),
+  // agora também sobre sod_lote_itens — no máximo UM item de movimentação
+  // ativo por (ambiente, documento = nº da proposta). Este índice decide a
+  // corrida lote×lote no próprio banco; a corrida individual×lote atravessa
+  // duas tabelas (nenhum índice cobre) e é decidida pela pré-checagem do
+  // domínio, que é SÍNCRONA entre checagem e INSERT (node:sqlite não cede o
+  // event loop — nenhuma requisição concorrente intercala no processo).
+  // MIGRATION-NOTE: índice parcial com sintaxe idêntica no PostgreSQL; lá a
+  // guarda individual×lote precisa de trava explícita (ex.: advisory lock por
+  // documento na criação) porque as transações passam a ser concorrentes.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sod_itens_mov_ativa
+      ON sod_lote_itens (ambiente, documento)
+      WHERE tipo = 'proposta.movimentar'
+        AND estado IN ('pendente', 'aprovada/executando', 'falha')
+        AND documento IS NOT NULL;
   `);
 
   // Cinto de segurança do append-only (RN06): além de a camada não expor
@@ -220,6 +377,22 @@ interface LinhaRequisicao {
   atualizado_em: string;
 }
 
+interface LinhaItemLote {
+  id: string;
+  ambiente: string;
+  requisicao_id: string;
+  ordem: number;
+  tipo: string;
+  payload: string;
+  documento: string | null;
+  depende_de_item_id: string | null;
+  estado: string;
+  motivo: string | null;
+  resultado: string | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
 interface LinhaEvento {
   id: number;
   ambiente: string;
@@ -245,6 +418,54 @@ function paraRequisicao(l: LinhaRequisicao): RequisicaoSod {
     resultado: l.resultado ? (JSON.parse(l.resultado) as Record<string, unknown>) : null,
     criadoEm: l.criado_em,
     atualizadoEm: l.atualizado_em,
+  };
+}
+
+function paraItemLote(l: LinhaItemLote): ItemLoteSod {
+  return {
+    id: l.id,
+    requisicaoId: l.requisicao_id,
+    ordem: l.ordem,
+    tipo: l.tipo as TipoAcaoSod,
+    payload: JSON.parse(l.payload) as Record<string, unknown>,
+    documento: l.documento,
+    dependeDeItemId: l.depende_de_item_id ?? null,
+    estado: l.estado as EstadoRequisicao,
+    motivo: l.motivo,
+    resultado: l.resultado ? (JSON.parse(l.resultado) as Record<string, unknown>) : null,
+    criadoEm: l.criado_em,
+    atualizadoEm: l.atualizado_em,
+  };
+}
+
+/** Visão de bloqueio (US-08/09) a partir de uma requisição INDIVIDUAL ativa. */
+function movAtivaDeRequisicao(r: RequisicaoSod): MovimentacaoAtivaSod {
+  return {
+    id: r.id,
+    itemId: null,
+    itemOrdem: null,
+    estado: r.estado,
+    documento: r.documento ?? "",
+    requisitante: r.requisitante,
+    criadoEm: r.criadoEm,
+    payload: r.payload,
+    resultado: r.resultado,
+  };
+}
+
+/** Visão de bloqueio (US-09) a partir de um ITEM de lote ativo (join com o lote). */
+function movAtivaDeItem(l: LinhaItemLote & { lote_requisitante: string }): MovimentacaoAtivaSod {
+  const item = paraItemLote(l);
+  return {
+    id: item.requisicaoId,
+    itemId: item.id,
+    itemOrdem: item.ordem,
+    estado: item.estado,
+    documento: item.documento ?? "",
+    requisitante: l.lote_requisitante,
+    criadoEm: item.criadoEm,
+    payload: item.payload,
+    resultado: item.resultado,
   };
 }
 
@@ -343,6 +564,100 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
         )
         .get(ambiente, tipo, documento) as LinhaRequisicao | undefined;
       return linha ? paraRequisicao(linha) : null;
+    },
+
+    /**
+     * Movimentação ATIVA da proposta (US-08, RN03): pendente, executando ou
+     * em FALHA — a mesma definição dos índices de bloqueio. Fonte ÚNICA
+     * (US-09): cobre a requisição individual E o item de lote; a individual
+     * vem primeiro só por determinismo (os índices garantem no máximo uma de
+     * cada). `documento` = nº da proposta em dígitos.
+     */
+    movimentacaoAtivaPorDocumento(documento: string): MovimentacaoAtivaSod | null {
+      const estados = ESTADOS_BLOQUEIO_MOVIMENTACAO.map(() => "?").join(", ");
+      const individual = db
+        .prepare(
+          `SELECT * FROM sod_requisicoes
+            WHERE ambiente = ? AND tipo = 'proposta.movimentar'
+              AND documento = ? AND estado IN (${estados})
+            LIMIT 1`,
+        )
+        .get(ambiente, documento, ...ESTADOS_BLOQUEIO_MOVIMENTACAO) as
+        | LinhaRequisicao
+        | undefined;
+      if (individual) return movAtivaDeRequisicao(paraRequisicao(individual));
+      const item = db
+        .prepare(
+          `SELECT i.*, r.requisitante AS lote_requisitante
+             FROM sod_lote_itens i
+             JOIN sod_requisicoes r ON r.id = i.requisicao_id
+            WHERE i.ambiente = ? AND i.tipo = 'proposta.movimentar'
+              AND i.documento = ? AND i.estado IN (${estados})
+            LIMIT 1`,
+        )
+        .get(ambiente, documento, ...ESTADOS_BLOQUEIO_MOVIMENTACAO) as
+        | (LinhaItemLote & { lote_requisitante: string })
+        | undefined;
+      return item ? movAtivaDeItem(item) : null;
+    },
+
+    /**
+     * TODAS as movimentações ativas do ambiente, em uma consulta — alimenta o
+     * indicador do Painel de Propostas (RN05, agregado: nunca uma chamada por
+     * proposta) e a elegibilidade da criação em massa (US-09). Fonte ÚNICA:
+     * individuais + itens de lote, na mesma lista.
+     */
+    listarMovimentacoesAtivas(): MovimentacaoAtivaSod[] {
+      const estados = ESTADOS_BLOQUEIO_MOVIMENTACAO.map(() => "?").join(", ");
+      const individuais = db
+        .prepare(
+          `SELECT * FROM sod_requisicoes
+            WHERE ambiente = ? AND tipo = 'proposta.movimentar' AND estado IN (${estados})`,
+        )
+        .all(ambiente, ...ESTADOS_BLOQUEIO_MOVIMENTACAO) as unknown as LinhaRequisicao[];
+      const itens = db
+        .prepare(
+          `SELECT i.*, r.requisitante AS lote_requisitante
+             FROM sod_lote_itens i
+             JOIN sod_requisicoes r ON r.id = i.requisicao_id
+            WHERE i.ambiente = ? AND i.tipo = 'proposta.movimentar' AND i.estado IN (${estados})`,
+        )
+        .all(ambiente, ...ESTADOS_BLOQUEIO_MOVIMENTACAO) as unknown as Array<
+        LinhaItemLote & { lote_requisitante: string }
+      >;
+      return [
+        ...individuais.map((l) => movAtivaDeRequisicao(paraRequisicao(l))),
+        ...itens.map(movAtivaDeItem),
+      ].sort((a, b) => (a.criadoEm < b.criadoEm ? -1 : a.criadoEm > b.criadoEm ? 1 : 0));
+    },
+
+    /**
+     * Conta requisições que exigem ação do usuário (RN04 / US-11).
+     * MIGRATION-NOTE: Se a performance no PostgreSQL degradar, um índice composto
+     * (ambiente, estado, requisitante) pode ser necessário, embora o índice
+     * existente `idx_sod_req_estado` costume bastar devido à seletividade.
+     */
+    contarPendenciasBadge(ator: string): ContagemPendencias {
+      // Um SELECT só: o badge da navegação usa o total, e a fila mostra a
+      // quebra por estado (o operador precisa saber que há falha esperando
+      // mesmo quando não há nenhuma pendente).
+      const sql = `
+        SELECT
+          SUM(CASE WHEN estado = 'pendente' THEN 1 ELSE 0 END) AS pendentes,
+          SUM(CASE WHEN estado = 'falha'    THEN 1 ELSE 0 END) AS falhas
+          FROM sod_requisicoes
+         WHERE ambiente = ?
+           AND estado IN ('pendente', 'falha')
+           AND requisitante != ?
+      `;
+      // SUM sobre zero linhas devolve NULL (SQLite e PostgreSQL) — daí o ?? 0.
+      const row = db.prepare(sql).get(ambiente, ator) as {
+        pendentes: number | null;
+        falhas: number | null;
+      };
+      const pendentes = row.pendentes ?? 0;
+      const falhas = row.falhas ?? 0;
+      return { pendentes, falhas, total: pendentes + falhas };
     },
 
     listarRequisicoes(f: FiltrosRequisicao): { itens: RequisicaoSod[]; total: number } {
@@ -499,6 +814,247 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
       });
     },
 
+    /* ------------------- Requisição-LOTE (US-06) ------------------- */
+
+    /**
+     * Insere o LOTE + todos os itens + evento de criação na MESMA transação
+     * (tudo ou nada). Documento repetido — no arquivo ou pendente em outro
+     * lote — aborta pelo índice único parcial (`idx_sod_itens_doc_pendente`),
+     * detectável com `ehViolacaoDuplicidadeItemPendente`.
+     */
+    criarRequisicaoLote(
+      req: Pick<RequisicaoSod, "id" | "tipo" | "payload" | "requisitante" | "criadoEm">,
+      itens: Array<
+        Pick<ItemLoteSod, "id" | "ordem" | "tipo" | "payload" | "documento"> &
+          Partial<Pick<ItemLoteSod, "dependeDeItemId">>
+      >,
+      evento: NovoEventoAuditoria,
+    ): void {
+      emTransacao(() => {
+        db.prepare(
+          `INSERT INTO sod_requisicoes
+             (id, ambiente, tipo, payload, documento, requisitante, estado, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, NULL, ?, 'pendente', ?, ?)`,
+        ).run(
+          req.id,
+          ambiente,
+          req.tipo,
+          JSON.stringify(req.payload),
+          req.requisitante,
+          req.criadoEm,
+          req.criadoEm,
+        );
+        const insereItem = db.prepare(
+          `INSERT INTO sod_lote_itens
+             (id, ambiente, requisicao_id, ordem, tipo, payload, documento, depende_de_item_id, estado, criado_em, atualizado_em)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?, ?)`,
+        );
+        // Itens em ordem: tomadores (sem dependência) antes das propostas que
+        // os referenciam — a FK autorreferente exige o pai já inserido.
+        for (const item of itens) {
+          insereItem.run(
+            item.id,
+            ambiente,
+            req.id,
+            item.ordem,
+            item.tipo,
+            JSON.stringify(item.payload),
+            item.documento,
+            item.dependeDeItemId ?? null,
+            req.criadoEm,
+            req.criadoEm,
+          );
+        }
+        inserirEventoInterno(evento);
+      });
+    },
+
+    /** Itens do lote na ordem do arquivo — a ordem de execução (RN04). */
+    itensDoLote(requisicaoId: string): ItemLoteSod[] {
+      const linhas = db
+        .prepare(
+          `SELECT * FROM sod_lote_itens WHERE ambiente = ? AND requisicao_id = ? ORDER BY ordem`,
+        )
+        .all(ambiente, requisicaoId) as unknown as LinhaItemLote[];
+      return linhas.map(paraItemLote);
+    },
+
+    obterItem(id: string): ItemLoteSod | null {
+      const linha = db
+        .prepare(`SELECT * FROM sod_lote_itens WHERE ambiente = ? AND id = ?`)
+        .get(ambiente, id) as LinhaItemLote | undefined;
+      return linha ? paraItemLote(linha) : null;
+    },
+
+    /** Item PENDENTE de qualquer lote com o (tipo, documento) — dimensão 3 da RN06. */
+    itemPendentePorDocumento(tipo: TipoAcaoSod, documento: string): ItemLoteSod | null {
+      const linha = db
+        .prepare(
+          `SELECT * FROM sod_lote_itens
+            WHERE ambiente = ? AND tipo = ? AND documento = ? AND estado = 'pendente'
+            LIMIT 1`,
+        )
+        .get(ambiente, tipo, documento) as LinhaItemLote | undefined;
+      return linha ? paraItemLote(linha) : null;
+    },
+
+    /** Placar do lote (RN01): contagem de itens por estado, direto do banco. */
+    placarDoLote(requisicaoId: string): PlacarLote {
+      const linhas = db
+        .prepare(
+          `SELECT estado, COUNT(*) AS n FROM sod_lote_itens
+            WHERE ambiente = ? AND requisicao_id = ? GROUP BY estado`,
+        )
+        .all(ambiente, requisicaoId) as unknown as Array<{ estado: EstadoRequisicao; n: number }>;
+      return montarPlacar(linhas);
+    },
+
+    /**
+     * Placar de DOIS NÍVEIS do lote composto (US-07): um placar por tipo de
+     * item (tomadores × propostas). Lote de um tipo só devolve uma entrada.
+     */
+    placarPorTipo(requisicaoId: string): Partial<Record<TipoAcaoSod, PlacarLote>> {
+      const linhas = db
+        .prepare(
+          `SELECT tipo, estado, COUNT(*) AS n FROM sod_lote_itens
+            WHERE ambiente = ? AND requisicao_id = ? GROUP BY tipo, estado`,
+        )
+        .all(ambiente, requisicaoId) as unknown as Array<{
+        tipo: TipoAcaoSod;
+        estado: EstadoRequisicao;
+        n: number;
+      }>;
+      const porTipo: Partial<Record<TipoAcaoSod, PlacarLote>> = {};
+      for (const tipo of new Set(linhas.map((l) => l.tipo))) {
+        porTipo[tipo] = montarPlacar(linhas.filter((l) => l.tipo === tipo));
+      }
+      return porTipo;
+    },
+
+    /** Itens que DEPENDEM de um item (propostas vinculadas a um tomador — US-07/US-10). */
+    itensDependentes(itemId: string): ItemLoteSod[] {
+      const linhas = db
+        .prepare(
+          `SELECT * FROM sod_lote_itens
+            WHERE ambiente = ? AND depende_de_item_id = ? ORDER BY ordem`,
+        )
+        .all(ambiente, itemId) as unknown as LinhaItemLote[];
+      return linhas.map(paraItemLote);
+    },
+
+    /**
+     * Transição ATÔMICA de UM item ("primeira vence", mesmo padrão da
+     * requisição): o UPDATE só acontece se o estado ainda for `de` — é esta
+     * guarda que garante a idempotência por item (RN05): um item que já saiu
+     * de `pendente` nunca é reivindicado de novo por outra execução.
+     */
+    transicionarItem(params: {
+      id: string;
+      de: EstadoRequisicao;
+      para: EstadoRequisicao;
+      motivo?: string;
+      resultado?: Record<string, unknown>;
+      agora: string;
+      evento: NovoEventoAuditoria;
+    }): boolean {
+      return emTransacao(() => {
+        const r = db
+          .prepare(
+            `UPDATE sod_lote_itens
+                SET estado = ?,
+                    motivo = COALESCE(?, motivo),
+                    resultado = COALESCE(?, resultado),
+                    atualizado_em = ?
+              WHERE ambiente = ? AND id = ? AND estado = ?`,
+          )
+          .run(
+            params.para,
+            params.motivo ?? null,
+            params.resultado ? JSON.stringify(params.resultado) : null,
+            params.agora,
+            ambiente,
+            params.id,
+            params.de,
+          );
+        if (r.changes !== 1) return false;
+        inserirEventoInterno(params.evento);
+        return true;
+      });
+    },
+
+    /**
+     * Aplica a DECISÃO do lote atomicamente (RN03): transição do lote com
+     * "primeira decisão vence" + transições dos itens indicados + auditoria,
+     * tudo na MESMA transação. Perdeu a corrida do lote → false, nada gravado.
+     * Item fora do estado esperado → exceção (rollback total) — não existe
+     * decisão meio aplicada.
+     */
+    aplicarDecisaoLote(params: {
+      id: string;
+      de: EstadoRequisicao;
+      para: EstadoRequisicao;
+      decididoPor?: string;
+      motivo?: string;
+      agora: string;
+      eventoLote: NovoEventoAuditoria;
+      itens: Array<{
+        id: string;
+        de: EstadoRequisicao;
+        para: EstadoRequisicao;
+        motivo?: string;
+        resultado?: Record<string, unknown>;
+        evento: NovoEventoAuditoria;
+      }>;
+    }): boolean {
+      return emTransacao(() => {
+        const r = db
+          .prepare(
+            `UPDATE sod_requisicoes
+                SET estado = ?,
+                    decidido_por = COALESCE(?, decidido_por),
+                    motivo = COALESCE(?, motivo),
+                    atualizado_em = ?
+              WHERE ambiente = ? AND id = ? AND estado = ?`,
+          )
+          .run(
+            params.para,
+            params.decididoPor ?? null,
+            params.motivo ?? null,
+            params.agora,
+            ambiente,
+            params.id,
+            params.de,
+          );
+        if (r.changes !== 1) return false;
+        inserirEventoInterno(params.eventoLote);
+
+        const atualizaItem = db.prepare(
+          `UPDATE sod_lote_itens
+              SET estado = ?, motivo = COALESCE(?, motivo),
+                  resultado = COALESCE(?, resultado), atualizado_em = ?
+            WHERE ambiente = ? AND id = ? AND estado = ?`,
+        );
+        for (const item of params.itens) {
+          const ri = atualizaItem.run(
+            item.para,
+            item.motivo ?? null,
+            item.resultado ? JSON.stringify(item.resultado) : null,
+            params.agora,
+            ambiente,
+            item.id,
+            item.de,
+          );
+          if (ri.changes !== 1) {
+            throw new Error(
+              `Item ${item.id} não estava em "${item.de}" ao aplicar a decisão do lote ${params.id} — decisão revertida.`,
+            );
+          }
+          inserirEventoInterno(item.evento);
+        }
+        return true;
+      });
+    },
+
     /**
      * Auditoria: APENAS inserir e consultar (RN06). Este objeto não tem — e
      * nunca deve ganhar — métodos de update/delete de eventos.
@@ -563,5 +1119,51 @@ export function ehViolacaoDuplicidadePendente(e: unknown): boolean {
   return (
     msg.includes("UNIQUE constraint failed") &&
     (msg.includes("idx_sod_req_doc_pendente") || msg.includes("sod_requisicoes.documento"))
+  );
+}
+
+/**
+ * O INSERT perdeu a corrida do BLOQUEIO de movimentação (US-08, Cenário 3):
+ * duas requisições simultâneas para a MESMA proposta — a primeira insere, a
+ * segunda cai aqui (índice `idx_sod_req_mov_ativa`). A mensagem do SQLite
+ * cita as colunas do índice, as mesmas da guarda de pendentes — quem chama
+ * já sabe o tipo (`proposta.movimentar`), então a distinção é do chamador.
+ * MIGRATION-NOTE: no PostgreSQL vira o código 23505 (unique_violation).
+ */
+export function ehViolacaoBloqueioMovimentacao(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : "";
+  return (
+    msg.includes("UNIQUE constraint failed") &&
+    (msg.includes("idx_sod_req_mov_ativa") || msg.includes("sod_requisicoes.documento"))
+  );
+}
+
+/**
+ * O INSERT de itens perdeu a corrida da guarda de duplicidade do LOTE (RN06):
+ * outro lote (ou o próprio arquivo, com documento repetido) inseriu um item
+ * pendente do mesmo (tipo, documento) primeiro.
+ * MIGRATION-NOTE: detecção pela mensagem do SQLite; no PostgreSQL vira o
+ * código 23505 (unique_violation), como na guarda individual.
+ */
+export function ehViolacaoDuplicidadeItemPendente(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : "";
+  return (
+    msg.includes("UNIQUE constraint failed") &&
+    (msg.includes("idx_sod_itens_doc_pendente") || msg.includes("sod_lote_itens.documento"))
+  );
+}
+
+/**
+ * O INSERT de itens perdeu a corrida do BLOQUEIO de movimentação (US-09):
+ * outro lote inseriu item ativo de movimentação da MESMA proposta primeiro
+ * (índice `idx_sod_itens_mov_ativa`). A mensagem do SQLite pode citar o
+ * índice ou as colunas dele (as mesmas da guarda de pendentes de itens).
+ * MIGRATION-NOTE: no PostgreSQL vira o código 23505 (unique_violation).
+ */
+export function ehViolacaoBloqueioMovimentacaoItem(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : "";
+  return (
+    msg.includes("UNIQUE constraint failed") &&
+    (msg.includes("idx_sod_itens_mov_ativa") || msg.includes("sod_lote_itens.documento"))
   );
 }

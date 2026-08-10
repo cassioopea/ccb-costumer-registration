@@ -2,6 +2,9 @@ import { Clock, Compass, LogOut, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpeaLogo } from "./OpeaLogo";
 import { formatarRestante, useRestante, useSession } from "@/lib/session";
+import { useEffect, useState } from "react";
+import { contarPendenciasBadge } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 
 const ENV = (import.meta.env.VITE_SINQIA_ENV ?? "hml").toLowerCase();
 const IS_PROD = ENV === "prod";
@@ -96,7 +99,37 @@ interface TopbarProps {
   onRefazerTour?: () => void;
 }
 
+function useBadgePendencias() {
+  const { session } = useSession();
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    if (!session) return;
+    
+    function fetchCount() {
+      // O badge da navegação mostra o TOTAL; a quebra por estado é usada na fila.
+      contarPendenciasBadge()
+        .then((c) => setCount(c.count))
+        .catch(() => {});
+    }
+    
+    fetchCount();
+    
+    const interval = setInterval(fetchCount, 30000);
+    window.addEventListener("sod:decisao", fetchCount);
+    
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("sod:decisao", fetchCount);
+    };
+  }, [session]);
+
+  return count;
+}
+
 export function Topbar({ modulo, onModuloChange, onRefazerTour }: TopbarProps) {
+  const pendenciasCount = useBadgePendencias();
+  
   return (
     <header className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground shadow-elevated">
       {/* Faixa contextual */}
@@ -145,6 +178,11 @@ export function Topbar({ modulo, onModuloChange, onRefazerTour }: TopbarProps) {
                 )}
               >
                 {label}
+                {id === "requisicoes" && pendenciasCount > 0 && (
+                  <Badge variant="destructive" className="ml-1.5 rounded-full px-1.5 py-0 min-w-5 h-5 flex items-center justify-center text-[10px]">
+                    {pendenciasCount > 99 ? '99+' : pendenciasCount}
+                  </Badge>
+                )}
                 {ativo && (
                   <span className="absolute inset-x-3 -bottom-px h-[2px] rounded-full bg-sidebar-foreground" />
                 )}

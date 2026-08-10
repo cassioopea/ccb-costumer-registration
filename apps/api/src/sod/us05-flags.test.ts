@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
-import type { CalcProspResult } from "./../sinqia-client.js";
+import type { CalcProspResult, PropostaPainel } from "./../sinqia-client.js";
 import type { CriacaoItem, CriacaoRowResult } from "./../criacao-job.js";
 
 /**
@@ -57,8 +57,12 @@ let sidAna: string;
 const aprovacaoAtivaDb = (tipo: Parameters<typeof aprovacaoAtiva>[0]) =>
   servico.flagAtiva(tipo);
 
-/** Atalho de operação: muda a flag como o CLI faz (domínio → repo auditado). */
-function flag(tipo: "tomador.cadastrar" | "proposta.criar", ativa: boolean) {
+/**
+ * Atalho de operação: muda a flag como o CLI faz (domínio → repo auditado).
+ * O tipo vem do próprio contrato do domínio — restringir a uma união local
+ * fazia o arquivo compilar só enquanto os testes falassem de dois tipos.
+ */
+function flag(tipo: Parameters<typeof servico.definirFlag>[0], ativa: boolean) {
   return servico.definirFlag(tipo, ativa, "seguranca.ops");
 }
 
@@ -153,6 +157,40 @@ before(async () => {
   });
   await registerSodRoutes(app, servico, {
     verificarSessaoSinqiaFn: async () => "valida",
+    // Impacto da US-12: uma proposta em cada categoria — em andamento,
+    // concluída e cancelada — para provar que só a primeira entra no aviso.
+    consultarPropostaPainelFn: async () => ({
+      httpStatus: 200,
+      propostas: [
+        {
+          nrProsp: 9001,
+          nrStatus: 20050,
+          dsStatus: "Contrato em Assinatura",
+          nrWf: 1,
+          dtEntrad: 20260810,
+          hrEntrad: 900,
+          nrCpfCnpj: "95000000090",
+        },
+        {
+          nrProsp: 9002,
+          nrStatus: 20053,
+          dsStatus: "Contrato Finalizado no Portal",
+          nrWf: 1,
+          dtEntrad: 20260810,
+          hrEntrad: 901,
+          nrCpfCnpj: "95000000090",
+        },
+        {
+          nrProsp: 9003,
+          nrStatus: 20056,
+          dsStatus: "Cancelado",
+          nrWf: 1,
+          dtEntrad: 20260810,
+          hrEntrad: 902,
+          nrCpfCnpj: "95000000090",
+        },
+      ] as PropostaPainel[],
+    }),
     cadastrarClienteFn: async (token) => {
       execucoesTomador.push({ token });
       return { httpStatus: 200, envelope: null, analysis: analysisOk };
@@ -438,6 +476,118 @@ describe("US-05 — Cenário 4: auditoria da mudança de flag (RN05)", () => {
   });
 });
 
+describe("US-05/US-12 — a tela de situação precisa LER o corte e reconhecer o desvio", () => {
+  const alvo = {
+    nrCliente: 4242,
+    nome: "Tomador Fixture",
+    documento: "95000000090",
+    situacaoAnterior: "1 — ATIVO",
+  };
+
+  test("/api/env expõe as flags de situação (a UI não tinha como saber do corte)", async () => {
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", false);
+    let envR = (await get("/api/env", null)).json();
+    assert.equal(envR.aprovacao.situacaoTomador, false);
+    assert.equal(envR.aprovacao.situacaoTomadorLote, false);
+
+    flag("situacao_tomador", true);
+    flag("situacao_tomador_lote", true);
+    envR = (await get("/api/env", null)).json();
+    assert.equal(envR.aprovacao.situacaoTomador, true, "a tela precisa exibir o aviso de aprovação");
+    assert.equal(envR.aprovacao.situacaoTomadorLote, true);
+
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", false);
+  });
+
+  test("flag ativa: POST /api/situacao devolve requisição pendente e NENHUM jobId", async () => {
+    flag("situacao_tomador", true);
+
+    const individual = await post("/api/situacao", sidMaria, { cdSituacao: 2, alvos: [alvo] });
+    assert.equal(individual.statusCode, 201, individual.body);
+    assert.equal(individual.json().aprovacao, true);
+    assert.equal(individual.json().requisicao.estado, "pendente");
+    // O contrato que a tela quebrava: sem jobId, abrir o SSE pediria
+    // /api/situacao/stream/undefined e o operador via erro de backend.
+    assert.equal(individual.json().jobId, undefined, "não há job: nada foi enviado à Sinqia");
+
+    flag("situacao_tomador_lote", true);
+    const massa = await post("/api/situacao", sidMaria, {
+      cdSituacao: 2,
+      alvos: [alvo, { ...alvo, nrCliente: 4243, documento: "95000000091" }],
+    });
+    assert.equal(massa.statusCode, 201, massa.body);
+    assert.equal(massa.json().aprovacao, true);
+    assert.equal(massa.json().jobId, undefined);
+
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", false);
+  });
+
+  test("impacto ANTES da decisão: conta só propostas em andamento (US-12)", async () => {
+    flag("situacao_tomador", true);
+
+    // Inativação (cdSituacao 2) → o aprovador precisa do aviso. Documento
+    // próprio: o teste anterior deixou uma pendente para `alvo` e a guarda de
+    // duplicidade recusaria uma segunda igual.
+    const inativar = await post("/api/situacao", sidMaria, {
+      cdSituacao: 2,
+      alvos: [{ ...alvo, nrCliente: 4245, documento: "95000000094" }],
+    });
+    assert.equal(inativar.statusCode, 201, inativar.body);
+    const idInativar = inativar.json().requisicao.id as string;
+    const imp = (await get(`/api/sod/requisicoes/${idInativar}/impacto`, sidJoao)).json();
+    assert.equal(imp.aplicavel, true);
+    // O fixture do painel devolve 3 propostas: 20050 (aguardando), 20053
+    // (concluída) e 20056 (cancelada) — só a primeira está "em andamento".
+    assert.equal(imp.totalEmAndamento, 1, "concluída e cancelada não entram no aviso");
+    assert.equal(imp.tomadores[0].propostas[0].nrStatus, 20050);
+    assert.equal(imp.parcial, false);
+
+    // Ativação (cdSituacao 1) não tem impacto a avisar.
+    const ativar = await post("/api/situacao", sidMaria, {
+      cdSituacao: 1,
+      alvos: [{ ...alvo, nrCliente: 4244, documento: "95000000093" }],
+    });
+    const impAtivar = (
+      await get(`/api/sod/requisicoes/${ativar.json().requisicao.id}/impacto`, sidJoao)
+    ).json();
+    assert.equal(impAtivar.aplicavel, false);
+    assert.equal(impAtivar.motivo, "ativacao");
+
+    // Tipo sem impacto responde sem erro (a UI pode chamar sem saber o tipo).
+    const req = await post("/api/sod/requisicoes", sidMaria, {
+      tipo: "tomador.cadastrar",
+      payload: { request: { cliente: {} } },
+    });
+    const impOutro = (
+      await get(`/api/sod/requisicoes/${req.json().requisicao.id}/impacto`, sidJoao)
+    ).json();
+    assert.equal(impOutro.aplicavel, false);
+    assert.equal(impOutro.motivo, "tipo_sem_impacto");
+
+    flag("situacao_tomador", false);
+  });
+
+  test("guard centralizado cobre a rota de situação (era a única coberta sem ele)", async () => {
+    // Flag do LOTE ativa e a do individual inativa: uma alteração em massa não
+    // pode vazar pelo caminho direto só porque o desvio olha o tipo individual.
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", true);
+
+    const r = await post("/api/situacao", sidMaria, {
+      cdSituacao: 2,
+      alvos: [alvo, { ...alvo, nrCliente: 4243, documento: "95000000092" }],
+    });
+    assert.equal(r.statusCode, 409, r.body);
+    assert.equal(r.json().code, CODIGO_CORTE_SOD);
+    assert.equal(r.json().tipo, "situacao_tomador_lote");
+
+    flag("situacao_tomador_lote", false);
+  });
+});
+
 describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", () => {
   test("os quatro quadrantes respondem o comportamento esperado", async () => {
     // Quadrante 1: tomador ON → BFF cria requisição; /api/env expõe o corte.
@@ -474,23 +624,13 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
     flag("proposta.criar", false);
   });
 
-  test("escopo Onda 1: tipos da Onda 2 NUNCA sob aprovação — nem com linha forjada na tabela", async () => {
+  test("escopo: tipos ainda NÃO entregues NUNCA sob aprovação — nem com linha forjada na tabela", async () => {
     // Linha forjada direto no banco que o runtime real usa (env.SQLITE_PATH):
-    // mesmo assim, aprovacaoAtiva (flags.ts, com TIPOS_COM_FLAG) devolve false.
+    // (Na entrega da US-05 o exemplo era tomador.cadastrar_lote; cada US da
+    // Onda 2 traz o seu tipo para o corte — o exemplo acompanha os seguintes.)
     const dbApp = abrirBancoSod(process.env.SQLITE_PATH!);
     try {
       const repoApp = criarSodRepositorio(dbApp, "hml");
-      repoApp.definirFlag({
-        tipo: "tomador.cadastrar_lote",
-        ativa: true,
-        ator: "seguranca.ops",
-        agora: new Date().toISOString(),
-      });
-      assert.equal(aprovacaoAtiva("tomador.cadastrar_lote"), false, "Onda 2 fora do corte");
-      assert.equal(aprovacaoAtiva("proposta.movimentar"), false);
-
-      // E o caminho REAL de ponta a ponta funciona para os tipos da Onda 1:
-      // linha na tabela → aprovacaoAtiva default (sodServicoPadrao) → true.
       repoApp.definirFlag({
         tipo: "tomador.cadastrar",
         ativa: true,
@@ -517,9 +657,56 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
       "tomador.cadastrar",
     );
     assert.equal(resolverTipoComFlag(" APROVACAO.CRIACAO_PROPOSTA_INDIVIDUAL "), "proposta.criar");
-    assert.equal(resolverTipoComFlag("tomador.cadastrar_lote"), null, "Onda 2 sem flag");
+    assert.equal(
+      resolverTipoComFlag("tomador.cadastrar_lote"),
+      "tomador.cadastrar_lote",
+      "US-06 sob flag",
+    );
+    assert.equal(
+      resolverTipoComFlag("aprovacao.cadastro_tomador_lote"),
+      "tomador.cadastrar_lote",
+    );
+    assert.equal(
+      resolverTipoComFlag("proposta.criar_lote"),
+      "proposta.criar_lote",
+      "US-07 sob flag",
+    );
+    assert.equal(
+      resolverTipoComFlag("aprovacao.criacao_proposta_lote"),
+      "proposta.criar_lote",
+    );
+    assert.equal(
+      resolverTipoComFlag("proposta.movimentar"),
+      "proposta.movimentar",
+      "US-08 sob flag",
+    );
+    assert.equal(
+      resolverTipoComFlag("aprovacao.movimentacao_proposta"),
+      "proposta.movimentar",
+    );
+    assert.equal(
+      resolverTipoComFlag("proposta.movimentar_massa"),
+      "proposta.movimentar_massa",
+      "US-09 sob flag",
+    );
+    assert.equal(
+      resolverTipoComFlag("aprovacao.movimentacao_proposta_massa"),
+      "proposta.movimentar_massa",
+    );
     assert.equal(resolverTipoComFlag("qualquer.coisa"), null);
-    assert.deepEqual([...TIPOS_COM_FLAG], ["tomador.cadastrar", "proposta.criar"]);
+    assert.deepEqual(
+      [...TIPOS_COM_FLAG],
+      [
+        "tomador.cadastrar",
+        "proposta.criar",
+        "tomador.cadastrar_lote",
+        "proposta.criar_lote",
+        "proposta.movimentar",
+        "proposta.movimentar_massa",
+        "situacao_tomador",
+        "situacao_tomador_lote",
+      ],
+    );
   });
 });
 

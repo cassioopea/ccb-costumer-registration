@@ -4,7 +4,14 @@
 // cookie httpOnly que o backend setou no login, enviado automaticamente pelo
 // fetch e pelo EventSource (mesma origem, via proxy do Vite).
 
-import type { EmissaoRow, EstadoRequisicao, TipoAcaoSod } from "@cadastro-lote/shared";
+import type {
+  DuplicidadesLote,
+  EmissaoRow,
+  EstadoRequisicao,
+  ExcecaoLote,
+  PlacarLote,
+  TipoAcaoSod,
+} from "@cadastro-lote/shared";
 import { lerResposta } from "./session";
 
 /** Ações aceitas pela Sinqia: Incluir / Alterar / Excluir / Consultar. */
@@ -43,6 +50,10 @@ export interface ValidateResponse {
   valido: boolean;
   rows: ValidateRow[];
   preview: Array<{ index: number; payload?: unknown; error?: string }>;
+  /** Esteira de Aprovação (US-06): true = o lote virará requisição pendente. */
+  aprovacao?: boolean;
+  /** Duplicidade tridimensional (RN06), apontada ANTES do envio. */
+  duplicidades?: DuplicidadesLote;
 }
 
 export interface RowResult {
@@ -67,10 +78,18 @@ export interface EnvInfo {
   aprovacao?: {
     cadastroTomadorIndividual: boolean;
     criacaoPropostaIndividual?: boolean;
+    cadastroTomadorLote?: boolean;
+    criacaoPropostaLote?: boolean;
+    movimentacaoProposta?: boolean;
+    movimentacaoPropostaMassa?: boolean;
+    situacaoTomador?: boolean;
+    situacaoTomadorLote?: boolean;
   };
 }
 
 export const TEMPLATE_URL = "/api/template.csv";
+/** Modelo CSV do lote de propostas — mesmas colunas do Emissoes.xlsx (US-07). */
+export const TEMPLATE_PROPOSTAS_URL = "/api/propostas/template.csv";
 
 export async function getEnv(): Promise<EnvInfo> {
   const res = await fetch("/api/env");
@@ -99,7 +118,16 @@ export async function validate(
 export async function startImport(
   file: File,
   control: BatchControlPayload,
-): Promise<{ jobId: string; total: number; validas: number; puladas: number; env: string }> {
+): Promise<{
+  jobId?: string;
+  total: number;
+  validas?: number;
+  puladas?: number;
+  env: string;
+  /** Esteira de Aprovação (US-06): true = virou requisição-lote pendente. */
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string; totalItens: number };
+}> {
   const res = await fetch("/api/import", {
     method: "POST",
     body: buildForm(file, control),
@@ -245,12 +273,67 @@ export async function listarMinhasRequisicoes(f: {
   return lerResposta(res, "Falha ao listar as requisições");
 }
 
-/** Detalhe: requisição + histórico de transições (trilha de auditoria dela). */
-export async function detalharRequisicao(
-  id: string,
-): Promise<{ requisicao: RequisicaoSod; historico: EventoAuditoriaSod[] }> {
+/**
+ * Item de lote em visão ENXUTA (US-06): estado, resumo e desfecho público —
+ * o payload/resposta integral vem de `obterItemLote`. É o shape que o polling
+ * de progresso consome.
+ */
+export interface ItemLoteResumo {
+  id: string;
+  ordem: number;
+  tipo: TipoAcaoSod;
+  estado: EstadoRequisicao;
+  documento: string | null;
+  /** Vínculo do lote COMPOSTO (US-07): id do item de tomador do qual esta proposta depende. */
+  dependeDeItemId?: string | null;
+  /** Motivo da reprovação do item (exceção ou reprovação do lote). */
+  motivo: string | null;
+  resumo: { nome?: string; documento?: string; tipo?: string };
+  resultado: {
+    desfecho?: "executada" | "falha";
+    httpStatus?: number | null;
+    mensagens?: string;
+    detalhe?: string;
+    causa?: string;
+    duracaoMs?: number;
+  } | null;
+  atualizadoEm: string;
+}
+
+export interface DetalheRequisicao {
+  requisicao: RequisicaoSod;
+  historico: EventoAuditoriaSod[];
+  /** Presentes apenas em requisições de LOTE (US-06). */
+  itens?: ItemLoteResumo[];
+  placar?: PlacarLote;
+  /** Dois níveis (US-07): placar por tipo de item (tomadores × propostas). */
+  placarPorTipo?: Partial<Record<TipoAcaoSod, PlacarLote>>;
+}
+
+/** Detalhe: requisição + histórico; lotes trazem itens + placar (US-06). */
+export async function detalharRequisicao(id: string): Promise<DetalheRequisicao> {
   const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}`);
   return lerResposta(res, "Falha ao consultar a requisição");
+}
+
+/** Detalhe INTEGRAL de um item de lote (payload + resposta Sinqia completa). */
+export async function obterItemLote(
+  requisicaoId: string,
+  itemId: string,
+): Promise<{
+  item: {
+    id: string;
+    ordem: number;
+    estado: EstadoRequisicao;
+    payload: Record<string, unknown>;
+    motivo: string | null;
+    resultado: Record<string, unknown> | null;
+  };
+}> {
+  const res = await fetch(
+    `/api/sod/requisicoes/${encodeURIComponent(requisicaoId)}/itens/${encodeURIComponent(itemId)}`,
+  );
+  return lerResposta(res, "Falha ao consultar o item do lote");
 }
 
 /**
@@ -266,20 +349,70 @@ export async function cancelarRequisicao(id: string): Promise<{ requisicao: Requ
   return lerResposta(res, "Falha ao cancelar a requisição");
 }
 
+/**
+ * Impacto de uma requisição de SITUAÇÃO, consultado ANTES da decisão (US-12).
+ * Somente leitura, na sessão de quem decide. `aplicavel: false` quando o tipo
+ * não tem impacto ou quando é uma ATIVAÇÃO (nada a avisar).
+ */
+export interface ImpactoSituacao {
+  aplicavel: boolean;
+  motivo?: "tipo_sem_impacto" | "payload_sem_situacao" | "ativacao";
+  cdSituacao?: number;
+  totalEmAndamento?: number;
+  tomadores?: Array<{
+    documento: string;
+    nome: string;
+    emAndamento: number;
+    propostas: Array<{ nrProsp: number; nrStatus: number | null; dsStatus: string }>;
+    erro?: string;
+  }>;
+  total?: number;
+  consultados?: number;
+  parcial?: boolean;
+}
+
+export async function consultarImpactoSituacao(id: string): Promise<ImpactoSituacao> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/impacto`);
+  return lerResposta(res, "Falha ao consultar o impacto da alteração");
+}
+
 /* --- Painel de pendências (US-03, lado do aprovador) --- */
 
+/** Contagem do badge (US-11): total decidível + quebra por estado. */
+export interface ContagemPendencias {
+  /** Total (pendentes + falhas) — o número do badge da navegação. */
+  count: number;
+  pendentes: number;
+  falhas: number;
+}
+
 /**
- * Requisições PENDENTES de todos os operadores, da mais antiga para a mais
- * nova (RN01), com filtros por tipo e criador.
+ * Retorna a contagem de pendências e falhas tratáveis (US-11).
+ * A quebra por estado alimenta os chips da fila: sem ela, a tela abre em
+ * "Pendentes" e o operador não vê que existe falha esperando decisão.
+ */
+export async function contarPendenciasBadge(): Promise<ContagemPendencias> {
+  const res = await fetch("/api/sod/pendencias-badge");
+  const r = await lerResposta<{ count: number; pendentes?: number; falhas?: number }>(
+    res,
+    "Falha ao contar pendências",
+  );
+  return { count: r.count, pendentes: r.pendentes ?? 0, falhas: r.falhas ?? 0 };
+}
+
+/**
+ * Requisições de todos os operadores, da mais antiga para a mais nova,
+ * filtrando por estado (pendente ou falha), tipo e criador.
  */
 export async function listarPendencias(f: {
   tipo?: string;
   requisitante?: string;
+  estado?: "pendente" | "falha";
   limit: number;
   offset: number;
 }): Promise<{ itens: RequisicaoSod[]; total: number }> {
   const qs = new URLSearchParams({
-    estado: "pendente",
+    estado: f.estado || "pendente",
     ordem: "asc",
     limit: String(f.limit),
     offset: String(f.offset),
@@ -290,9 +423,9 @@ export async function listarPendencias(f: {
   return lerResposta(res, "Falha ao listar as pendências");
 }
 
-/** Criadores distintos das requisições pendentes — alimenta o filtro "criador". */
-export async function listarRequisitantesPendentes(): Promise<string[]> {
-  const res = await fetch("/api/sod/requisitantes?estado=pendente");
+/** Criadores distintos das requisições — alimenta o filtro "criador". */
+export async function listarRequisitantesPendentes(estado: "pendente" | "falha" = "pendente"): Promise<string[]> {
+  const res = await fetch(`/api/sod/requisitantes?estado=${estado}`);
   const json = await lerResposta<{ requisitantes: string[] }>(
     res,
     "Falha ao listar os criadores",
@@ -327,6 +460,109 @@ export async function decidirRequisicao(
   });
   return lerResposta(res, "Falha ao aplicar a decisão");
 }
+
+/**
+ * Decide um LOTE (US-06): direção-base + exceções por item com motivo
+ * (bidirecional). Os itens aprovados executam em background na sessão do
+ * usuário logado — acompanhe pelo polling do detalhe (`execucao.emAndamento`).
+ */
+export async function decidirLote(
+  id: string,
+  decisao: "aprovar" | "reprovar",
+  opts: { motivo?: string; excecoes?: ExcecaoLote[] } = {},
+): Promise<{
+  requisicao: RequisicaoSod;
+  placar: PlacarLote;
+  execucao?: { emAndamento: boolean; aprovados: number };
+}> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/decisao`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      decisao,
+      ...(opts.motivo !== undefined ? { motivo: opts.motivo } : {}),
+      ...(opts.excecoes && opts.excecoes.length > 0 ? { excecoes: opts.excecoes } : {}),
+    }),
+  });
+  return lerResposta(res, "Falha ao aplicar a decisão do lote");
+}
+
+/**
+ * Retry manual de uma requisição em falha (US-10).
+ */
+export async function reprocessarFalha(
+  id: string,
+): Promise<{ requisicao: RequisicaoSod; execucao?: ExecucaoResumo }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+  });
+  return lerResposta(res, "Falha ao reprocessar a requisição");
+}
+
+/**
+ * Descarte de uma requisição em falha (US-10). Motivo obrigatório.
+ */
+export async function descartarFalha(
+  id: string,
+  motivo: string,
+): Promise<{ requisicao: RequisicaoSod }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/descarte`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ motivo }),
+  });
+  return lerResposta(res, "Falha ao descartar a requisição");
+}
+
+/**
+ * Conveniência de lote: reprocessar todas as falhas elegíveis do lote (US-10).
+ */
+export async function reprocessarFalhasLote(
+  id: string,
+): Promise<{
+  requisicao: RequisicaoSod;
+  placar: PlacarLote;
+  execucao?: { emAndamento: boolean; aprovados: number };
+}> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/retry-lote`, {
+    method: "POST",
+  });
+  return lerResposta(res, "Falha ao reprocessar o lote");
+}
+
+/**
+ * Retry manual de um item de lote em falha (US-10).
+ */
+export async function reprocessarItemLote(
+  requisicaoId: string,
+  itemId: string,
+): Promise<{
+  requisicao: RequisicaoSod;
+  placar: PlacarLote;
+  execucao?: { emAndamento: boolean; aprovados: number };
+}> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(requisicaoId)}/itens/${encodeURIComponent(itemId)}/retry`, {
+    method: "POST",
+  });
+  return lerResposta(res, "Falha ao reprocessar o item");
+}
+
+/**
+ * Descarte de um item de lote em falha (US-10).
+ */
+export async function descartarItemLote(
+  requisicaoId: string,
+  itemId: string,
+  motivo: string,
+): Promise<{ requisicao: RequisicaoSod; placar: PlacarLote }> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(requisicaoId)}/itens/${encodeURIComponent(itemId)}/descarte`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ motivo }),
+  });
+  return lerResposta(res, "Falha ao descartar o item");
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Situação de cliente                                                 */
@@ -437,10 +673,25 @@ export interface SituacaoRowResult {
   detail?: string;
 }
 
+/**
+ * Inicia a alteração de situação.
+ *
+ * Duas respostas possíveis, e quem chama precisa distinguir: fluxo DIRETO
+ * devolve `jobId` (progresso por SSE); com a Esteira de Aprovação ativa (US-12)
+ * devolve `aprovacao: true` + a requisição pendente criada, e **não existe
+ * jobId** — abrir o SSE nesse caso pede `/api/situacao/stream/undefined` e o
+ * operador vê um erro de backend, apesar de a requisição ter sido criada.
+ */
 export async function startAlterarSituacao(
   cdSituacao: number,
   alvos: SituacaoAlvo[],
-): Promise<{ jobId: string; total: number; env: string }> {
+): Promise<{
+  jobId?: string;
+  total?: number;
+  env: string;
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string; totalItens?: number };
+}> {
   const res = await fetch("/api/situacao", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -836,12 +1087,32 @@ export interface TransferenciaRowResult {
   detalhe: string;
 }
 
-/** Inicia o job que MOVE várias propostas da mesma fila (1 chamada por proposta). */
+/** Proposta da seleção bloqueada por movimentação ativa (US-09, RN04). */
+export interface InelegivelMovimentacao {
+  nrProsp: number;
+  nmCliente: string;
+  requisicaoId: string;
+  estado: EstadoRequisicao;
+  /** true = o bloqueio vem de um item de OUTRO lote de movimentação. */
+  lote: boolean;
+  motivo: string;
+}
+
+/**
+ * Inicia a movimentação em lote. Fluxo DIRETO (flag OFF): job com progresso
+ * (`jobId`). Sob aprovação (US-09): cria a requisição-LOTE pendente
+ * (`aprovacao: true`) — zero Sinqia; ou pede confirmação de SUBCONJUNTO
+ * (`confirmacaoNecessaria: true`) quando parte da seleção está bloqueada.
+ */
 export async function startTransferirLote(input: {
   nrWf: number;
   nrStatusAtual: number;
+  /** Nome da etapa de origem — exibido no detalhe da requisição (US-09). */
+  dsStatusAtual?: string;
   proxStatus: number;
   dsObserv: string;
+  /** Cria o lote só com as elegíveis, após o usuário confirmar (RN04). */
+  confirmarSubconjunto?: boolean;
   itens: Array<{
     nrProsp: number;
     nrCpf: string;
@@ -850,16 +1121,43 @@ export async function startTransferirLote(input: {
     nrContra: number | null;
   }>;
 }): Promise<{
-  jobId: string;
-  total: number;
-  destino: { proxStatus: number; dsStatus: string };
-  env: string;
+  env?: string;
+  /** Fluxo direto (flag OFF). */
+  jobId?: string;
+  total?: number;
+  destino?: { proxStatus: number; dsStatus: string };
+  /** Sob aprovação (US-09): requisição-lote criada. */
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string };
+  totalItens?: number;
+  inelegiveis?: InelegivelMovimentacao[];
+  /** 409 SUBCONJUNTO_NAO_CONFIRMADO: a UI confirma e reenviará. */
+  confirmacaoNecessaria?: boolean;
+  elegiveis?: number;
 }> {
   const res = await fetch("/api/propostas-transferir-lote", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
+  if (res.status === 409) {
+    // clone(): o corpo ainda precisa estar legível para o lerResposta abaixo.
+    const corpo = (await res
+      .clone()
+      .json()
+      .catch(() => null)) as {
+      code?: string;
+      inelegiveis?: InelegivelMovimentacao[];
+      elegiveis?: number;
+    } | null;
+    if (corpo?.code === "SUBCONJUNTO_NAO_CONFIRMADO") {
+      return {
+        confirmacaoNecessaria: true,
+        inelegiveis: corpo.inelegiveis ?? [],
+        elegiveis: corpo.elegiveis ?? 0,
+      };
+    }
+  }
   return lerResposta(res, "Falha ao iniciar a transferência em lote");
 }
 
@@ -945,24 +1243,69 @@ export async function salvarPersona(input: {
   return lerResposta(res, "Falha ao salvar a persona");
 }
 
-/** MOVE a proposta de fila (transfStatus — efeito real no workflow). */
+/**
+ * MOVE a proposta de fila (transfStatus — efeito real no workflow). Com a
+ * Esteira de Aprovação ativa (US-08), NADA vai à Sinqia: a resposta traz
+ * `aprovacao: true` + a requisição pendente criada, e a proposta permanece
+ * na etapa de origem com o indicador do painel até a decisão.
+ */
 export async function transferirProposta(input: {
   nrProsp: number;
   nrWf: number;
   nrStatusAtual: number;
+  /** Nome da etapa de origem — exibido no detalhe da requisição (US-08). */
+  dsStatusAtual?: string;
   proxStatus: number;
   dsObserv: string;
   nrCpf: string;
   nmCliente: string;
   cdProd: number;
   nrContra: number | null;
-}): Promise<{ env: string; ok: boolean; destino: { proxStatus: number; dsStatus: string } }> {
+}): Promise<{
+  env: string;
+  ok?: boolean;
+  destino: { proxStatus: number; dsStatus: string };
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string };
+}> {
   const res = await fetch("/api/propostas-transferir", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
   return lerResposta(res, "Falha ao transferir a proposta");
+}
+
+/**
+ * Movimentação de proposta em requisição ATIVA (US-08, RN05): pendente,
+ * executando ou em falha — é o que segura o bloqueio por proposta. Fonte
+ * ÚNICA (US-09): cobre requisições individuais E itens de lote de
+ * movimentação — `lote`/`itemId` distinguem a morada.
+ */
+export interface MovimentacaoAtiva {
+  requisicaoId: string;
+  estado: EstadoRequisicao;
+  nrProsp: number | null;
+  requisitante: string;
+  criadoEm: string;
+  origem: { nrStatus: number; dsStatus: string } | null;
+  destino: { proxStatus: number; dsStatus: string } | null;
+  /** true = item de requisição-LOTE de movimentação (US-09). */
+  lote?: boolean;
+  itemId?: string;
+  causaFalha?: string;
+}
+
+/**
+ * TODAS as movimentações ativas do ambiente em UMA chamada — o Painel de
+ * Propostas desenha os indicadores a partir daqui (nunca uma consulta por
+ * proposta; requisito de performance da US-08).
+ */
+export async function getMovimentacoesAtivas(): Promise<{
+  movimentacoes: MovimentacaoAtiva[];
+}> {
+  const res = await fetch("/api/sod/movimentacoes-ativas");
+  return lerResposta(res, "Falha ao consultar as movimentações em aprovação");
 }
 
 /* --- Proposta individual (fluxo unitário) --- */
@@ -1096,13 +1439,56 @@ export async function startCriarPropostas(input: {
   piloto: boolean;
   /** true = cria mesmo com proposta idêntica existente (reemissão consciente). */
   forcarDuplicadas: boolean;
-}): Promise<{ jobId: string; total: number; ignoradas: number; piloto: boolean; env: string }> {
+  /** US-07 (sob aprovação): arquivo de tomadores retido — lote COMPOSTO. */
+  tomadoresUploadId?: string;
+  /** US-07 (sob aprovação): nome do arquivo de propostas, para exibição. */
+  arquivo?: string;
+}): Promise<{
+  env: string;
+  /** Fluxo direto: job com SSE. */
+  jobId?: string;
+  total?: number;
+  ignoradas?: number;
+  piloto?: boolean;
+  /** Esteira de Aprovação (US-07): true = virou requisição-lote pendente. */
+  aprovacao?: boolean;
+  requisicao?: {
+    id: string;
+    estado: string;
+    criadoEm: string;
+    totalItens: number;
+    composto: boolean;
+    vinculos: number;
+  };
+}> {
   const res = await fetch("/api/propostas/criar", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
   return lerResposta(res, "Falha ao iniciar a criação");
+}
+
+/**
+ * LOTE COMPOSTO (US-07): envia o arquivo de TOMADORES (CSV/JSON, mesmo
+ * formato do módulo Tomadores) para o servidor reter — a requisição-lote
+ * referencia o upload por id. Sob aprovação apenas.
+ */
+export async function parseTomadoresLote(
+  file: File,
+  control: BatchControlPayload = {},
+): Promise<{
+  env: string;
+  uploadId: string;
+  arquivo: string;
+  total: number;
+  tomadores: Array<{ index: number; nome: string; documento: string; tipo: string }>;
+}> {
+  const res = await fetch("/api/propostas/tomadores/parse", {
+    method: "POST",
+    body: buildForm(file, control),
+  });
+  return lerResposta(res, "Falha ao ler o arquivo de tomadores");
 }
 
 export interface CriacaoStreamHandlers {

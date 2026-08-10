@@ -182,13 +182,248 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   repositorio.ts e conexão do CLI em flag-cli.ts. Go-live com as duas flags
   inativas (estado padrão — sem seed). Observação: validação de integração real em
   HML PENDENTE — entregue no sábado, fora da janela Sinqia (mesmo caso das US-03/04).
-- US-06: `pendente`
-- US-07: `pendente`
-- US-08: `pendente`
-- US-09: `pendente`
-- US-10: `pendente`
-- US-11: `pendente`
-- US-12: `pendente — aguarda aceite do negócio (ação 4)`
+- US-06: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-256).
+  Decisões (checkpoint A): modelagem do lote pela "Opção A" — tabela filha
+  `sod_lote_itens` (payload integral POR item, estado próprio espelhando a máquina
+  individual + transição extra `pendente → falha` para interrupção); estado do lote
+  DERIVADO do placar dos itens (RN01: ≥1 falha → lote `falha`; exceções reprovadas
+  não tornam o lote falho); idempotência RN05 por reivindicação atômica
+  `pendente → aprovada/executando` por item (UPDATE condicional, "primeira vence");
+  duplicidade RN06 TRIDIMENSIONAL (intra-arquivo + individuais pendentes + itens de
+  outros lotes) com guarda no banco (índice único parcial em `sod_lote_itens`) e
+  RECÍPROCA na individual; progresso por POLLING do detalhe (estados persistidos =
+  fonte única; SSE descartado); upload mantido CSV/JSON (XLSX segue só em propostas).
+  Decisões de implementação ratificadas: sob aprovação NÃO há "pular inválidas"
+  (arquivo com erro volta inteiro — decisão 7); "aprovar com todas as linhas em
+  exceção" é rejeitado (caminho correto: reprovar); motivo de exceção obrigatório
+  nas DUAS direções (o de exceção aprovada vive na trilha de auditoria).
+  Para as próximas US (fundação reusada por US-07/09/12): decisão bidirecional em
+  `decisaoComExcecoesSchema` (shared) na MESMA rota de decisão; novo tipo de lote =
+  entrada em `TIPO_ITEM_DO_LOTE` (shared, lote → tipo individual executável) +
+  flags.ts + desvio/guard na rota da ação — os executores individuais são reusados
+  item a item por `iniciarExecucaoLote` (sod/execucao-lote.ts, job em processo com
+  o token do aprovador, mesmo padrão do batch.ts); `criarRequisicaoLote`/
+  `decidirLote`/`concluirLote` no domínio; detalhe devolve `itens` (visão enxuta) +
+  `placar`, item integral em `GET /api/sod/requisicoes/:id/itens/:itemId`; UI:
+  renderer de lote + marcação de exceções em `RequisicaoDetalhe.tsx` (`LoteItens`),
+  polling de 1,5s nas duas telas. Flag `aprovacao.cadastro_tomador_lote`.
+  MIGRATION-NOTE novo: detecção de violação do índice de itens pela mensagem do
+  SQLite → 23505 no PostgreSQL (repositorio.ts). Overhead da esteira medido nos
+  testes: ~0–3 ms/item (70 itens ≈ 200 ms ponta a ponta com Sinqia mockada);
+  `resultado.duracaoMediaItemMs` grava o tempo real de cada execução (insumo de UX
+  para lotes grandes). Teste de escopo da US-05 atualizado: exemplo de tipo fora do
+  corte passou a ser `proposta.criar_lote`.
+- US-07: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-262).
+  Decisões (checkpoint A): lote composto pela "Opção (i)" — UMA requisição-lote
+  (`proposta.criar_lote`) com itens de DOIS tipos (`tomador.cadastrar` +
+  `proposta.criar`) e vínculo tomador→proposta em coluna própria
+  `sod_lote_itens.depende_de_item_id` (FK autorreferente, profundidade fixa 1 —
+  sem recursão/CTE aqui nem no PostgreSQL). Decisões de produto do PM: o
+  Emissões passa a ser aceito TAMBÉM em CSV (mesmas colunas, parser único —
+  texto plano lido com raw + decodificação própria: datas dd/mm/aaaa e
+  decimais determinísticos, `toMoney` aceita ponto decimal); lote composto =
+  segundo arquivo OPCIONAL de tomadores (CSV/JSON do módulo Tomadores,
+  parser/validações reusados, retido no servidor por sessão, vínculo
+  automático por CPF); templates para download (`GET
+  /api/propostas/template.csv` + o de tomadores já existente).
+  Desenho do ENCADEAMENTO (insumo da US-10): itens persistidos com tomadores
+  primeiro (ordem 1..T); na execução, proposta com `dependeDeItemId` só é
+  reivindicada se o tomador estiver `executada` — senão cai `pendente → falha`
+  com causa `tomador_nao_criado` ("Tomador não criado — item X"), zero Sinqia
+  (Cenário 3). Decisão bidirecional PROPAGA (Cenário 4): exceção que reprova
+  tomador reprova as propostas vinculadas na MESMA transação (origem
+  `propagacao`, motivo do tomador propagado; aviso de impacto na UI ANTES da
+  confirmação — drawer e diálogo); exceção que aprovaria proposta de tomador
+  reprovado → decisão inteira rejeitada (LOTE_INVALIDO). RN05 (retry por
+  vínculo, US-10) registrada em comentário no repositório/execução: retry de
+  proposta exige tomador `executada`; retry de tomador reabilita as propostas
+  em `falha` vinculadas — consulta pronta em `itensDependentes(itemId)`.
+  Execução do item de proposta: cálculo OFICIAL (`calcRequest` persistido) +
+  CONFERÊNCIA AUTOMÁTICA contra a planilha (RN02 — `payload.conferencia`
+  rotulada `ROTULO_CONFERENCIA_PLANILHA`; `conferirCalculo` reusado, 1 centavo)
+  → divergência = `falha` causa `conferencia_reprovada` com comparativo
+  esperado × calculado; depois `criarUma` (mesmo caminho do fluxo direto —
+  painel e base local iguais). Duplicidade RN06 conferida POR TIPO no lote
+  misto (tomador = documento; proposta = assinatura da US-04); RN05 da US-04
+  herdada na criação (tomador pendente em OUTRA requisição → 409
+  TOMADOR_PENDENTE, salvo se ele vier no arquivo deste lote); tomador no
+  arquivo sem proposta correspondente → 422 (arquivo volta inteiro).
+  Para as próximas US: detalhe devolve `placarPorTipo` (dois níveis; a UI
+  distingue falha de conferência × tomador não criado × Sinqia);
+  `itemParaLista` expõe `dependeDeItemId` (agrupamento na UI);
+  `falharItemPendente` no domínio (transição `pendente → falha` de UM item,
+  atômica); `calcProspFn` injetável no calculo-job (testabilidade da fase 2).
+  Flag `aprovacao.criacao_proposta_lote` + corte na rota direta
+  (POST /api/propostas/criar). MIGRATION-NOTE novo: coluna
+  `depende_de_item_id` via PRAGMA table_info/ADD COLUMN (repositorio.ts).
+  Testes: us07-proposta-lote.test.ts (13 testes; composto 70+70 ≈ 0,8 s com
+  Sinqia mockada); teste de escopo da US-05 atualizado (exemplo de tipo fora
+  do corte → `proposta.movimentar`). Observação: validação de integração real
+  em HML PENDENTE — entregue fora da janela Sinqia (mesmo caso das US-03..06).
+- US-08: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-257).
+  Decisões: tipo = `proposta.movimentar` (entrada do enum reservada desde a US-01; o nome
+  de negócio "movimentação individual de proposta" segue o padrão das US-02/04: tipo
+  `entidade.acao` + chave `aprovacao.movimentacao_proposta`); bloqueio RN03 por proposta
+  com definição ÚNICA em `ESTADOS_BLOQUEIO_MOVIMENTACAO` (shared: pendente |
+  aprovada/executando | falha — `falha` MANTÉM) e guarda ATÔMICA no banco: índice único
+  parcial `idx_sod_req_mov_ativa` sobre (ambiente, documento) restrito ao tipo/estados —
+  a corrida de criação simultânea (Cenário 3) é decidida pelo próprio banco; erro
+  `MOVIMENTACAO_BLOQUEADA` (409, `requisicaoExistente` estruturada); chave na coluna
+  `documento` = nº da proposta. Payload RN02 = `MovimentacaoSodPayload` (shared):
+  `movimentacao` (proposta, origem, destino, observação) + `request` EXATO do
+  transfStatus; a criação revalida o destino no consultarStatusTransf (a MESMA validação
+  do fluxo direto), zero transfStatus. Execução (executor em sod/execucao.ts): confere o
+  status ATUAL da proposta via consultarHistoricoProposta ANTES de mover — divergência
+  externa → `falha` causa `divergencia_externa` com esperado × atual + `etapasValidas`
+  capturadas do status atual; rejeição da Sinqia no transfStatus → `falha` causa
+  `movimentacao_rejeitada` com a resposta integral. Indicador RN05 por endpoint AGREGADO
+  `GET /api/sod/movimentacoes-ativas` (UMA chamada por carga de fila, nunca por proposta;
+  2,2 ms com 155 ativas nos testes) — chip clicável no painel ("pendente (→ destino)" /
+  "executando" / "falhou") abre o detalhe em drawer com cancelamento RN06 (criador,
+  pendente). Gesto individual de mover na UI só existe com a flag ativa; flag OFF =
+  painel intacto (mover direto segue morando no lote).
+  Para as próximas US: bloqueio CONSULTÁVEL para a US-09 em
+  `movimentacaoAtivaPorProposta(nrProsp)` e `listarMovimentacoesAtivas()` (serviço) —
+  mesma definição do índice; a rota de transferência em LOTE segue SEM corte até a US-09
+  (tipo `proposta.movimentar_massa`) — mover 1 proposta pelo caminho do lote ainda é
+  direto (gap conhecido, fecha na US-09); para a US-10, retry reexecuta o MESMO payload
+  persistido e `falha → descartada` libera o bloqueio pela própria máquina de estados.
+  MIGRATION-NOTE novo: `ehViolacaoBloqueioMovimentacao` → 23505 no PostgreSQL
+  (repositorio.ts). Teste de escopo da US-05 atualizado (exemplo fora do corte →
+  `proposta.movimentar_massa`). Observação: validação de integração real em HML PENDENTE
+  — entregue no sábado, fora da janela Sinqia (mesmo caso das US-03..07); sem infra de
+  teste de frontend no repo (registrado desde a US-02), a medição do painel é a do BFF +
+  análise de render (indicador = 1 Map.get por linha, zero fetch por proposta).
+- US-09: `entregue` — 2026-08-09, checkpoint final aprovado pelo PM (SCD-258).
+  Decisões (checkpoint A condicional NÃO acionado — a composição saiu por
+  parametrização, sem duplicação relevante; avaliação registrada): tipo
+  `proposta.movimentar_massa` com
+  itens do tipo INDIVIDUAL `proposta.movimentar` (TIPO_ITEM_DO_LOTE) — executor da
+  US-08 reusado item a item pelo pipeline da US-06 (`iniciarExecucaoLote`), incluindo
+  verificação de divergência externa POR item e idempotência por reivindicação
+  atômica; decisão bidirecional herdada sem código novo (rota/domínio/UI genéricos
+  por `ehTipoLote`). BLOQUEIO UNIFICADO (a única generalização de fundo, prevista
+  pela US-08): `movimentacaoAtivaPorDocumento`/`listarMovimentacoesAtivas` viraram
+  fonte ÚNICA sobre as DUAS moradas (sod_requisicoes + sod_lote_itens) devolvendo a
+  visão `MovimentacaoAtivaSod` (id do lote + itemId/itemOrdem quando item); índice
+  parcial novo `idx_sod_itens_mov_ativa` decide a corrida lote×lote no banco (mesma
+  régua: pendente/executando/FALHA); corrida individual×lote é decidida pela
+  pré-checagem SÍNCRONA do domínio (node:sqlite não cede o event loop entre checagem
+  e INSERT — testada nas duas ordens). Elegibilidade RN04 na rota
+  (POST /api/propostas-transferir-lote, desvio com flag ativa): inelegíveis apontadas
+  por motivo → 409 `SUBCONJUNTO_NAO_CONFIRMADO` (nada criado); lote-subconjunto só
+  com `confirmarSubconjunto: true`; todas bloqueadas → 409 `MOVIMENTACAO_BLOQUEADA`.
+  Homogeneidade RN02 = a MESMA regra do fluxo direto (uma fila de origem + um
+  destino revalidado no consultarStatusTransf; seleção da UI limitada à fila
+  carregada e limpa na troca) + reconferência de origem por item na execução.
+  Payloads canônicos: `MovimentacaoLoteSodPayload` (fila/destino/dsObserv/totalItens/
+  inelegiveisRemovidas) e `MovimentacaoLoteItemSodPayload` (US-08 + ordem/resumo).
+  Flag `aprovacao.movimentacao_proposta_massa` (OFF por padrão) + corte na rota
+  direta — fecha o gap registrado na US-08 (mover 1 pelo caminho do lote era direto).
+  UI: modal "Mover selecionadas" com desvio de aprovação (aviso local de bloqueadas +
+  etapa de confirmação de subconjunto vinda do backend), indicador do painel cobrindo
+  itens de lote (`lote`/`itemId` no agregado; drawer com itens+placar e cancelamento
+  em cascata), renderer `PayloadLoteMovimentacao` com origem → destino EM DESTAQUE na
+  tela de decisão (PainelPendencias herdou exceções/polling sem mudança).
+  Para a US-10: retry de item de movimentação reexecuta o payload persistido pelo
+  executor da US-08; `falha → descartada` de item libera o bloqueio pela própria
+  máquina (o índice só cobre pendente/executando/falha).
+  MIGRATION-NOTEs novos (repositorio.ts): `idx_sod_itens_mov_ativa` (23505 no
+  PostgreSQL via `ehViolacaoBloqueioMovimentacaoItem`) e a nota de que no PostgreSQL
+  a guarda individual×lote exige trava explícita (advisory lock por documento).
+  Teste de escopo da US-05 atualizado (exemplo fora do corte → `tomador.alterar_situacao`,
+  o único restante). Testes: us09-movimentacao-massa.test.ts (15 testes; suíte 146/146).
+  Observação: validação de integração real em HML PENDENTE — entregue no sábado,
+  fora da janela Sinqia (mesmo caso das US-03..08); sem infra de teste de frontend
+  no repo (registrado desde a US-02) — fluxo do modal coberto pelos contratos do BFF.
+- US-10: `entregue` — 2026-08-10
+  Decisões de implementação: adicionado endpoint de retry/descarte no backend utilizando as restrições da máquina de estado já construídas. O histórico numera cada transição e tentativa rejeitada para contagem precisa de tentativas (RN06/RN07). Restrição visual na UI com bloqueio do reprocessamento por dependências não executadas no lote (RN04). Validação estrita de concorrência garantindo consistência em retry vs descarte simultâneos (Cenário 4).
+- US-11: `entregue` — 2026-08-09
+  Decisões de implementação: lógica de decidibilidade (RN04) extraída de forma unificada em
+  `requisicaoDecidivelPor` no `sod.schema.ts`; endpoint `GET /api/sod/pendencias-badge` usando
+  consulta `SELECT COUNT(*)` otimizada pelo índice `idx_sod_req_estado`; mecanismo de polling leve
+  (30 segundos, hook `useBadgePendencias` no Topbar) e atualização imediata via dispatch de evento
+  customizado `sod:decisao` nas funções de resposta das ações do `PainelPendencias.tsx`. Lotes
+  contam como uma unidade unificada na aprovação. Validado via testes unitários/integração do
+  endpoint, assegurando distinção de decidibilidade maker-checker.
+- US-12: `entregue` — 2026-08-09
+  Decisões de implementação: adicionado aviso de impacto (consulta dinâmica ao backend durante a aprovação, não na submissão, mantendo a integridade no banco); reaproveitada arquitetura em massa da US-06 para suportar alteração de situação em lote (`situacao_tomador_lote`), reusando o executor individual pelo mapeamento de tipo; bloqueio de duplicidade unificado; e UI de detalhe customizada em `PayloadSituacaoTomador`. A métrica de extensibilidade se validou: o custo de integração do novo modelo foi muito reduzido (basicamente registrar o tipo, o handler em `execucao.ts`, o parser de payload no Frontend e a configuração do Lote no `sod.schema.ts`), comprovando o isolamento do motor da US-04. A Onda 2 se encerra aqui!
+
+### Validação de integração real em HOMOLOGAÇÃO — 2026-08-10 (US-01..US-12)
+
+Executada na janela comercial (segunda-feira, 09:00–11:00) contra
+`https://<HOST_HML>` (BJ21M05), com DOIS operadores Sinqia distintos.
+Relatório completo em `RELATORIO-HOMOLOG-SOD.md`; matriz, evidências e inventário
+de entidades em `test-artifacts/`. **Isto encerra a pendência registrada nas
+US-03..US-09 ("validação de integração real em HML PENDENTE").**
+
+**Resultado: 73 de 75 cenários PASSOU.** O motor da esteira está validado ponta a
+ponta contra a Sinqia real: máquina de estados, maker-checker (violação de SoD
+bloqueada e auditada em TODOS os tipos), execução B2' na sessão do aprovador,
+auditoria append-only (199 eventos), duplicidade nas três dimensões, lotes com
+decisão bidirecional e execução sequencial, encadeamento tomador→proposta com
+propagação de exceção, cálculo oficial na execução, bloqueio unificado por
+proposta (individual↔lote), retry/descarte com liberação de bloqueio, badge e
+alteração de situação (individual e massa). Flags devolvidas para INATIVAS ao
+final.
+
+**Bug reportado da US-08 (movimentação não executa na aprovação): NÃO
+REPRODUZIU** em 6 caminhos (API caminho feliz, destino Cancelado, etapa adiante,
+UI, item de lote, retry) — todos executaram na Sinqia. Hipóteses descartadas com
+evidência: falta de `incluirOcorrencia` (V1/V2 moveram 20050→20056 e 20052→20053
+só com `transfStatus`), eleição errada da etapa vigente, payload incompleto,
+tipo sem executor. **Explicações que sobrevivem, nenhuma delas defeito de
+código:** (a) aprovação tentada FORA da janela Sinqia — a pré-verificação devolve
+`indisponivel` e a rota responde 502 mantendo a requisição `pendente` (a US-08 foi
+entregue num sábado); (b) o motor da Sinqia avança etapas SOZINHO (medimos
+20051→20052 em minutos), então a etapa pode divergir entre requisição e aprovação
+→ `falha` com causa `divergencia_externa`, sem mover nada. Nada a corrigir na
+US-08 sem uma requisição concreta do report (estado + `resultado.causa`).
+
+**Defeitos encontrados.** Quatro foram corrigidos no mesmo dia, cada um em um
+ciclo próprio com aprovação do PM, verificados na UI contra homologação:
+`b7f6408` (item 1), `7291490` (item 4), `49cec9d` (item 2) e `311ace5` (item 8,
+US-11). Seguem **ABERTOS os itens 3, 5, 6 e 7**. Suíte mockada: 157/157 após as
+correções.
+1. **[CORRIGIDO em b7f6408] [ALTO] US-12** — `RequisicaoDetalhe.tsx:796` mapeia a situação INVERTIDA
+   (1→"Inativo", 2→"Ativo", 3→"Em Análise"): o aprovador lê o OPOSTO do que será
+   executado. Correção: usar `situacaoLabel()` do shared (fonte única).
+2. **[CORRIGIDO em 49cec9d] [MÉDIO] US-12** — não havia aviso de impacto ANTES da decisão
+   (`RequisicaoDetalhe.tsx:814` só renderiza com estado `executada`/`falha`; o
+   `propostasAfetadas` nasce na execução). A RN pede o aviso na decisão.
+3. **[ABERTO] [MÉDIO] US-07** — o lote COMPOSTO não aceita tomador novo: `emissoes.ts:201`
+   exige `ID_Sinqia` em toda linha, e tomador que só será criado pelo lote não tem
+   esse código. O motor foi validado com ID sintético; o uso real está BLOQUEADO.
+   A fixture do teste mockado usava `"333-6"` para "Tomador Novo N" e mascarou o
+   caso.
+4. **[CORRIGIDO em 7291490] [MÉDIO] US-12** — `SituacaoClientes.tsx:345` não trata o desvio de aprovação:
+   lê `{jobId}` (que não vem) e abre SSE em `/api/situacao/stream/undefined` → 404
+   → operador vê "Conexão de progresso (SSE) caiu" embora a requisição TENHA sido
+   criada. Somado a isso, `/api/env` não expõe as flags de situação.
+5. **[ABERTO] [BAIXO]** textos de decisão dizem sempre "cadastro do tomador", em qualquer
+   tipo — contribui para a leitura errada do item da US-08.
+6. **[ABERTO] [MÉDIO, pré-existente] US-10** — `us10-retry.test.ts` está quebrado (0 de 7)
+   e fora do `npm test`: escrito contra APIs inexistentes, com `@ts-nocheck`
+   escondendo os erros. A US-10 não tinha cobertura automatizada; esta validação
+   em HML é a primeira evidência real. Reescrever no padrão do `us09-…`.
+7. **[ABERTO] [BAIXO, pré-existente]** `npm run typecheck` falha com 4 erros em
+   `us12-situacao.test.ts` (um deles injeta `alterarSituacaoClienteFn`, que não
+   existe em `RegisterRoutesDeps`).
+8. **[CORRIGIDO em 311ace5] [BAIXO] US-11** (achado pelo PM na conferência da tela) — o badge conta
+   pendentes + falhas, mas a fila abre em `Estado = Pendentes` e o estado vazio
+   diz "Tudo em dia!" com o badge em 1: as duas frases se contradizem na mesma
+   tela e nada indica que basta trocar o filtro. Correção proposta: estender
+   `GET /api/sod/pendencias-badge` para `{count, pendentes, falhas}` (uma
+   consulta, mantendo `count`) e mostrar os dois números na fila — recomendada a
+   forma de dois chips clicáveis (`Pendentes N` | `Falhas N`) no lugar do
+   seletor de estado.
+
+**Para as próximas sessões:** o harness `@homolog` fica em
+`test-artifacts/harness/` — não é referenciado por script npm, exige `.env.test`
+e a janela Sinqia, e redige os logins em toda saída. `00-smoke.mjs` aborta se o
+ambiente não for HML. Fatos úteis do ambiente: propostas criadas pela ferramenta
+nascem em 20010 e o motor as leva a 20050 sozinho; de 20050 só há 20051 e 20056
+(ambos exigindo observação); `npm run sod:flag` mascara o exit code de erro do CLI.
 
 ## 5. Regras técnicas transversais
 

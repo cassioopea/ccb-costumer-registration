@@ -59,3 +59,64 @@ export function buildTemplateCsv(): string {
   });
   return Papa.unparse({ fields: TEMPLATE_COLUMNS, data: rows }, { newline: "\r\n" });
 }
+
+/**
+ * Template CSV do lote de PROPOSTAS (US-07) — as mesmas colunas do
+ * Emissoes.xlsx, para quem preferir montar o arquivo em CSV (o upload aceita
+ * os dois formatos; no composto, os tomadores vão em arquivo separado, no
+ * template de tomadores acima).
+ *
+ * Formatos: valores monetários com PONTO decimal (416.78); datas dd/mm/aaaa;
+ * CPF pode vir com ou sem zeros à esquerda (o parser restaura); N_Contrato
+ * fica vazio (gerado pela Sinqia).
+ */
+const TEMPLATE_PROPOSTAS_COLUMNS = [
+  "Nome", "CPF", "ID_Sinqia", "N_CCB", "Valor da parcela inicial", "N_Contrato",
+  "Liquido", "Financiado", "Quantidade Parcelas", "TAC", "Seguro", "Out. vlr",
+  "1º vcto. De juros", "Situação",
+];
+
+const EXEMPLOS_PROPOSTAS: Array<Record<string, string>> = [
+  {
+    "Nome": "Maria Exemplo da Silva",
+    "CPF": "06550599620",
+    "ID_Sinqia": "333-6",
+    "N_CCB": "CCB-2026-0001",
+    "Valor da parcela inicial": "416.78",
+    "N_Contrato": "",
+    "Liquido": "10000.00",
+    "Financiado": "10470.00",
+    "Quantidade Parcelas": "36",
+    "TAC": "350.00",
+    "Seguro": "120.00",
+    "Out. vlr": "0",
+    "1º vcto. De juros": "05/09/2026",
+    "Situação": "Compliance",
+  },
+  {
+    "Nome": "João Exemplo Pereira",
+    "CPF": "82635790304",
+    "ID_Sinqia": "412-9",
+    "N_CCB": "CCB-2026-0002",
+    "Valor da parcela inicial": "1250.10",
+    "N_Contrato": "",
+    "Liquido": "24000.00",
+    "Financiado": "24980.00",
+    "Quantidade Parcelas": "24",
+    "TAC": "500.00",
+    "Seguro": "0",
+    "Out. vlr": "480.00",
+    "1º vcto. De juros": "10/09/2026",
+    "Situação": "Validação Creditú",
+  },
+];
+
+/** Gera o template CSV de propostas (Emissões) com 2 linhas de exemplo. */
+export function buildTemplatePropostasCsv(): string {
+  const rows = EXEMPLOS_PROPOSTAS.map((ex) => {
+    const ordered: Record<string, string> = {};
+    for (const col of TEMPLATE_PROPOSTAS_COLUMNS) ordered[col] = ex[col] ?? "";
+    return ordered;
+  });
+  return Papa.unparse({ fields: TEMPLATE_PROPOSTAS_COLUMNS, data: rows }, { newline: "\r\n" });
+}

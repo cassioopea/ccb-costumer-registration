@@ -1,12 +1,14 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
   FileText,
   Loader2,
   Play,
+  Send,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
@@ -43,6 +45,7 @@ import { PipelineSteps, type EtapaPipeline } from "@/components/PipelineSteps";
 import { ResumoOperacao, type ItemResumo } from "@/components/ResumoOperacao";
 import { cn, rolarAte } from "@/lib/utils";
 import {
+  getEnv,
   startImport,
   streamImport,
   TEMPLATE_URL,
@@ -84,6 +87,22 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [validation, setValidation] = useState<ValidateResponse | null>(null);
 
+  /**
+   * Esteira de Aprovação (SoD, US-06): flag do lote ativa → o envio VÁLIDO
+   * vira requisição-lote pendente (zero Sinqia); um segundo operador decide.
+   */
+  const [aprovacaoOn, setAprovacaoOn] = useState(false);
+  useEffect(() => {
+    getEnv()
+      .then((e) => setAprovacaoOn(!!e.aprovacao?.cadastroTomadorLote))
+      .catch(() => setAprovacaoOn(false));
+  }, []);
+  /** Requisição-lote criada (fluxo de aprovação) — vira o cartão de sucesso. */
+  const [requisicaoCriada, setRequisicaoCriada] = useState<{
+    id: string;
+    totalItens: number;
+  } | null>(null);
+
   const [progress, setProgress] = useState({
     processed: 0,
     total: 0,
@@ -117,8 +136,16 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
   const canValidate = !!file && phase !== "validating" && phase !== "importing";
   const validCount = validation ? validation.total - validation.totalErros : 0;
   const skipCount = validation?.totalErros ?? 0;
-  // Executa se houver ao menos uma linha válida (as inválidas são puladas).
-  const canExecute = phase === "validated" && validCount > 0;
+  const temDup = !!validation?.duplicidades &&
+    (validation.duplicidades.intraArquivo.length > 0 ||
+      validation.duplicidades.pendentesIndividuais.length > 0 ||
+      validation.duplicidades.pendentesLote.length > 0);
+  // Fluxo direto: executa com ao menos uma linha válida (inválidas são puladas).
+  // Sob aprovação (US-06): o lote inteiro precisa estar válido e sem
+  // duplicidade (RN06) — o aprovador confere mérito, não formato.
+  const canExecute = aprovacaoOn
+    ? phase === "validated" && !!validation && skipCount === 0 && validCount > 0 && !temDup
+    : phase === "validated" && validCount > 0;
 
   /** Qualquer mudança em credenciais/arquivo invalida a validação anterior. */
   const resetValidation = useCallback(() => {
@@ -126,6 +153,7 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
       setPhase("idle");
       setValidation(null);
       setResults([]);
+      setRequisicaoCriada(null);
       setProgress({ processed: 0, total: 0, success: 0, error: 0, skipped: 0, naoEnviado: 0 });
     }
   }, [phase]);
@@ -160,9 +188,11 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
 
   function handleExecuteClick() {
     if (!canExecute) return;
-    // Exclusão confirma em qualquer ambiente — apagar cadastro não tem desfazer
-    // nem em HML. Nos demais casos, só produção pede confirmação.
-    if (IS_PROD || control.idAcao === "EX") {
+    // Sob aprovação (US-06) nada é executado agora — a requisição só entra na
+    // fila de decisão, então não há o que confirmar aqui (o aprovador confirma).
+    // No fluxo direto: exclusão confirma em qualquer ambiente — apagar cadastro
+    // não tem desfazer nem em HML; nos demais casos, só produção confirma.
+    if (!aprovacaoOn && (IS_PROD || control.idAcao === "EX")) {
       setConfirmText("");
       setConfirmOpen(true);
     } else {
@@ -175,10 +205,25 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
     setConfirmOpen(false);
     setError(null);
     setResults([]);
+    setRequisicaoCriada(null);
     setProgress({ processed: 0, total: validation?.total ?? 0, success: 0, error: 0, skipped: 0, naoEnviado: 0 });
     setPhase("importing");
     try {
-      const { jobId, total } = await startImport(file, sanitizeControl(control));
+      const inicio = await startImport(file, sanitizeControl(control));
+
+      // Esteira de Aprovação (US-06): virou requisição-lote pendente — nada
+      // foi (nem será) enviado à Sinqia até um segundo operador aprovar.
+      if (inicio.aprovacao && inicio.requisicao) {
+        setRequisicaoCriada({
+          id: inicio.requisicao.id,
+          totalItens: inicio.requisicao.totalItens,
+        });
+        setPhase("done");
+        return;
+      }
+
+      const { jobId, total } = inicio;
+      if (!jobId) throw new Error("O backend não devolveu o job do lote.");
       setProgress((p) => ({ ...p, total }));
       streamImport(jobId, {
         onRow: (row) => setResults((prev) => [...prev, row]),
@@ -231,7 +276,7 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
     },
     {
       id: "executar",
-      label: "Executar lote",
+      label: aprovacaoOn ? "Enviar para aprovação" : "Executar lote",
       estado: phase === "importing" ? "ativa" : phase === "done" ? "concluida" : "pendente",
     },
   ];
@@ -267,13 +312,24 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
         {progress.naoEnviado > 0 && <> · {progress.naoEnviado} não enviadas</>}
       </span>
     ) : validation && validCount > 0 ? (
-      <span>
-        <span className="text-success">{validCount} válida(s)</span>
-        {skipCount > 0 && (
-          <span className="text-warning-foreground"> · {skipCount} serão puladas</span>
-        )}{" "}
-        — pronto para executar.
-      </span>
+      aprovacaoOn ? (
+        <span>
+          <span className="text-success">{validCount} válida(s)</span>
+          {skipCount > 0 && (
+            <span className="text-destructive"> · {skipCount} com erro — corrija para enviar</span>
+          )}
+          {temDup && <span className="text-destructive"> · duplicidade impede o envio</span>}
+          {skipCount === 0 && !temDup && <> — pronto para enviar para aprovação.</>}
+        </span>
+      ) : (
+        <span>
+          <span className="text-success">{validCount} válida(s)</span>
+          {skipCount > 0 && (
+            <span className="text-warning-foreground"> · {skipCount} serão puladas</span>
+          )}{" "}
+          — pronto para executar.
+        </span>
+      )
     ) : (
       "A validação (dry-run) não envia nada à Sinqia."
     );
@@ -292,9 +348,18 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
       {phase === "importing" ? (
         <Button disabled>
           <Loader2 className="h-4 w-4 animate-spin" />
-          <span className="tabular-nums">
-            Processando {progress.processed}/{progress.total}…
-          </span>
+          {aprovacaoOn ? (
+            <span>Criando a requisição…</span>
+          ) : (
+            <span className="tabular-nums">
+              Processando {progress.processed}/{progress.total}…
+            </span>
+          )}
+        </Button>
+      ) : aprovacaoOn ? (
+        <Button onClick={handleExecuteClick} disabled={!canExecute}>
+          <Send className="h-4 w-4" />
+          Enviar para aprovação
         </Button>
       ) : (
         <Button
@@ -329,7 +394,19 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
         <PipelineSteps etapas={etapas} />
       </div>
 
-      {sessaoCurta && (
+      {aprovacaoOn && (
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-[var(--muted)]/40 px-4 py-3 text-body">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            <strong>Aprovação obrigatória (SoD):</strong> este lote NÃO será executado agora.
+            O envio válido cria uma requisição-lote pendente — um segundo operador revisa,
+            decide item a item e a execução acontece na sessão de quem aprovar. Acompanhe em{" "}
+            <strong>Requisições</strong>.
+          </span>
+        </div>
+      )}
+
+      {sessaoCurta && !aprovacaoOn && (
         <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning/15 px-4 py-3 text-body">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
@@ -420,13 +497,27 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
       </div>
 
       {/* Erros de validação por linha */}
-      {validation && !validation.valido && (
+      {validation && skipCount > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>{skipCount} linha(s) serão puladas</CardTitle>
+            <CardTitle>
+              {aprovacaoOn
+                ? `${skipCount} linha(s) com erro impedem o envio`
+                : `${skipCount} linha(s) serão puladas`}
+            </CardTitle>
             <CardDescription>
-              Estas linhas têm erro e <strong>não serão enviadas</strong> à Sinqia. As válidas
-              seguem normalmente. Corrija e valide de novo se quiser incluí-las.
+              {aprovacaoOn ? (
+                <>
+                  Sob aprovação, o lote só vira requisição com <strong>todas</strong> as linhas
+                  válidas — o aprovador confere mérito, não formato. Corrija o arquivo e valide
+                  novamente.
+                </>
+              ) : (
+                <>
+                  Estas linhas têm erro e <strong>não serão enviadas</strong> à Sinqia. As
+                  válidas seguem normalmente. Corrija e valide de novo se quiser incluí-las.
+                </>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -464,8 +555,88 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
         </Card>
       )}
 
-      {/* Progresso + resultados */}
-      {(phase === "importing" || phase === "done") && (
+      {/* Duplicidade tridimensional (RN06) — apontada ANTES do envio (US-06) */}
+      {validation && temDup && validation.duplicidades && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-[var(--destructive)]">
+              <AlertTriangle className="h-5 w-5" />
+              Duplicidade impede o envio para aprovação
+            </CardTitle>
+            <CardDescription>
+              Cada documento só pode ter UMA pendência de aprovação por vez. Resolva os
+              conflitos abaixo (ou aguarde as decisões pendentes) e valide novamente.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-body">
+            {validation.duplicidades.intraArquivo.length > 0 && (
+              <div>
+                <p className="font-medium">Repetidos no próprio arquivo</p>
+                <ul className="list-disc pl-5 text-muted-foreground">
+                  {validation.duplicidades.intraArquivo.map((d) => (
+                    <li key={d.documento}>
+                      <span className="tabular-nums">{d.documento}</span> — linhas{" "}
+                      {d.ordens.join(", ")}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {validation.duplicidades.pendentesIndividuais.length > 0 && (
+              <div>
+                <p className="font-medium">Com requisição individual pendente</p>
+                <ul className="list-disc pl-5 text-muted-foreground">
+                  {validation.duplicidades.pendentesIndividuais.map((d) => (
+                    <li key={`${d.documento}-${d.ordem}`}>
+                      linha {d.ordem} — <span className="tabular-nums">{d.documento}</span>{" "}
+                      (requisição {d.requisicaoId.slice(0, 8)}…)
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {validation.duplicidades.pendentesLote.length > 0 && (
+              <div>
+                <p className="font-medium">Pendentes em outro lote</p>
+                <ul className="list-disc pl-5 text-muted-foreground">
+                  {validation.duplicidades.pendentesLote.map((d) => (
+                    <li key={`${d.documento}-${d.ordem}`}>
+                      linha {d.ordem} — <span className="tabular-nums">{d.documento}</span>{" "}
+                      (lote {d.requisicaoId.slice(0, 8)}…)
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Requisição-lote criada (fluxo de aprovação, US-06) */}
+      {phase === "done" && requisicaoCriada && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-success">
+              <CheckCircle2 className="h-5 w-5" />
+              Requisição-lote criada — aguardando aprovação
+            </CardTitle>
+            <CardDescription>
+              <strong>{requisicaoCriada.totalItens}</strong> tomador(es) entraram na fila de
+              decisão. Nada foi enviado à Sinqia: um segundo operador precisa aprovar; a
+              execução acontecerá na sessão de quem aprovar.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-body text-muted-foreground">
+            <p>
+              Requisição <code className="text-caption">{requisicaoCriada.id}</code> — acompanhe
+              (e cancele, se preciso) em <strong>Requisições → Minhas requisições</strong>.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Progresso + resultados (fluxo direto) */}
+      {(phase === "importing" || phase === "done") && !requisicaoCriada && !aprovacaoOn && (
         <Card ref={resultadoRef} className="scroll-mt-40">
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">

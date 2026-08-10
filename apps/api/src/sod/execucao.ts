@@ -1,10 +1,22 @@
-import type {
-  CadastrarClienteRequest,
-  CalcProspRequest,
-  PropostaSodPayload,
-  TipoAcaoSod,
+import {
+  conferirCalculo,
+  type CadastrarClienteRequest,
+  type CalcProspRequest,
+  type MovimentacaoSodPayload,
+  type PropostaLoteItemSodPayload,
+  type PropostaSodPayload,
+  type TipoAcaoSod,
 } from "@cadastro-lote/shared";
-import type { cadastrarCliente, calcProsp } from "./../sinqia-client.js";
+import {
+  cadastrarCliente,
+  calcProsp,
+  consultarHistoricoProposta,
+  consultarStatusTransf,
+  transferirStatus,
+  alterarSituacaoCliente,
+  listarPropostasPorCpf,
+  type TransfStatusInput,
+} from "./../sinqia-client.js";
 import { criarUma, SessaoExpiradaError } from "./../criacao-job.js";
 import type { RequisicaoSod } from "./repositorio.js";
 
@@ -23,6 +35,12 @@ export interface ExecucaoDeps {
   cadastrarClienteFn: typeof cadastrarCliente;
   calcProspFn: typeof calcProsp;
   criarUmaFn: typeof criarUma;
+  /** Movimentação de proposta (US-08) — o MESMO cliente do fluxo direto. */
+  transferirStatusFn: typeof transferirStatus;
+  consultarStatusTransfFn: typeof consultarStatusTransf;
+  consultarHistoricoPropostaFn: typeof consultarHistoricoProposta;
+  alterarSituacaoClienteFn: typeof alterarSituacaoCliente;
+  listarPropostasPorCpfFn: typeof listarPropostasPorCpf;
 }
 
 /** Sessão do aprovador: token para a Sinqia + login para a base local. */
@@ -229,6 +247,53 @@ async function executarCriacaoProposta(
     }
   }
 
+  /*
+   * CONFERÊNCIA AUTOMÁTICA do lote de propostas (US-07, RN02): itens vindos
+   * do Emissões carregam `conferencia` (valores da PLANILHA, rotulados) e,
+   * diferentemente da referência acima, ela BLOQUEIA: cálculo oficial fora da
+   * tolerância (1 centavo, a mesma da fase de cálculo) → `falha` com o
+   * comparativo esperado × calculado, NADA é criado. Requisições individuais
+   * (US-04) não têm o campo — comportamento intacto.
+   */
+  const conferencia = (payload as Partial<PropostaLoteItemSodPayload>).conferencia;
+  if (conferencia && typeof conferencia === "object") {
+    const reprovadas = conferirCalculo(
+      {
+        vlParcelaInicial: conferencia.vlParcelaInicial ?? null,
+        vlLiquido: conferencia.vlLiquido ?? null,
+        vlFinanciado: conferencia.vlFinanciado ?? null,
+      },
+      oficial,
+    );
+    if (reprovadas.length > 0) {
+      const comparativo = reprovadas.map((d) => ({
+        campo: d.campo,
+        esperado: d.excel,
+        calculado: d.calculado,
+      }));
+      const resumoComparativo = comparativo
+        .map((c) => `${c.campo}: esperado R$ ${c.esperado.toFixed(2)} × calculado R$ ${c.calculado.toFixed(2)}`)
+        .join("; ");
+      return falhaExecucao(
+        {
+          causa: "conferencia_reprovada",
+          etapa: "conferencia",
+          httpStatus: calculoOficial.httpStatus,
+          comparativo,
+          calculoOficial: oficial,
+          conferencia,
+          mensagem: `Conferência automática reprovada — ${resumoComparativo}.`,
+        },
+        {
+          httpStatus: calculoOficial.httpStatus,
+          mensagens: `Conferência automática reprovada — ${resumoComparativo}.`,
+          detalhe:
+            "O cálculo oficial divergiu da planilha além da tolerância de 1 centavo; nada foi criado.",
+        },
+      );
+    }
+  }
+
   // 2. Criação pelo MESMO caminho do fluxo direto, com o cálculo oficial.
   let criacao;
   try {
@@ -307,6 +372,275 @@ async function executarCriacaoProposta(
 }
 
 /**
+ * Executor da movimentação individual de proposta (US-08), em duas etapas na
+ * sessão do aprovador:
+ *
+ *  1. PRÉ-VERIFICAÇÃO DE DIVERGÊNCIA EXTERNA (Cenário 4): consulta o
+ *     histórico da proposta na Sinqia e exige que o status ATUAL seja a etapa
+ *     de ORIGEM da requisição. A proposta pode ter sido movida por fora
+ *     (Portal Sinqia) entre a criação e a aprovação — nesse caso NADA é
+ *     movido: `falha` com causa `divergencia_externa`, o comparativo
+ *     esperado × atual e as etapas válidas a partir do status atual
+ *     (capturadas quando a consulta as devolve). O bloqueio permanece (RN03);
+ *     a resolução é retry/descarte na US-10.
+ *  2. MOVIMENTAÇÃO: reusa `transferirStatus` — exatamente o cliente do fluxo
+ *     direto — com o `request` PERSISTIDO na requisição (RN05/RN08), no token
+ *     do aprovador. Rejeição da Sinqia → `falha` com a resposta integral.
+ */
+async function executarMovimentacaoProposta(
+  requisicao: RequisicaoSod,
+  ctx: ContextoExecucao,
+  deps: ExecucaoDeps,
+): Promise<ResultadoExecucao> {
+  const payload = requisicao.payload as unknown as Partial<MovimentacaoSodPayload>;
+  const mov = payload.movimentacao;
+  const request = payload.request;
+  if (
+    !mov?.nrProsp ||
+    !mov.origem ||
+    !mov.destino ||
+    !request ||
+    typeof request !== "object" ||
+    Array.isArray(request)
+  ) {
+    return falhaExecucao(
+      {
+        causa: "payload_invalido",
+        mensagem: "A requisição não contém os dados da movimentação.",
+      },
+      { httpStatus: null, mensagens: "Payload da requisição sem os dados da movimentação." },
+    );
+  }
+
+  /** Etapas válidas a partir de um status — melhor-esforço, nunca derruba a falha. */
+  const capturarEtapasValidas = async (nrStatus: number) => {
+    try {
+      const r = await deps.consultarStatusTransfFn(ctx.token, mov.nrWf, nrStatus);
+      return r.httpStatus < 400 ? r.transicoes : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // 1. Status ATUAL da proposta (histórico Sinqia; o maior nrSeq é o vigente).
+  let statusAtual: number | null = null;
+  let dsStatusAtual = "";
+  try {
+    const hist = await deps.consultarHistoricoPropostaFn(ctx.token, String(mov.nrProsp));
+    if (hist.httpStatus === 401) {
+      return falhaExecucao(
+        {
+          causa: "sessao_expirada_durante_execucao",
+          etapa: "verificacao",
+          mensagem: "O token da Sinqia expirou durante a verificação da proposta.",
+          httpStatus: 401,
+        },
+        { httpStatus: 401, mensagens: "O token da Sinqia expirou durante a verificação da proposta." },
+        true,
+      );
+    }
+    const vigente = hist.historicos.reduce<(typeof hist.historicos)[number] | null>(
+      (max, h) => (max === null || h.nrSeq > max.nrSeq ? h : max),
+      null,
+    );
+    if (hist.httpStatus >= 400 || !vigente || vigente.nrStatus === null) {
+      return falhaExecucao(
+        {
+          causa: "indisponibilidade_ou_timeout",
+          etapa: "verificacao",
+          httpStatus: hist.httpStatus,
+          mensagem:
+            `Não foi possível confirmar a etapa atual da proposta ${mov.nrProsp} na Sinqia — ` +
+            "nada foi movido.",
+        },
+        {
+          httpStatus: hist.httpStatus,
+          mensagens: `Não foi possível confirmar a etapa atual da proposta ${mov.nrProsp} — nada foi movido.`,
+        },
+      );
+    }
+    statusAtual = vigente.nrStatus;
+    dsStatusAtual = vigente.dsStatus;
+  } catch (e) {
+    return falhaExecucao(
+      { causa: "indisponibilidade_ou_timeout", etapa: "verificacao", mensagem: (e as Error).message },
+      { httpStatus: null, mensagens: (e as Error).message },
+    );
+  }
+
+  if (statusAtual !== mov.origem.nrStatus) {
+    // Divergência EXTERNA (Cenário 4): a proposta saiu da etapa de origem por
+    // fora da plataforma — nada é movido; o comparativo e as etapas válidas
+    // atuais vão INTEGRAIS para o resultado (insumo do retry/descarte, US-10).
+    const etapasValidas = await capturarEtapasValidas(statusAtual);
+    const mensagem =
+      `A proposta ${mov.nrProsp} não está mais na etapa de origem da requisição: ` +
+      `esperava "${mov.origem.dsStatus}" (status ${mov.origem.nrStatus}) e a Sinqia mostra ` +
+      `"${dsStatusAtual}" (status ${statusAtual}). Nada foi movido.`;
+    return falhaExecucao(
+      {
+        causa: "divergencia_externa",
+        etapa: "verificacao",
+        esperado: mov.origem,
+        atual: { nrStatus: statusAtual, dsStatus: dsStatusAtual },
+        ...(etapasValidas ? { etapasValidas } : {}),
+        mensagem,
+      },
+      {
+        httpStatus: null,
+        mensagens: mensagem,
+        detalhe: "Divergência externa — resolução por retry ou descarte (US-10).",
+      },
+    );
+  }
+
+  // 2. Movimentação pelo MESMO cliente do fluxo direto, com o request persistido.
+  try {
+    const r = await deps.transferirStatusFn(ctx.token, request as unknown as TransfStatusInput);
+    if (r.httpStatus === 401) {
+      return falhaExecucao(
+        {
+          causa: "sessao_expirada_durante_execucao",
+          etapa: "movimentacao",
+          mensagem: "O token da Sinqia expirou durante a movimentação.",
+          httpStatus: 401,
+        },
+        { httpStatus: 401, mensagens: "O token da Sinqia expirou durante a movimentação." },
+        true,
+      );
+    }
+    if (!r.ok) {
+      // Rejeição da Sinqia na própria transferência: resposta integral + as
+      // etapas que o workflow permite a partir da origem (quando consultáveis).
+      const etapasValidas = await capturarEtapasValidas(mov.origem.nrStatus);
+      return falhaExecucao(
+        {
+          causa: "movimentacao_rejeitada",
+          etapa: "movimentacao",
+          httpStatus: r.httpStatus,
+          respostaSinqia: r.detalhe,
+          ...(etapasValidas ? { etapasValidas } : {}),
+          mensagem: `A Sinqia não confirmou a movimentação da proposta ${mov.nrProsp}: ${r.detalhe}`,
+        },
+        {
+          httpStatus: r.httpStatus,
+          mensagens: `A Sinqia não confirmou a movimentação: ${r.detalhe}`,
+        },
+      );
+    }
+    return {
+      desfecho: "executada",
+      sessaoExpirou: false,
+      resultado: {
+        origem: "sinqia",
+        desfecho: "executada",
+        httpStatus: r.httpStatus,
+        respostaSinqia: r.detalhe,
+        de: mov.origem,
+        para: mov.destino,
+      },
+      publico: {
+        desfecho: "executada",
+        httpStatus: r.httpStatus,
+        mensagens:
+          `Proposta nº ${mov.nrProsp} movida de "${mov.origem.dsStatus}" para ` +
+          `"${mov.destino.dsStatus}".`,
+      },
+    };
+  } catch (e) {
+    // Indisponibilidade/timeout — sem retry automático (RN07): falha é repouso.
+    return falhaExecucao(
+      { causa: "indisponibilidade_ou_timeout", etapa: "movimentacao", mensagem: (e as Error).message },
+      { httpStatus: null, mensagens: (e as Error).message },
+    );
+  }
+}
+
+/**
+ * Executor da alteração de situação do tomador (US-12).
+ * Verifica propostas em andamento se for uma inativação (cdSituacao = 7).
+ */
+async function executarSituacaoTomador(
+  requisicao: RequisicaoSod,
+  ctx: ContextoExecucao,
+  deps: ExecucaoDeps,
+): Promise<ResultadoExecucao> {
+  const payload = requisicao.payload as Record<string, any>;
+  const cdSituacao = payload.cdSituacao;
+  const alvo = payload.alvo;
+  
+  if (typeof cdSituacao !== "number" || !alvo || typeof alvo.nrCliente !== "number") {
+    return falhaExecucao(
+      { causa: "payload_invalido", mensagem: "Payload inválido para situacao_tomador." },
+      { httpStatus: null, mensagens: "Payload inválido." },
+    );
+  }
+
+  let propostasAtivas = 0;
+  // Apenas consulta impacto se for inativação (ex: código 7 = Cancelado/Inativo, ou diferente de 1)
+  // Como não há enum no sistema detalhado, qualquer inativação gera impacto (vamos verificar se tem propostas).
+  if (cdSituacao !== 1 && alvo.documento) {
+    try {
+      const resp = await deps.listarPropostasPorCpfFn(ctx.token, alvo.documento);
+      if (resp.httpStatus === 401) {
+         return falhaExecucao(
+           { causa: "sessao_expirada_durante_execucao", mensagem: "Sessão expirou na consulta de impacto." },
+           { httpStatus: 401, mensagens: "Sessão expirou." }, true
+         );
+      }
+      propostasAtivas = resp.propostas.length;
+    } catch (e) {
+      // Ignora erro de consulta de impacto para não travar a inativação
+      console.warn("Erro ao consultar propostas ativas:", e);
+    }
+  }
+
+  try {
+    const r = await deps.alterarSituacaoClienteFn(ctx.token, { cdSituacao, nrCliente: alvo.nrCliente });
+    
+    if (r.httpStatus === 401) {
+      return falhaExecucao(
+        { causa: "sessao_expirada_durante_execucao", mensagem: "Sessão expirou.", httpStatus: r.httpStatus },
+        { httpStatus: r.httpStatus, mensagens: "Sessão expirou." }, true
+      );
+    }
+
+    const integral: Record<string, unknown> = {
+      origem: "sinqia",
+      httpStatus: r.httpStatus,
+      envelopeStatus: r.analysis.envelopeStatus,
+      globalMessage: r.analysis.globalMessage,
+      mensagens: r.analysis.messagesText,
+      envelope: r.envelope,
+      propostasAfetadas: propostasAtivas,
+    };
+
+    if (r.analysis.ok) {
+      return {
+        desfecho: "executada",
+        sessaoExpirou: false,
+        resultado: { ...integral, desfecho: "executada" },
+        publico: {
+          desfecho: "executada",
+          httpStatus: r.httpStatus,
+          mensagens: r.analysis.messagesText || "Situação alterada com sucesso.",
+        }
+      };
+    }
+    
+    return falhaExecucao(
+      { ...integral, causa: "erro_negocio", detalhe: r.analysis.reason },
+      { httpStatus: r.httpStatus, mensagens: r.analysis.messagesText || r.analysis.globalMessage || "", detalhe: r.analysis.reason }
+    );
+  } catch(e) {
+    return falhaExecucao(
+      { causa: "indisponibilidade_ou_timeout", mensagem: (e as Error).message },
+      { httpStatus: null, mensagens: (e as Error).message },
+    );
+  }
+}
+
+/**
  * Registro de executores por tipo de ação — o ponto de extensão que cada US
  * de novo tipo alimenta (US-04 acrescentou `proposta.criar`; a Onda 2
  * acrescenta os demais).
@@ -320,4 +654,6 @@ export type Executor = (
 export const EXECUTORES: Partial<Record<TipoAcaoSod, Executor>> = {
   "tomador.cadastrar": executarCadastroTomador,
   "proposta.criar": executarCriacaoProposta,
+  "proposta.movimentar": executarMovimentacaoProposta,
+  "situacao_tomador": executarSituacaoTomador,
 };
