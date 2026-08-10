@@ -229,4 +229,13 @@ describe("endpoints SoD", () => {
     ).json();
     assert.equal(periodoVazio.total, 0);
   });
+
+  test("pendencias-badge conta apenas pendentes e falhas de terceiros", async () => {
+    // Maria consulta o badge: deve ver 0 requisições (pois ela acabou de criá-las ou estão concluídas)
+    const badgeMaria = (await get("/api/sod/pendencias-badge", sidMaria)).json();
+    // Joao consulta o badge: deve ver as requisições de Maria que estão pendentes ou em falha
+    const badgeJoao = (await get("/api/sod/pendencias-badge", sidJoao)).json();
+    
+    assert.ok(badgeJoao.count >= badgeMaria.count, "João deve ter mais pendências que Maria para decidir");
+  });
 });

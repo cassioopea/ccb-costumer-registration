@@ -182,4 +182,30 @@ describe("US-10 Retry e Descarte", () => {
     const req = servico.obterRequisicao(reqId);
     assert.equal(req?.estado, "aprovada/executando");
   });
+
+  test("Concorrência (Cenário 4): retry x descarte simultâneos", async () => {
+    const reqId = await criarFalhaIndividual();
+    
+    // Duas requisições simultâneas: uma de retry e uma de descarte
+    const res = await Promise.all([
+      app.inject({ method: "POST", url: `/api/sod/requisicoes/${reqId}/retry`, cookies: { sid: sidJoao } }),
+      app.inject({ method: "POST", url: `/api/sod/requisicoes/${reqId}/descarte`, cookies: { sid: sidAna }, payload: { motivo: "venci a corrida" } })
+    ]);
+    
+    // Uma deve retornar 200, a outra deve falhar com 409 (TRANSICAO_INVALIDA)
+    const statusCodes = res.map(r => r.statusCode);
+    assert.ok(statusCodes.includes(200), "Uma das requisições deve ter sucesso");
+    assert.ok(statusCodes.includes(409), "A outra requisição deve falhar por conflito de estado");
+    
+    // Verifica a consistência do estado final com o vencedor da corrida
+    const vencedorRetry = res[0].statusCode === 200;
+    const req = servico.obterRequisicao(reqId);
+    
+    if (vencedorRetry) {
+      assert.equal(req?.estado, "aprovada/executando");
+    } else {
+      assert.equal(req?.estado, "descartada");
+      assert.equal(req?.motivo, "venci a corrida");
+    }
+  });
 });

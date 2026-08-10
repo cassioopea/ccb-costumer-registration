@@ -237,6 +237,18 @@ export async function registerSodRoutes(
     );
   });
 
+  /** 
+   * Retorna a contagem agregada de pendências para o badge de navegação (US-11).
+   * Considera apenas as requisições decidíveis pelo operador logado (lotes contam como 1).
+   */
+  app.get("/api/sod/pendencias-badge", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+    
+    const count = servico.contarPendenciasBadge(session.username);
+    return reply.send({ count });
+  });
+
   /**
    * Detalhar: requisição + histórico (auditoria vinculada). Lotes (US-06)
    * trazem também o placar e os itens em visão enxuta — é este endpoint que a

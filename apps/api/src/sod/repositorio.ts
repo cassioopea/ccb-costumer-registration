@@ -620,6 +620,24 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
       ].sort((a, b) => (a.criadoEm < b.criadoEm ? -1 : a.criadoEm > b.criadoEm ? 1 : 0));
     },
 
+    /**
+     * Conta requisições que exigem ação do usuário (RN04 / US-11).
+     * MIGRATION-NOTE: Se a performance no PostgreSQL degradar, um índice composto
+     * (ambiente, estado, requisitante) pode ser necessário, embora o índice
+     * existente `idx_sod_req_estado` costume bastar devido à seletividade.
+     */
+    contarPendenciasBadge(ator: string): number {
+      const sql = `
+        SELECT COUNT(*) AS n 
+          FROM sod_requisicoes 
+         WHERE ambiente = ? 
+           AND estado IN ('pendente', 'falha') 
+           AND requisitante != ?
+      `;
+      const row = db.prepare(sql).get(ambiente, ator) as { n: number };
+      return row.n;
+    },
+
     listarRequisicoes(f: FiltrosRequisicao): { itens: RequisicaoSod[]; total: number } {
       const clausulas = ["ambiente = ?"];
       const params: Array<string | number> = [ambiente];

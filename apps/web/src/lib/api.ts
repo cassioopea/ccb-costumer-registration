@@ -349,6 +349,12 @@ export async function cancelarRequisicao(id: string): Promise<{ requisicao: Requ
 
 /* --- Painel de pendências (US-03, lado do aprovador) --- */
 
+/** Retorna a contagem de pendências e falhas tratáveis (US-11). */
+export async function contarPendenciasBadge(): Promise<number> {
+  const res = await fetch("/api/sod/pendencias-badge");
+  return lerResposta<{ count: number }>(res, "Falha ao contar pendências").then(r => r.count);
+}
+
 /**
  * Requisições de todos os operadores, da mais antiga para a mais nova,
  * filtrando por estado (pendente ou falha), tipo e criador.

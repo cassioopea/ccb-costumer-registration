@@ -424,6 +424,20 @@ export function normalizarLogin(login: string): string {
   return login.trim().toLowerCase();
 }
 
+/**
+ * RN04 (US-11): Lógica de decidibilidade extraída e compartilhada.
+ * Uma requisição é decidível/tratável pelo operador logado se estiver aguardando ação
+ * (pendente ou falha) e ele NÃO for o criador (maker-checker).
+ */
+export function requisicaoDecidivelPor(
+  estado: EstadoRequisicao,
+  requisitante: string,
+  ator: string,
+): boolean {
+  if (estado !== "pendente" && estado !== "falha") return false;
+  return normalizarLogin(requisitante) !== normalizarLogin(ator);
+}
+
 /* ------------------------------------------------------------------ */
 /* Contratos dos endpoints do BFF                                      */
 /* ------------------------------------------------------------------ */

@@ -12,11 +12,11 @@ import {
   ThumbsUp,
   XCircle,
 } from "lucide-react";
-import {
   ROTULO_TIPO_ACAO,
   TIPOS_ACAO_SOD,
   ehTipoLote,
   normalizarLogin,
+  requisicaoDecidivelPor,
 } from "@cadastro-lote/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -201,7 +201,8 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
   const [excecoes, setExcecoes] = useState<Record<string, string>>({});
 
   const req = detalhe?.requisicao ?? null;
-  const minhaRequisicao = !!req && req.requisitante === meuLogin;
+  const decidivelPorMim = req ? requisicaoDecidivelPor(req.estado, req.requisitante, meuLogin) : false;
+  const minhaRequisicao = !!req && normalizarLogin(req.requisitante) === meuLogin;
   const ehLote = !!req && ehTipoLote(req.tipo);
 
   const totalExcecoes = Object.keys(excecoes).length;
@@ -285,6 +286,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
     await recarregarDetalhe(req.id);
     setFase(null);
     setMotivo("");
+    window.dispatchEvent(new Event("sod:decisao"));
     void carregar();
   }
 
@@ -311,6 +313,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
     }
     await recarregarDetalhe(req.id);
     setFase(null);
+    window.dispatchEvent(new Event("sod:decisao"));
     void carregar();
   }
 
@@ -334,6 +337,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
     await recarregarDetalhe(req.id);
     setFase(null);
     setMotivo("");
+    window.dispatchEvent(new Event("sod:decisao"));
     void carregar();
   }
 
@@ -626,19 +630,21 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                 placar={detalhe?.placar}
                 placarPorTipo={detalhe?.placarPorTipo}
                 marcacao={
-                  ehLote && req.estado === "pendente" && !minhaRequisicao
+                  ehLote && req.estado === "pendente" && decidivelPorMim
                     ? { excecoes, onMarcar: marcarExcecao }
                     : undefined
                 }
                 acoesFalha={
                   ehLote && req.estado === "falha"
                     ? {
-                        isMinhaRequisicao: minhaRequisicao,
+                        isMinhaRequisicao: !decidivelPorMim,
                         onRetry: async (itemId) => {
                           setFase("reprocessando");
                           try {
                             await reprocessarItemLote(req.id, itemId);
                             await recarregarDetalhe(req.id);
+                            window.dispatchEvent(new Event("sod:decisao"));
+                            void carregar();
                           } catch (e) {
                             if (e instanceof SessaoExpiradaError) {
                               void carregar();
@@ -654,6 +660,8 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                           try {
                             await descartarItemLote(req.id, itemId, motivo);
                             await recarregarDetalhe(req.id);
+                            window.dispatchEvent(new Event("sod:decisao"));
+                            void carregar();
                           } catch (e) {
                             if (e instanceof SessaoExpiradaError) {
                               void carregar();
@@ -672,7 +680,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
               {/* Decisão — só requisição pendente de OUTRO operador */}
               {req.estado === "pendente" && (
                 <div className="border-t border-border pt-4">
-                  {minhaRequisicao ? (
+                  {!decidivelPorMim ? (
                     <>
                       <div className="flex gap-2">
                         <Button disabled>
@@ -776,7 +784,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
               {/* Retry / Descarte — requisição em falha de OUTRO operador */}
               {req.estado === "falha" && (
                 <div className="border-t border-border pt-4">
-                  {minhaRequisicao ? (
+                  {!decidivelPorMim ? (
                     <>
                       <div className="flex gap-2">
                         <Button disabled>

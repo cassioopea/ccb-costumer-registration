@@ -1455,6 +1455,7 @@ export function criarSodServico(
     itemPendentePorDocumento: repo.itemPendentePorDocumento.bind(repo),
 
     listarRequisicoes: repo.listarRequisicoes.bind(repo),
+    contarPendenciasBadge: repo.contarPendenciasBadge.bind(repo),
     listarRequisitantes: repo.requisitantes.bind(repo),
     listarAuditoria: repo.listarEventos.bind(repo),
     /**

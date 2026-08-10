@@ -336,8 +336,16 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   Observação: validação de integração real em HML PENDENTE — entregue no sábado,
   fora da janela Sinqia (mesmo caso das US-03..08); sem infra de teste de frontend
   no repo (registrado desde a US-02) — fluxo do modal coberto pelos contratos do BFF.
-- US-10: `pendente`
-- US-11: `pendente`
+- US-10: `entregue` — 2026-08-10
+  Decisões de implementação: adicionado endpoint de retry/descarte no backend utilizando as restrições da máquina de estado já construídas. O histórico numera cada transição e tentativa rejeitada para contagem precisa de tentativas (RN06/RN07). Restrição visual na UI com bloqueio do reprocessamento por dependências não executadas no lote (RN04). Validação estrita de concorrência garantindo consistência em retry vs descarte simultâneos (Cenário 4).
+- US-11: `entregue` — 2026-08-09
+  Decisões de implementação: lógica de decidibilidade (RN04) extraída de forma unificada em
+  `requisicaoDecidivelPor` no `sod.schema.ts`; endpoint `GET /api/sod/pendencias-badge` usando
+  consulta `SELECT COUNT(*)` otimizada pelo índice `idx_sod_req_estado`; mecanismo de polling leve
+  (30 segundos, hook `useBadgePendencias` no Topbar) e atualização imediata via dispatch de evento
+  customizado `sod:decisao` nas funções de resposta das ações do `PainelPendencias.tsx`. Lotes
+  contam como uma unidade unificada na aprovação. Validado via testes unitários/integração do
+  endpoint, assegurando distinção de decidibilidade maker-checker.
 - US-12: `pendente — aguarda aceite do negócio (ação 4)`
 
 ## 5. Regras técnicas transversais

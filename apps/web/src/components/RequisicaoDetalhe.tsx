@@ -364,21 +364,39 @@ export function RequisicaoDetalhe({
 
       {/* Histórico de transições (trilha de auditoria) */}
       <section>
-        <h3 className="mb-2 flex items-center gap-1.5 text-subheading text-foreground">
-          <History className="h-4 w-4" />
-          Histórico
-        </h3>
-        <ol className="space-y-2">
-          {historico.map((ev) => (
-            <li key={ev.id} className="rounded-lg border border-border px-3 py-2">
-              <p>{descreverEvento(ev)}</p>
-              <p className="mt-0.5 text-caption text-muted-foreground">
-                {formatarTs(ev.ts)} · {ev.ator}
-                {typeof ev.detalhe.motivo === "string" && <> · motivo: {ev.detalhe.motivo}</>}
-              </p>
-            </li>
-          ))}
-        </ol>
+        {(() => {
+          let numTentativa = 1;
+          const historicoAnotado = historico.map((ev) => {
+            const isTentativa =
+              ev.acao === "tentativa_rejeitada" ||
+              (ev.acao === "transicao_estado" && (ev.detalhe as any).para === "aprovada/executando");
+            return { ev, numTentativa: isTentativa ? numTentativa++ : null };
+          });
+          const totalTentativas = numTentativa - 1;
+
+          return (
+            <>
+              <h3 className="mb-2 flex items-center gap-1.5 text-subheading text-foreground">
+                <History className="h-4 w-4" />
+                Histórico {totalTentativas > 0 && <span className="text-muted-foreground font-normal text-sm">({totalTentativas} {totalTentativas === 1 ? 'tentativa' : 'tentativas'})</span>}
+              </h3>
+              <ol className="space-y-2">
+                {historicoAnotado.map(({ ev, numTentativa }) => (
+                  <li key={ev.id} className="rounded-lg border border-border px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      {numTentativa && <Badge variant="outline" className="text-[10px]">Tentativa {numTentativa}</Badge>}
+                      <p>{descreverEvento(ev)}</p>
+                    </div>
+                    <p className="mt-0.5 text-caption text-muted-foreground">
+                      {formatarTs(ev.ts)} · {ev.ator}
+                      {typeof ev.detalhe.motivo === "string" && <> · motivo: {ev.detalhe.motivo}</>}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </>
+          );
+        })()}
       </section>
     </div>
   );
@@ -1080,14 +1098,29 @@ function LoteItens({
                         ) : item.estado === "falha" && acoesFalha && acoesFalha.isMinhaRequisicao ? (
                           <span className="text-caption text-muted-foreground" title="Apenas outro operador pode decidir a falha">Sem permissão</span>
                         ) : item.estado === "falha" && acoesFalha && !acoesFalha.isMinhaRequisicao ? (
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => acoesFalha.onRetry(item.id)}
-                            >
-                              Reprocessar
-                            </Button>
+                          <div className="flex justify-end gap-2 items-center">
+                            {(() => {
+                              const pai = item.dependeDeItemId ? itens.find(i => i.id === item.dependeDeItemId) : null;
+                              const bloqueadoPeloPai = pai && pai.estado !== "executada";
+                              return (
+                                <>
+                                  {bloqueadoPeloPai && (
+                                    <span className="text-[10px] text-[var(--destructive)] max-w-32 text-right leading-tight" title={`Bloqueado pelo item ${pai.ordem}`}>
+                                      Tomador pendente/falha
+                                    </span>
+                                  )}
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={bloqueadoPeloPai}
+                                    title={bloqueadoPeloPai ? `Bloqueado pelo item ${pai.ordem} que não está executado` : "Reprocessar item em falha"}
+                                    onClick={() => acoesFalha.onRetry(item.id)}
+                                  >
+                                    Reprocessar
+                                  </Button>
+                                </>
+                              );
+                            })()}
                             <Button
                               variant="outline"
                               size="sm"
