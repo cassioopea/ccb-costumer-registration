@@ -149,8 +149,12 @@ export function ProductTour({ onConcluirTudo }: { onConcluirTudo: () => void }) 
     /** Ancora o passo `i` (já preparado) e salva a posição. */
     function aplicar(i: number, semAlvo: boolean) {
       const passo = passos[i];
+      // O passo é trocado NO LUGAR e publicado por setConfig. Não use
+      // `setSteps` aqui: ele chama `resetState()` por dentro, o que apaga a
+      // referência do popover ativo — o popover anterior fica órfão no DOM e
+      // a tela acumula um card por passo visitado. `setConfig` não mexe no
+      // estado. (Verificado no driver.js 1.8.)
       steps[i] = montarStep(passo, semAlvo);
-      d.setSteps(steps);
       d.setConfig({
         ...d.getConfig(),
         stagePadding: passo.padding ?? PADDING_PADRAO,
