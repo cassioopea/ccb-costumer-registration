@@ -349,6 +349,82 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
 - US-12: `entregue` — 2026-08-09
   Decisões de implementação: adicionado aviso de impacto (consulta dinâmica ao backend durante a aprovação, não na submissão, mantendo a integridade no banco); reaproveitada arquitetura em massa da US-06 para suportar alteração de situação em lote (`situacao_tomador_lote`), reusando o executor individual pelo mapeamento de tipo; bloqueio de duplicidade unificado; e UI de detalhe customizada em `PayloadSituacaoTomador`. A métrica de extensibilidade se validou: o custo de integração do novo modelo foi muito reduzido (basicamente registrar o tipo, o handler em `execucao.ts`, o parser de payload no Frontend e a configuração do Lote no `sod.schema.ts`), comprovando o isolamento do motor da US-04. A Onda 2 se encerra aqui!
 
+### Validação de integração real em HOMOLOGAÇÃO — 2026-08-10 (US-01..US-12)
+
+Executada na janela comercial (segunda-feira, 09:00–11:00) contra
+`https://<HOST_HML>` (BJ21M05), com DOIS operadores Sinqia distintos.
+Relatório completo em `RELATORIO-HOMOLOG-SOD.md`; matriz, evidências e inventário
+de entidades em `test-artifacts/`. **Isto encerra a pendência registrada nas
+US-03..US-09 ("validação de integração real em HML PENDENTE").**
+
+**Resultado: 73 de 75 cenários PASSOU.** O motor da esteira está validado ponta a
+ponta contra a Sinqia real: máquina de estados, maker-checker (violação de SoD
+bloqueada e auditada em TODOS os tipos), execução B2' na sessão do aprovador,
+auditoria append-only (199 eventos), duplicidade nas três dimensões, lotes com
+decisão bidirecional e execução sequencial, encadeamento tomador→proposta com
+propagação de exceção, cálculo oficial na execução, bloqueio unificado por
+proposta (individual↔lote), retry/descarte com liberação de bloqueio, badge e
+alteração de situação (individual e massa). Flags devolvidas para INATIVAS ao
+final.
+
+**Bug reportado da US-08 (movimentação não executa na aprovação): NÃO
+REPRODUZIU** em 6 caminhos (API caminho feliz, destino Cancelado, etapa adiante,
+UI, item de lote, retry) — todos executaram na Sinqia. Hipóteses descartadas com
+evidência: falta de `incluirOcorrencia` (V1/V2 moveram 20050→20056 e 20052→20053
+só com `transfStatus`), eleição errada da etapa vigente, payload incompleto,
+tipo sem executor. **Explicações que sobrevivem, nenhuma delas defeito de
+código:** (a) aprovação tentada FORA da janela Sinqia — a pré-verificação devolve
+`indisponivel` e a rota responde 502 mantendo a requisição `pendente` (a US-08 foi
+entregue num sábado); (b) o motor da Sinqia avança etapas SOZINHO (medimos
+20051→20052 em minutos), então a etapa pode divergir entre requisição e aprovação
+→ `falha` com causa `divergencia_externa`, sem mover nada. Nada a corrigir na
+US-08 sem uma requisição concreta do report (estado + `resultado.causa`).
+
+**Defeitos encontrados.** Quatro foram corrigidos no mesmo dia, cada um em um
+ciclo próprio com aprovação do PM, verificados na UI contra homologação:
+`b7f6408` (item 1), `7291490` (item 4), `49cec9d` (item 2) e `311ace5` (item 8,
+US-11). Seguem **ABERTOS os itens 3, 5, 6 e 7**. Suíte mockada: 157/157 após as
+correções.
+1. **[CORRIGIDO em b7f6408] [ALTO] US-12** — `RequisicaoDetalhe.tsx:796` mapeia a situação INVERTIDA
+   (1→"Inativo", 2→"Ativo", 3→"Em Análise"): o aprovador lê o OPOSTO do que será
+   executado. Correção: usar `situacaoLabel()` do shared (fonte única).
+2. **[CORRIGIDO em 49cec9d] [MÉDIO] US-12** — não havia aviso de impacto ANTES da decisão
+   (`RequisicaoDetalhe.tsx:814` só renderiza com estado `executada`/`falha`; o
+   `propostasAfetadas` nasce na execução). A RN pede o aviso na decisão.
+3. **[ABERTO] [MÉDIO] US-07** — o lote COMPOSTO não aceita tomador novo: `emissoes.ts:201`
+   exige `ID_Sinqia` em toda linha, e tomador que só será criado pelo lote não tem
+   esse código. O motor foi validado com ID sintético; o uso real está BLOQUEADO.
+   A fixture do teste mockado usava `"333-6"` para "Tomador Novo N" e mascarou o
+   caso.
+4. **[CORRIGIDO em 7291490] [MÉDIO] US-12** — `SituacaoClientes.tsx:345` não trata o desvio de aprovação:
+   lê `{jobId}` (que não vem) e abre SSE em `/api/situacao/stream/undefined` → 404
+   → operador vê "Conexão de progresso (SSE) caiu" embora a requisição TENHA sido
+   criada. Somado a isso, `/api/env` não expõe as flags de situação.
+5. **[ABERTO] [BAIXO]** textos de decisão dizem sempre "cadastro do tomador", em qualquer
+   tipo — contribui para a leitura errada do item da US-08.
+6. **[ABERTO] [MÉDIO, pré-existente] US-10** — `us10-retry.test.ts` está quebrado (0 de 7)
+   e fora do `npm test`: escrito contra APIs inexistentes, com `@ts-nocheck`
+   escondendo os erros. A US-10 não tinha cobertura automatizada; esta validação
+   em HML é a primeira evidência real. Reescrever no padrão do `us09-…`.
+7. **[ABERTO] [BAIXO, pré-existente]** `npm run typecheck` falha com 4 erros em
+   `us12-situacao.test.ts` (um deles injeta `alterarSituacaoClienteFn`, que não
+   existe em `RegisterRoutesDeps`).
+8. **[CORRIGIDO em 311ace5] [BAIXO] US-11** (achado pelo PM na conferência da tela) — o badge conta
+   pendentes + falhas, mas a fila abre em `Estado = Pendentes` e o estado vazio
+   diz "Tudo em dia!" com o badge em 1: as duas frases se contradizem na mesma
+   tela e nada indica que basta trocar o filtro. Correção proposta: estender
+   `GET /api/sod/pendencias-badge` para `{count, pendentes, falhas}` (uma
+   consulta, mantendo `count`) e mostrar os dois números na fila — recomendada a
+   forma de dois chips clicáveis (`Pendentes N` | `Falhas N`) no lugar do
+   seletor de estado.
+
+**Para as próximas sessões:** o harness `@homolog` fica em
+`test-artifacts/harness/` — não é referenciado por script npm, exige `.env.test`
+e a janela Sinqia, e redige os logins em toda saída. `00-smoke.mjs` aborta se o
+ambiente não for HML. Fatos úteis do ambiente: propostas criadas pela ferramenta
+nascem em 20010 e o motor as leva a 20050 sozinho; de 20050 só há 20051 e 20056
+(ambos exigindo observação); `npm run sod:flag` mascara o exit code de erro do CLI.
+
 ## 5. Regras técnicas transversais
 
 - **Stack:** frontend React/Vite; backend BFF sobre a API Sinqia; persistência **SQLite já
