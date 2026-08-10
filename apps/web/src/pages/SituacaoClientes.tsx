@@ -674,6 +674,7 @@ export function SituacaoClientes({
                 )}
               </Button>
               <Button
+                data-tour="tomadores-alterar-situacao"
                 onClick={() => {
                   setAlterarConfirmText("");
                   setAlterarOpen(true);
@@ -716,7 +717,7 @@ export function SituacaoClientes({
           </CardContent>
         ) : (
           <CardContent className="space-y-4">
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" data-tour="tomadores-filtro">
               <Label htmlFor="sit-filtro">Filtrar por número do tomador, nome ou CPF/CNPJ</Label>
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -760,7 +761,7 @@ export function SituacaoClientes({
               </p>
             ) : (
               <>
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3" data-tour="tomadores-selecao">
                   <Button
                     variant="outline"
                     onClick={toggleFiltrados}
@@ -857,6 +858,9 @@ export function SituacaoClientes({
                             <TableCell>
                               <div className="flex items-center gap-1">
                                 <Button
+                                  /* O tour ancora na PRIMEIRA linha — as demais
+                                     repetem o mesmo gesto. */
+                                  data-tour={i === 0 ? "tomadores-btn-propostas" : undefined}
                                   variant="outline"
                                   size="sm"
                                   className="h-7 px-2 text-caption"
@@ -869,6 +873,7 @@ export function SituacaoClientes({
                                 </Button>
                                 {onEditar && (
                                   <Button
+                                    data-tour={i === 0 ? "tomadores-btn-editar" : undefined}
                                     variant="ghost"
                                     size="sm"
                                     className="h-7 px-2 text-caption"

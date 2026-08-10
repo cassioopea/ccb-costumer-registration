@@ -25,7 +25,7 @@ export function ValorOriginado({ valor }: { valor: ValorOriginadoResumo }) {
       : null;
 
   return (
-    <Card className="reveal">
+    <Card className="reveal" data-tour="inicio-valor">
       <CardHeader>
         <div className="text-caption font-medium uppercase tracking-label text-wine-500">
           Valor

@@ -48,7 +48,7 @@ export function FunilConversao({
       : null;
 
   return (
-    <Card className="reveal reveal-delay-3">
+    <Card className="reveal reveal-delay-3" data-tour="inicio-funil">
       <CardHeader>
         <div className="text-caption font-medium uppercase tracking-label text-wine-500">
           Conversão

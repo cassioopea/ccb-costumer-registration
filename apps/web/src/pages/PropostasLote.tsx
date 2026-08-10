@@ -829,7 +829,9 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
             criar. O cálculo (calcProsp) não grava nada na Sinqia.
           </p>
         </div>
-        <PipelineSteps etapas={etapas} />
+        <div data-tour="lote-pipeline">
+          <PipelineSteps etapas={etapas} />
+        </div>
       </div>
 
       {error && (
@@ -1672,6 +1674,7 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
               : null
           }
           cta={ctaResumo}
+          dataTour="lote-resumo"
         />
       )}
 

@@ -85,6 +85,7 @@ import {
 import { exportPainelCsv } from "@/lib/export-csv";
 import { formatBRL, formatCpf, formatDataAAAAMMDD } from "@/lib/format";
 import { SessaoExpiradaError, useSession } from "@/lib/session";
+import { useAcaoTour } from "@/lib/tour";
 
 /** Filtros digitados (strings; convertidos no envio). */
 interface FiltrosForm {
@@ -791,6 +792,26 @@ export function PainelPropostas({
     [filas, filaSelecionada],
   );
 
+  /**
+   * Ação de tela para o tour: os passos da fila precisam de uma etapa aberta.
+   * Espera as filas chegarem (a carga só começa quando o painel fica ativo) e
+   * abre a primeira COM propostas — sem mexer numa fila que o operador já
+   * tenha escolhido.
+   */
+  const filasRef = useRef(filas);
+  filasRef.current = filas;
+  const filaSelecionadaRef = useRef(filaSelecionada);
+  filaSelecionadaRef.current = filaSelecionada;
+  useAcaoTour("painel.selecionarPrimeiraFila", async () => {
+    if (filaSelecionadaRef.current !== null) return;
+    const limite = Date.now() + 4000;
+    while (!filasRef.current?.length && Date.now() < limite) {
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    const primeira = (filasRef.current ?? []).find((f) => f.qtFilhos > 0);
+    if (primeira && filaSelecionadaRef.current === null) selecionarFila(primeira.nrStatus);
+  });
+
   /** Nome da etapa sem o sufixo entre parênteses — ele vai para o title. */
   const nomeEtapa = (ds: string) => ds.replace(/\s*\(.*\)\s*$/, "");
 
@@ -964,7 +985,7 @@ export function PainelPropostas({
       </Card>
 
       {/* Listagem — a tabela é a protagonista; filtros recolhíveis no header */}
-      <Card className="reveal reveal-delay-2">
+      <Card className="reveal reveal-delay-2" data-tour="painel-fila">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -1176,7 +1197,7 @@ export function PainelPropostas({
                   <TableHead className="text-right">Valor</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Entrada</TableHead>
-                  <TableHead className="text-right">
+                  <TableHead className="text-right" data-tour="painel-sla">
                     <span className="inline-flex items-center gap-1">
                       SLA
                       <Hint id="painel_sla" />
@@ -1293,7 +1314,14 @@ export function PainelPropostas({
                           {p.nrContra ?? "—"}
                         </TableCell>
                         <TableCell>
-                          <span className="flex items-center gap-2">
+                          {/* O tour ancora na PRIMEIRA linha da fila — as demais
+                              repetem os mesmos gestos. */}
+                          <span
+                            className="flex items-center gap-2"
+                            data-tour={
+                              p.nrProsp === propostas[0]?.nrProsp ? "painel-mover-linha" : undefined
+                            }
+                          >
                             {/* Mover direto mora no lote (checkbox + CTA); com a
                                 Esteira de Aprovação ativa, o gesto INDIVIDUAL
                                 cria uma requisição (US-08). */}
