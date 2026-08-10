@@ -82,6 +82,8 @@ export interface EnvInfo {
     criacaoPropostaLote?: boolean;
     movimentacaoProposta?: boolean;
     movimentacaoPropostaMassa?: boolean;
+    situacaoTomador?: boolean;
+    situacaoTomadorLote?: boolean;
   };
 }
 
@@ -644,10 +646,25 @@ export interface SituacaoRowResult {
   detail?: string;
 }
 
+/**
+ * Inicia a alteração de situação.
+ *
+ * Duas respostas possíveis, e quem chama precisa distinguir: fluxo DIRETO
+ * devolve `jobId` (progresso por SSE); com a Esteira de Aprovação ativa (US-12)
+ * devolve `aprovacao: true` + a requisição pendente criada, e **não existe
+ * jobId** — abrir o SSE nesse caso pede `/api/situacao/stream/undefined` e o
+ * operador vê um erro de backend, apesar de a requisição ter sido criada.
+ */
 export async function startAlterarSituacao(
   cdSituacao: number,
   alvos: SituacaoAlvo[],
-): Promise<{ jobId: string; total: number; env: string }> {
+): Promise<{
+  jobId?: string;
+  total?: number;
+  env: string;
+  aprovacao?: boolean;
+  requisicao?: { id: string; estado: string; criadoEm: string; totalItens?: number };
+}> {
   const res = await fetch("/api/situacao", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

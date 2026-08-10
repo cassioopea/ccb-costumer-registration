@@ -438,6 +438,73 @@ describe("US-05 — Cenário 4: auditoria da mudança de flag (RN05)", () => {
   });
 });
 
+describe("US-05/US-12 — a tela de situação precisa LER o corte e reconhecer o desvio", () => {
+  const alvo = {
+    nrCliente: 4242,
+    nome: "Tomador Fixture",
+    documento: "95000000090",
+    situacaoAnterior: "1 — ATIVO",
+  };
+
+  test("/api/env expõe as flags de situação (a UI não tinha como saber do corte)", async () => {
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", false);
+    let envR = (await get("/api/env", null)).json();
+    assert.equal(envR.aprovacao.situacaoTomador, false);
+    assert.equal(envR.aprovacao.situacaoTomadorLote, false);
+
+    flag("situacao_tomador", true);
+    flag("situacao_tomador_lote", true);
+    envR = (await get("/api/env", null)).json();
+    assert.equal(envR.aprovacao.situacaoTomador, true, "a tela precisa exibir o aviso de aprovação");
+    assert.equal(envR.aprovacao.situacaoTomadorLote, true);
+
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", false);
+  });
+
+  test("flag ativa: POST /api/situacao devolve requisição pendente e NENHUM jobId", async () => {
+    flag("situacao_tomador", true);
+
+    const individual = await post("/api/situacao", sidMaria, { cdSituacao: 2, alvos: [alvo] });
+    assert.equal(individual.statusCode, 201, individual.body);
+    assert.equal(individual.json().aprovacao, true);
+    assert.equal(individual.json().requisicao.estado, "pendente");
+    // O contrato que a tela quebrava: sem jobId, abrir o SSE pediria
+    // /api/situacao/stream/undefined e o operador via erro de backend.
+    assert.equal(individual.json().jobId, undefined, "não há job: nada foi enviado à Sinqia");
+
+    flag("situacao_tomador_lote", true);
+    const massa = await post("/api/situacao", sidMaria, {
+      cdSituacao: 2,
+      alvos: [alvo, { ...alvo, nrCliente: 4243, documento: "95000000091" }],
+    });
+    assert.equal(massa.statusCode, 201, massa.body);
+    assert.equal(massa.json().aprovacao, true);
+    assert.equal(massa.json().jobId, undefined);
+
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", false);
+  });
+
+  test("guard centralizado cobre a rota de situação (era a única coberta sem ele)", async () => {
+    // Flag do LOTE ativa e a do individual inativa: uma alteração em massa não
+    // pode vazar pelo caminho direto só porque o desvio olha o tipo individual.
+    flag("situacao_tomador", false);
+    flag("situacao_tomador_lote", true);
+
+    const r = await post("/api/situacao", sidMaria, {
+      cdSituacao: 2,
+      alvos: [alvo, { ...alvo, nrCliente: 4243, documento: "95000000092" }],
+    });
+    assert.equal(r.statusCode, 409, r.body);
+    assert.equal(r.json().code, CODIGO_CORTE_SOD);
+    assert.equal(r.json().tipo, "situacao_tomador_lote");
+
+    flag("situacao_tomador_lote", false);
+  });
+});
+
 describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", () => {
   test("os quatro quadrantes respondem o comportamento esperado", async () => {
     // Quadrante 1: tomador ON → BFF cria requisição; /api/env expõe o corte.

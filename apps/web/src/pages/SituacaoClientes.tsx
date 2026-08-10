@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Download,
   FileSearch,
+  Hourglass,
   ListChecks,
   Loader2,
   Pencil,
@@ -54,6 +55,7 @@ import { IS_PROD } from "@/components/Topbar";
 import { cn } from "@/lib/utils";
 import {
   getDadosProposta,
+  getEnv,
   getPersonas,
   listarPropostasCliente,
   listarTodosClientes,
@@ -76,7 +78,7 @@ import {
   useSession,
 } from "@/lib/session";
 
-type Phase = "idle" | "carregando" | "carregado" | "alterando" | "done";
+type Phase = "idle" | "carregando" | "carregado" | "alterando" | "done" | "requisitada";
 
 /** Teto de linhas renderizadas. Filtrar é barato; desenhar 20 mil <tr> não é. */
 const MAX_LINHAS_VISIVEIS = 200;
@@ -130,6 +132,22 @@ export function SituacaoClientes({
     naoEnviado: 0,
   });
   const [results, setResults] = useState<SituacaoRowResult[]>([]);
+  /**
+   * Esteira de Aprovação (SoD, US-12): com a flag do tipo ativa, a submissão
+   * cria uma requisição pendente em vez de alterar na Sinqia. O backend é a
+   * fonte da verdade; isto adapta aviso e desfecho na tela.
+   */
+  const [aprovacaoOn, setAprovacaoOn] = useState(false);
+  const [requisicaoCriada, setRequisicaoCriada] = useState<{ id: string; total: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    getEnv()
+      .then((e) => setAprovacaoOn(!!e.aprovacao?.situacaoTomador || !!e.aprovacao?.situacaoTomadorLote))
+      .catch(() => {
+        /* sem resposta, assume fluxo direto — o backend decide de verdade */
+      });
+  }, []);
   /** Modal de alteração de situação (a ação saiu dos cards e virou CTA). */
   const [alterarOpen, setAlterarOpen] = useState(false);
   const [alterarConfirmText, setAlterarConfirmText] = useState("");
@@ -330,6 +348,7 @@ export function SituacaoClientes({
     setAlterarOpen(false);
     setAlterarConfirmText("");
     setError(null);
+    setRequisicaoCriada(null);
     setResults([]);
     setProgress({ processed: 0, total: totalSelecionados, success: 0, error: 0, naoEnviado: 0 });
     setPhase("alterando");
@@ -342,8 +361,32 @@ export function SituacaoClientes({
     }));
 
     try {
-      const { jobId, total } = await startAlterarSituacao(cdSituacao, alvos);
-      setProgress((p) => ({ ...p, total }));
+      const r = await startAlterarSituacao(cdSituacao, alvos);
+
+      /*
+       * Esteira de Aprovação ativa (US-12): a resposta traz a requisição
+       * pendente e NÃO traz jobId — não há job para acompanhar, porque nada foi
+       * enviado à Sinqia. Abrir o SSE aqui pedia
+       * `/api/situacao/stream/undefined` (404) e o operador via "Conexão de
+       * progresso (SSE) caiu" como se tivesse falhado, embora a requisição
+       * estivesse criada.
+       */
+      if (r.aprovacao && r.requisicao) {
+        setRequisicaoCriada({ id: r.requisicao.id, total: alvos.length });
+        setPhase("requisitada");
+        limparSelecao();
+        return;
+      }
+      if (!r.jobId) {
+        setError(
+          "A alteração não retornou um identificador de progresso. Confira em “Requisições” se uma requisição foi criada antes de tentar de novo.",
+        );
+        setPhase("carregado");
+        return;
+      }
+
+      const { jobId, total } = r;
+      setProgress((p) => ({ ...p, total: total ?? alvos.length }));
       streamSituacao(jobId, {
         onRow: (row) => setResults((prev) => [...prev, row]),
         onProgress: (p) => setProgress({ ...p, naoEnviado: p.naoEnviado ?? 0 }),
@@ -419,6 +462,33 @@ export function SituacaoClientes({
         </div>
       )}
 
+      {/* Esteira de Aprovação ativa para este tipo de ação (US-12) */}
+      {aprovacaoOn && (
+        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3 text-body text-accent-foreground">
+          <Hourglass className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            <strong>Sob aprovação (SoD):</strong> a alteração de situação não é enviada direto à
+            Sinqia — a submissão cria uma requisição pendente, que um segundo operador precisa
+            aprovar. Acompanhe em "Requisições".
+          </span>
+        </div>
+      )}
+
+      {/* Requisição criada (nada foi alterado na Sinqia) */}
+      {phase === "requisitada" && requisicaoCriada && (
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--success)] bg-[var(--success)]/10 px-4 py-3 text-sm">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--success)]" />
+          <span>
+            Requisição <strong>pendente</strong> criada para{" "}
+            {requisicaoCriada.total === 1
+              ? "1 tomador"
+              : `${requisicaoCriada.total} tomadores`}{" "}
+            — nada foi alterado na Sinqia ainda. Um segundo operador precisa aprovar.
+            <br />
+            <span className="text-muted-foreground">Requisição {requisicaoCriada.id}</span>
+          </span>
+        </div>
+      )}
 
       {/* Progresso */}
       {(phase === "alterando" || phase === "done") && progress.total > 0 && (

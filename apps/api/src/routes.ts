@@ -146,6 +146,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
       criacaoPropostaLote: aprovacaoAtivaFn("proposta.criar_lote"),
       movimentacaoProposta: aprovacaoAtivaFn("proposta.movimentar"),
       movimentacaoPropostaMassa: aprovacaoAtivaFn("proposta.movimentar_massa"),
+      // US-12: sem estas duas a tela de situação não tinha como saber que a
+      // ação está sob aprovação — ela descobria só na resposta do POST.
+      situacaoTomador: aprovacaoAtivaFn("situacao_tomador"),
+      situacaoTomadorLote: aprovacaoAtivaFn("situacao_tomador_lote"),
     },
   }));
 
@@ -823,6 +827,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
         return responderErroSod(reply, e);
       }
     }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — era a única rota coberta sem o guard. O tipo guardado é
+    // o da ação em curso, para que o lote sob aprovação não vaze pelo caminho
+    // direto quando só a flag dele estiver ativa.
+    const tipoSituacao = alvos.length === 1 ? "situacao_tomador" : "situacao_tomador_lote";
+    if (guardarExecucaoDireta(tipoSituacao, reply, aprovacaoAtivaFn)) return;
 
     const jobId = startSituacaoJob({
       alvos,
