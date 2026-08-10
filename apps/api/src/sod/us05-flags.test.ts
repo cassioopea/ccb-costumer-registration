@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
-import type { CalcProspResult } from "./../sinqia-client.js";
+import type { CalcProspResult, PropostaPainel } from "./../sinqia-client.js";
 import type { CriacaoItem, CriacaoRowResult } from "./../criacao-job.js";
 
 /**
@@ -57,8 +57,12 @@ let sidAna: string;
 const aprovacaoAtivaDb = (tipo: Parameters<typeof aprovacaoAtiva>[0]) =>
   servico.flagAtiva(tipo);
 
-/** Atalho de operação: muda a flag como o CLI faz (domínio → repo auditado). */
-function flag(tipo: "tomador.cadastrar" | "proposta.criar", ativa: boolean) {
+/**
+ * Atalho de operação: muda a flag como o CLI faz (domínio → repo auditado).
+ * O tipo vem do próprio contrato do domínio — restringir a uma união local
+ * fazia o arquivo compilar só enquanto os testes falassem de dois tipos.
+ */
+function flag(tipo: Parameters<typeof servico.definirFlag>[0], ativa: boolean) {
   return servico.definirFlag(tipo, ativa, "seguranca.ops");
 }
 
@@ -153,6 +157,40 @@ before(async () => {
   });
   await registerSodRoutes(app, servico, {
     verificarSessaoSinqiaFn: async () => "valida",
+    // Impacto da US-12: uma proposta em cada categoria — em andamento,
+    // concluída e cancelada — para provar que só a primeira entra no aviso.
+    consultarPropostaPainelFn: async () => ({
+      httpStatus: 200,
+      propostas: [
+        {
+          nrProsp: 9001,
+          nrStatus: 20050,
+          dsStatus: "Contrato em Assinatura",
+          nrWf: 1,
+          dtEntrad: 20260810,
+          hrEntrad: 900,
+          nrCpfCnpj: "95000000090",
+        },
+        {
+          nrProsp: 9002,
+          nrStatus: 20053,
+          dsStatus: "Contrato Finalizado no Portal",
+          nrWf: 1,
+          dtEntrad: 20260810,
+          hrEntrad: 901,
+          nrCpfCnpj: "95000000090",
+        },
+        {
+          nrProsp: 9003,
+          nrStatus: 20056,
+          dsStatus: "Cancelado",
+          nrWf: 1,
+          dtEntrad: 20260810,
+          hrEntrad: 902,
+          nrCpfCnpj: "95000000090",
+        },
+      ] as PropostaPainel[],
+    }),
     cadastrarClienteFn: async (token) => {
       execucoesTomador.push({ token });
       return { httpStatus: 200, envelope: null, analysis: analysisOk };
@@ -485,6 +523,51 @@ describe("US-05/US-12 — a tela de situação precisa LER o corte e reconhecer 
 
     flag("situacao_tomador", false);
     flag("situacao_tomador_lote", false);
+  });
+
+  test("impacto ANTES da decisão: conta só propostas em andamento (US-12)", async () => {
+    flag("situacao_tomador", true);
+
+    // Inativação (cdSituacao 2) → o aprovador precisa do aviso. Documento
+    // próprio: o teste anterior deixou uma pendente para `alvo` e a guarda de
+    // duplicidade recusaria uma segunda igual.
+    const inativar = await post("/api/situacao", sidMaria, {
+      cdSituacao: 2,
+      alvos: [{ ...alvo, nrCliente: 4245, documento: "95000000094" }],
+    });
+    assert.equal(inativar.statusCode, 201, inativar.body);
+    const idInativar = inativar.json().requisicao.id as string;
+    const imp = (await get(`/api/sod/requisicoes/${idInativar}/impacto`, sidJoao)).json();
+    assert.equal(imp.aplicavel, true);
+    // O fixture do painel devolve 3 propostas: 20050 (aguardando), 20053
+    // (concluída) e 20056 (cancelada) — só a primeira está "em andamento".
+    assert.equal(imp.totalEmAndamento, 1, "concluída e cancelada não entram no aviso");
+    assert.equal(imp.tomadores[0].propostas[0].nrStatus, 20050);
+    assert.equal(imp.parcial, false);
+
+    // Ativação (cdSituacao 1) não tem impacto a avisar.
+    const ativar = await post("/api/situacao", sidMaria, {
+      cdSituacao: 1,
+      alvos: [{ ...alvo, nrCliente: 4244, documento: "95000000093" }],
+    });
+    const impAtivar = (
+      await get(`/api/sod/requisicoes/${ativar.json().requisicao.id}/impacto`, sidJoao)
+    ).json();
+    assert.equal(impAtivar.aplicavel, false);
+    assert.equal(impAtivar.motivo, "ativacao");
+
+    // Tipo sem impacto responde sem erro (a UI pode chamar sem saber o tipo).
+    const req = await post("/api/sod/requisicoes", sidMaria, {
+      tipo: "tomador.cadastrar",
+      payload: { request: { cliente: {} } },
+    });
+    const impOutro = (
+      await get(`/api/sod/requisicoes/${req.json().requisicao.id}/impacto`, sidJoao)
+    ).json();
+    assert.equal(impOutro.aplicavel, false);
+    assert.equal(impOutro.motivo, "tipo_sem_impacto");
+
+    flag("situacao_tomador", false);
   });
 
   test("guard centralizado cobre a rota de situação (era a única coberta sem ele)", async () => {

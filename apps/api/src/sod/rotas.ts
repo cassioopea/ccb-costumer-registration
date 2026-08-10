@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  categoriaDaEtapa,
   criarRequisicaoSodSchema,
   decisaoComExcecoesSchema,
   ehTipoLote,
@@ -14,6 +15,7 @@ import {
   cadastrarCliente,
   calcProsp,
   consultarHistoricoProposta,
+  consultarPropostaPainel,
   consultarStatusTransf,
   transferirStatus,
   verificarSessaoSinqia,
@@ -143,6 +145,27 @@ const auditoriaQuerySchema = z.object({
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
 
+/** Código de situação ATIVO — ativar tomador não tem impacto a avisar. */
+const SITUACAO_ATIVO = 1;
+/**
+ * Tetos da consulta de impacto (US-12): ela roda ao ABRIR o drawer de decisão,
+ * então não pode custar uma varredura. Lote maior devolve `parcial: true` e a UI
+ * diz que a amostra é dos primeiros tomadores.
+ */
+const LIMITE_IMPACTO = 10;
+const MAX_PROPOSTAS_IMPACTO = 50;
+
+/** Cursor "agora" do consultarPropostaPainel (mesma forma do painel). */
+function cursorAgoraImpacto(): { dtConsulta: string; hrConsulta: string; idSentido: "ANT" } {
+  const d = new Date();
+  const pad = (n: number, l = 2) => String(n).padStart(l, "0");
+  return {
+    dtConsulta: `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`,
+    hrConsulta: `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`,
+    idSentido: "ANT",
+  };
+}
+
 /**
  * Serviço padrão do runtime: mesmo arquivo SQLite e ambiente da base local.
  * SINGLETON preguiçoso — o /api/cadastrar (routes.ts) e as rotas SoD
@@ -173,6 +196,8 @@ export interface RegisterSodRoutesDeps {
   consultarHistoricoPropostaFn?: typeof consultarHistoricoProposta;
   alterarSituacaoClienteFn?: typeof alterarSituacaoCliente;
   listarPropostasPorCpfFn?: typeof listarPropostasPorCpf;
+  /** Consulta de impacto da US-12 — traz a ETAPA de cada proposta do tomador. */
+  consultarPropostaPainelFn?: typeof consultarPropostaPainel;
 }
 
 export async function registerSodRoutes(
@@ -192,6 +217,7 @@ export async function registerSodRoutes(
     listarPropostasPorCpfFn: deps.listarPropostasPorCpfFn ?? listarPropostasPorCpf,
   };
   const verificarSessaoSinqiaFn = deps.verificarSessaoSinqiaFn ?? verificarSessaoSinqia;
+  const consultarPropostaPainelFn = deps.consultarPropostaPainelFn ?? consultarPropostaPainel;
   /** Criar requisição — o requisitante é SEMPRE a sessão, nunca o body. */
   app.post("/api/sod/requisicoes", async (req, reply) => {
     const session = exigirSessao(req, reply);
@@ -281,6 +307,113 @@ export async function registerSodRoutes(
     } catch (e) {
       return responderErroSod(reply, e);
     }
+  });
+
+  /**
+   * IMPACTO de uma requisição de situação, ANTES da decisão (US-12).
+   *
+   * A RN pede aviso de impacto na inativação de tomador com proposta em
+   * andamento. O executor só sabia disso DEPOIS de executar (grava
+   * `propostasAfetadas` no resultado), então quem decidia não tinha o dado na
+   * mão. Aqui a consulta é somente leitura, na sessão de quem está decidindo.
+   *
+   * "Em andamento" usa `categoriaDaEtapa` — a MESMA taxonomia do dashboard —
+   * excluindo concluídas, negadas e canceladas. Ativação (cdSituacao 1) não tem
+   * impacto a avisar.
+   */
+  app.get("/api/sod/requisicoes/:id/impacto", async (req, reply) => {
+    const session = exigirSessao(req, reply);
+    if (!session) return;
+
+    const parsed = idParamsSchema.safeParse(req.params);
+    if (!parsed.success) return reply.code(400).send({ error: "Id inválido." });
+
+    const requisicao = servico.obterRequisicao(parsed.data.id);
+    if (!requisicao) return reply.code(404).send({ error: "Requisição não encontrada." });
+    if (requisicao.tipo !== "situacao_tomador" && requisicao.tipo !== "situacao_tomador_lote") {
+      return reply.send({ aplicavel: false, motivo: "tipo_sem_impacto" });
+    }
+
+    const payload = requisicao.payload as { cdSituacao?: unknown; alvo?: Record<string, unknown> };
+    const cdSituacao = typeof payload.cdSituacao === "number" ? payload.cdSituacao : null;
+    if (cdSituacao === null) return reply.send({ aplicavel: false, motivo: "payload_sem_situacao" });
+    if (cdSituacao === SITUACAO_ATIVO) {
+      return reply.send({ aplicavel: false, motivo: "ativacao", cdSituacao });
+    }
+
+    // Alvos: a individual traz um; o lote, um por item.
+    const alvos =
+      requisicao.tipo === "situacao_tomador"
+        ? [payload.alvo ?? {}]
+        : servico
+            .itensDoLote(requisicao.id)
+            .map((i) => (i.payload as { alvo?: Record<string, unknown> }).alvo ?? {});
+
+    const paraConsultar = alvos.slice(0, LIMITE_IMPACTO);
+    const tomadores: Array<{
+      documento: string;
+      nome: string;
+      emAndamento: number;
+      propostas: Array<{ nrProsp: number; nrStatus: number | null; dsStatus: string }>;
+      erro?: string;
+    }> = [];
+
+    for (const alvo of paraConsultar) {
+      const documento = String(alvo.documento ?? "").replace(/\D/g, "");
+      const nome = String(alvo.nome ?? "");
+      if (!documento) {
+        tomadores.push({ documento, nome, emAndamento: 0, propostas: [], erro: "sem documento" });
+        continue;
+      }
+      try {
+        const r = await consultarPropostaPainelFn(
+          session.token,
+          { nrCPFCNPJ: documento },
+          cursorAgoraImpacto(),
+          MAX_PROPOSTAS_IMPACTO,
+        );
+        if (r.httpStatus >= 400) {
+          tomadores.push({
+            documento,
+            nome,
+            emAndamento: 0,
+            propostas: [],
+            erro: `Sinqia HTTP ${r.httpStatus}`,
+          });
+          continue;
+        }
+        const emAndamento = r.propostas.filter((p) => {
+          const cat = categoriaDaEtapa(p.nrStatus, p.dsStatus);
+          return cat !== "concluida" && cat !== "negada" && cat !== "cancelada";
+        });
+        tomadores.push({
+          documento,
+          nome,
+          emAndamento: emAndamento.length,
+          propostas: emAndamento
+            .slice(0, 5)
+            .map((p) => ({ nrProsp: p.nrProsp, nrStatus: p.nrStatus, dsStatus: p.dsStatus })),
+        });
+      } catch (e) {
+        tomadores.push({
+          documento,
+          nome,
+          emAndamento: 0,
+          propostas: [],
+          erro: (e as Error).message,
+        });
+      }
+    }
+
+    return reply.send({
+      aplicavel: true,
+      cdSituacao,
+      totalEmAndamento: tomadores.reduce((s, t) => s + t.emAndamento, 0),
+      tomadores,
+      total: alvos.length,
+      consultados: paraConsultar.length,
+      parcial: alvos.length > paraConsultar.length,
+    });
   });
 
   /** Detalhe INTEGRAL de um item de lote: payload + resposta Sinqia completa. */

@@ -349,6 +349,33 @@ export async function cancelarRequisicao(id: string): Promise<{ requisicao: Requ
   return lerResposta(res, "Falha ao cancelar a requisição");
 }
 
+/**
+ * Impacto de uma requisição de SITUAÇÃO, consultado ANTES da decisão (US-12).
+ * Somente leitura, na sessão de quem decide. `aplicavel: false` quando o tipo
+ * não tem impacto ou quando é uma ATIVAÇÃO (nada a avisar).
+ */
+export interface ImpactoSituacao {
+  aplicavel: boolean;
+  motivo?: "tipo_sem_impacto" | "payload_sem_situacao" | "ativacao";
+  cdSituacao?: number;
+  totalEmAndamento?: number;
+  tomadores?: Array<{
+    documento: string;
+    nome: string;
+    emAndamento: number;
+    propostas: Array<{ nrProsp: number; nrStatus: number | null; dsStatus: string }>;
+    erro?: string;
+  }>;
+  total?: number;
+  consultados?: number;
+  parcial?: boolean;
+}
+
+export async function consultarImpactoSituacao(id: string): Promise<ImpactoSituacao> {
+  const res = await fetch(`/api/sod/requisicoes/${encodeURIComponent(id)}/impacto`);
+  return lerResposta(res, "Falha ao consultar o impacto da alteração");
+}
+
 /* --- Painel de pendências (US-03, lado do aprovador) --- */
 
 /** Contagem do badge (US-11): total decidível + quebra por estado. */

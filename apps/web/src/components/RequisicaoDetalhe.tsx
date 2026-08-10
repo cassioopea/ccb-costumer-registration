@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   Calculator,
   CheckCircle2,
@@ -33,7 +33,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatBRL, formatCpf, formatDataAAAAMMDD } from "@/lib/format";
-import type { EventoAuditoriaSod, ItemLoteResumo, RequisicaoSod } from "@/lib/api";
+import {
+  consultarImpactoSituacao,
+  type EventoAuditoriaSod,
+  type ImpactoSituacao,
+  type ItemLoteResumo,
+  type RequisicaoSod,
+} from "@/lib/api";
 
 /**
  * Esteira de Aprovação (SoD) — corpo do DETALHE de uma requisição, usado nos
@@ -356,6 +362,14 @@ export function RequisicaoDetalhe({
       ) : (
         <PayloadTomador payload={req.payload} />
       )}
+
+      {/*
+        Aviso de impacto ANTES da decisão (US-12): inativar tomador com proposta
+        em andamento é a situação que a RN manda avisar. Vale para a individual e
+        para o lote, por isso vive aqui e não dentro de um renderer de payload.
+      */}
+      {(req.tipo === "situacao_tomador" || req.tipo === "situacao_tomador_lote") &&
+        req.estado === "pendente" && <ImpactoSituacaoAviso requisicaoId={req.id} />}
 
       {/* JSON integral — seção secundária, expansível */}
       <section>
@@ -799,6 +813,94 @@ function PayloadLote({
  * Payload de `situacao_tomador` (US-12): exibe os dados do cliente a ser alterado,
  * a situação nova e, se executado, o impacto (propostas afetadas).
  */
+/**
+ * Consulta e exibe o impacto da alteração de situação enquanto a requisição
+ * está PENDENTE — o dado que faltava a quem decide. Silencioso quando não há
+ * impacto (ativação, ou nenhuma proposta em andamento): aviso só onde importa.
+ */
+function ImpactoSituacaoAviso({ requisicaoId }: { requisicaoId: string }) {
+  const [impacto, setImpacto] = useState<ImpactoSituacao | null>(null);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState<string | null>(null);
+
+  useEffect(() => {
+    let vivo = true;
+    setCarregando(true);
+    setErro(null);
+    consultarImpactoSituacao(requisicaoId)
+      .then((r) => vivo && setImpacto(r))
+      .catch((e) => vivo && setErro((e as Error).message))
+      .finally(() => vivo && setCarregando(false));
+    return () => {
+      vivo = false;
+    };
+  }, [requisicaoId]);
+
+  if (carregando) {
+    return (
+      <p className="text-caption text-muted-foreground">Consultando o impacto na Sinqia…</p>
+    );
+  }
+  if (erro) {
+    return (
+      <p className="text-caption text-muted-foreground">
+        Não foi possível consultar o impacto ({erro}). Confira as propostas do tomador antes de
+        aprovar.
+      </p>
+    );
+  }
+  if (!impacto?.aplicavel) return null;
+
+  const total = impacto.totalEmAndamento ?? 0;
+  const comPropostas = (impacto.tomadores ?? []).filter((t) => t.emAndamento > 0);
+  const comErro = (impacto.tomadores ?? []).filter((t) => t.erro);
+
+  if (total === 0 && comErro.length === 0) {
+    return (
+      <p className="text-caption text-muted-foreground">
+        Impacto conferido: nenhuma proposta em andamento para {impacto.total === 1 ? "este tomador" : "os tomadores deste lote"}.
+      </p>
+    );
+  }
+
+  return (
+    <section>
+      <h3 className="mb-2 text-subheading text-foreground">Impacto desta inativação</h3>
+      <div className="space-y-2 rounded-lg border border-warning/50 bg-warning/10 p-3">
+        <p className="text-body">
+          <strong>
+            {total === 1 ? "1 proposta em andamento" : `${total} propostas em andamento`}
+          </strong>{" "}
+          {comPropostas.length === 1
+            ? "deste tomador"
+            : `de ${comPropostas.length} tomadores deste lote`}{" "}
+          {total === 1 ? "segue" : "seguem"} na esteira. Inativar o cadastro agora afeta o
+          andamento {total === 1 ? "dela" : "delas"}.
+        </p>
+        <ul className="space-y-1 text-caption text-muted-foreground">
+          {comPropostas.map((t) => (
+            <li key={t.documento}>
+              <span className="text-foreground">{t.nome || t.documento}</span>:{" "}
+              {t.propostas.map((p) => `nº ${p.nrProsp} (${p.dsStatus})`).join(" · ")}
+              {t.emAndamento > t.propostas.length && ` … +${t.emAndamento - t.propostas.length}`}
+            </li>
+          ))}
+        </ul>
+        {impacto.parcial && (
+          <p className="text-caption text-muted-foreground">
+            Amostra dos primeiros {impacto.consultados} de {impacto.total} tomadores do lote.
+          </p>
+        )}
+        {comErro.length > 0 && (
+          <p className="text-caption text-muted-foreground">
+            {comErro.length} tomador(es) não puderam ser consultados — o impacto pode ser maior.
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function PayloadSituacaoTomador({
   payload,
   resultado,
