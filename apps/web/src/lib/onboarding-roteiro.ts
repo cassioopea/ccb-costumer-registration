@@ -145,8 +145,6 @@ export const CAPITULOS: CapituloTour[] = [
           "acompanhar um originador específico deixa de ser um relatório à parte. O botão " +
           "ao lado recarrega ignorando o cache.",
         lado: "bottom",
-        padding: 4,
-        raio: 12,
       },
       {
         id: "inicio-valor",
@@ -157,6 +155,7 @@ export const CAPITULOS: CapituloTour[] = [
           "Contratos efetivados no mês, comparação com o mês anterior e ticket médio com " +
           "mediana ao lado. O líquido liberado só existe para o que foi criado aqui — a " +
           "cobertura fica à vista para o número nunca ser lido como maior do que é.",
+        lado: "top",
       },
       {
         id: "inicio-velocidade",
@@ -167,6 +166,9 @@ export const CAPITULOS: CapituloTour[] = [
           "Tempo de ciclo da criação ao contrato e quanto cada etapa consome, em média. " +
           "“Onde está travando” mostra quantas propostas estão paradas; aqui é o tempo que " +
           "a etapa custa. Juntas, as duas dizem se o gargalo é volume ou processo.",
+        // Coluna da esquerda: o popover cabe sobre o Funil, ao lado — colocado
+        // embaixo (padrão do driver.js) ele cobria o próprio card destacado.
+        lado: "right",
       },
       {
         id: "inicio-funil",
@@ -177,6 +179,7 @@ export const CAPITULOS: CapituloTour[] = [
           "Da persona tomadora ao contrato, com a passagem de cada degrau e a maior perda " +
           "em destaque. O primeiro degrau conta quem está marcado como tomador na Base — " +
           "nem todo cliente é, de fato, um tomador.",
+        lado: "left", // coluna da direita — espelha o passo da Velocidade
       },
     ],
   },
@@ -221,8 +224,6 @@ export const CAPITULOS: CapituloTour[] = [
           "confirmar. Em produção o botão da modal só libera depois que você digita " +
           "ALTERAR — atrito proposital numa ação irreversível.",
         lado: "bottom",
-        padding: 4,
-        raio: 12,
       },
       {
         id: "tomadores-propostas",
@@ -234,8 +235,6 @@ export const CAPITULOS: CapituloTour[] = [
           "abrem-se os dados completos e o plano de parcelas — suficiente para responder ao " +
           "originador na hora, sem abrir o Portal.",
         lado: "left",
-        padding: 4,
-        raio: 10,
         aoFaltar: "centralizar",
         textoSemAlvo:
           "Cada linha da base tem um botão “Propostas”: consulta somente leitura das " +
@@ -252,8 +251,6 @@ export const CAPITULOS: CapituloTour[] = [
           "completar um cadastro incompleto sem recriar o tomador — e sem risco de duplicar " +
           "quem já existe na Sinqia.",
         lado: "left",
-        padding: 4,
-        raio: 10,
         aoFaltar: "centralizar",
         textoSemAlvo:
           "Cada linha da base tem “Editar”: abre o cadastro já preenchido, com a ação AL " +
@@ -328,8 +325,6 @@ export const CAPITULOS: CapituloTour[] = [
           "transições da proposta sem precisar do Portal.",
         acao: "painel.selecionarPrimeiraFila",
         lado: "bottom",
-        padding: 4,
-        raio: 8,
       },
       {
         id: "painel-mover",
@@ -342,8 +337,6 @@ export const CAPITULOS: CapituloTour[] = [
           "obrigatória — ela entra no histórico de TODAS as propostas movidas.",
         acao: "painel.selecionarPrimeiraFila",
         lado: "left",
-        padding: 4,
-        raio: 10,
         aoFaltar: "centralizar",
         textoSemAlvo:
           "Na fila, cada linha tem o gesto de mover, e marcando várias o botão “Mover " +
@@ -360,8 +353,6 @@ export const CAPITULOS: CapituloTour[] = [
           "indicador acompanha a fase, e você pode voltar a qualquer passo sem perder o que " +
           "já fez — não é um assistente que prende.",
         lado: "bottom",
-        padding: 4,
-        raio: 12,
       },
       {
         id: "lote-resumo",
@@ -374,8 +365,6 @@ export const CAPITULOS: CapituloTour[] = [
           "da Sinqia; taxa e data valem para o arquivo todo. É o passo que mais reduz tempo " +
           "frente ao Portal manual.",
         lado: "top",
-        padding: 4,
-        raio: 14,
         // O resumo vivo só existe com uma planilha carregada.
         aoFaltar: "centralizar",
         textoSemAlvo:

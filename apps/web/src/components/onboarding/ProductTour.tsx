@@ -54,10 +54,24 @@ function montarStep(passo: PassoTour, semAlvo: boolean): DriveStep {
   };
 }
 
-const PADDING_PADRAO = 6;
-// Cantos CONCÊNTRICOS com o do card (rounded-2xl = 18px): o raio do recorte =
-// raio do elemento + padding, então os arcos partilham centro.
+/** Folga entre o recorte e o alvo. 6px espremia o conteúdo contra a borda. */
+const PADDING_PADRAO = 10;
+/** Só entra quando não dá para ler o raio do alvo (passo sem elemento). */
 const RAIO_PADRAO = 24;
+
+/**
+ * Cantos CONCÊNTRICOS com o do alvo: raio do recorte = raio do elemento +
+ * folga, então os arcos partilham centro. Ler o raio do próprio elemento vale
+ * mais do que fixar um número — um Card (18px), um botão (6px) e um bloco sem
+ * arredondamento pedem recortes diferentes, e um raio grande num alvo baixo e
+ * largo (uma linha de filtro, um cabeçalho de coluna) deforma o recorte.
+ */
+function raioConcentrico(el: HTMLElement | null, padding: number): number {
+  if (!el) return RAIO_PADRAO;
+  const bruto = getComputedStyle(el).borderTopLeftRadius;
+  const proprio = Number.parseFloat(bruto);
+  return (Number.isFinite(proprio) ? proprio : 0) + padding;
+}
 
 export function ProductTour({ onConcluirTudo }: { onConcluirTudo: () => void }) {
   const {
@@ -104,6 +118,9 @@ export function ProductTour({ onConcluirTudo }: { onConcluirTudo: () => void }) 
       stagePadding: PADDING_PADRAO,
       stageRadius: RAIO_PADRAO,
       popoverClass: "opea-tour",
+      // Afasta o popover do recorte — com o padrão (10) ele encostava na borda
+      // do destaque em alvos largos.
+      popoverOffset: 16,
       nextBtnText: "Próximo",
       prevBtnText: "Anterior",
       doneBtnText: "Concluir",
@@ -147,8 +164,9 @@ export function ProductTour({ onConcluirTudo }: { onConcluirTudo: () => void }) 
     }
 
     /** Ancora o passo `i` (já preparado) e salva a posição. */
-    function aplicar(i: number, semAlvo: boolean) {
+    function aplicar(i: number, semAlvo: boolean, alvo: HTMLElement | null) {
       const passo = passos[i];
+      const padding = passo.padding ?? PADDING_PADRAO;
       // O passo é trocado NO LUGAR e publicado por setConfig. Não use
       // `setSteps` aqui: ele chama `resetState()` por dentro, o que apaga a
       // referência do popover ativo — o popover anterior fica órfão no DOM e
@@ -157,8 +175,8 @@ export function ProductTour({ onConcluirTudo }: { onConcluirTudo: () => void }) 
       steps[i] = montarStep(passo, semAlvo);
       d.setConfig({
         ...d.getConfig(),
-        stagePadding: passo.padding ?? PADDING_PADRAO,
-        stageRadius: passo.raio ?? RAIO_PADRAO,
+        stagePadding: padding,
+        stageRadius: passo.raio ?? raioConcentrico(semAlvo ? null : alvo, padding),
         steps,
       });
       if (indice < 0) d.drive(i);
@@ -188,9 +206,11 @@ export function ProductTour({ onConcluirTudo }: { onConcluirTudo: () => void }) 
           if (cancelado) return;
 
           let semAlvo = false;
+          let elemento: HTMLElement | null = null;
           if (passo.seletor) {
             const el = await esperarElemento(passo.seletor);
             if (cancelado) return;
+            elemento = el;
             if (!el) {
               if (import.meta.env.DEV) {
                 console.warn(
@@ -204,7 +224,7 @@ export function ProductTour({ onConcluirTudo }: { onConcluirTudo: () => void }) 
               semAlvo = true;
             }
           }
-          aplicar(i, semAlvo);
+          aplicar(i, semAlvo, elemento);
           return;
         }
         // Passou do fim: capítulo concluído. (Antes do início o driver.js nem
