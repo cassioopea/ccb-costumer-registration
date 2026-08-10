@@ -12,6 +12,7 @@ import {
 import {
   CAMPOS,
   ehTipoLote,
+  situacaoLabel,
   type LoteSodPayload,
   type MovimentacaoLoteSodPayload,
   type MovimentacaoSodPayload,
@@ -728,14 +729,26 @@ function PayloadLote({
   }, [payload]);
 
   const ehLotePropostas = tipo === "proposta.criar_lote";
+  /*
+   * Lote de situação (US-12) não nasce de arquivo: o que o aprovador precisa ver
+   * é a situação de DESTINO. Antes, este renderer mostrava apenas "Arquivo: —" e
+   * a situação a ser aplicada não aparecia em lugar nenhum da tela de decisão.
+   */
+  const cdSituacaoLote =
+    typeof payload.cdSituacao === "number" ? (payload.cdSituacao as number) : null;
   return (
     <section>
       <h3 className="mb-2 text-subheading text-foreground">Dados do lote</h3>
       <div className="grid gap-1 rounded-lg border border-border p-3">
-        <LinhaDetalhe
-          rotulo={ehLotePropostas ? "Planilha de propostas" : "Arquivo"}
-          valor={lote.arquivo?.nome || "—"}
-        />
+        {cdSituacaoLote !== null && (
+          <LinhaDetalhe rotulo="Nova situação" valor={situacaoLabel(cdSituacaoLote) || "—"} />
+        )}
+        {(lote.arquivo?.nome || cdSituacaoLote === null) && (
+          <LinhaDetalhe
+            rotulo={ehLotePropostas ? "Planilha de propostas" : "Arquivo"}
+            valor={lote.arquivo?.nome || "—"}
+          />
+        )}
         {composto && (
           <LinhaDetalhe
             rotulo="Arquivo de tomadores"
@@ -748,7 +761,12 @@ function PayloadLote({
         )}
         <LinhaDetalhe
           rotulo={ehLotePropostas ? "Total de itens" : "Total de tomadores"}
-          valor={String(lote.arquivo?.totalItens ?? "—")}
+          // Lote de arquivo guarda o total em `arquivo.totalItens`; o de situação
+          // (sem arquivo) guarda na raiz do payload.
+          valor={String(
+            lote.arquivo?.totalItens ??
+              (typeof payload.totalItens === "number" ? payload.totalItens : "—"),
+          )}
         />
         {composto && vinculos !== null && (
           <LinhaDetalhe
@@ -792,9 +810,14 @@ function PayloadSituacaoTomador({
 }) {
   const alvo = (payload.alvo as Record<string, unknown>) || {};
   const cdSituacao = payload.cdSituacao as number;
-  
-  const rotuloSituacao =
-    cdSituacao === 1 ? "Inativo" : cdSituacao === 2 ? "Ativo" : cdSituacao === 3 ? "Em Análise" : String(cdSituacao ?? "—");
+
+  /*
+   * O rótulo vem de `situacaoLabel` (shared) — fonte ÚNICA da tabela de
+   * situações, no formato "2 — INATIVO" usado no resto da UI. O mapa manual que
+   * existia aqui invertia os códigos (1→"Inativo", 2→"Ativo"), então uma
+   * requisição de INATIVAÇÃO aparecia como "Ativo" para quem ia decidir.
+   */
+  const rotuloSituacao = situacaoLabel(cdSituacao) || "—";
 
   const propostasAfetadas = typeof resultado?.propostasAfetadas === "number" ? resultado.propostasAfetadas : null;
 
