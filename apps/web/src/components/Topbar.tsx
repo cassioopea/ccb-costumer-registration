@@ -107,7 +107,10 @@ function useBadgePendencias() {
     if (!session) return;
     
     function fetchCount() {
-      contarPendenciasBadge().then(setCount).catch(() => {});
+      // O badge da navegação mostra o TOTAL; a quebra por estado é usada na fila.
+      contarPendenciasBadge()
+        .then((c) => setCount(c.count))
+        .catch(() => {});
     }
     
     fetchCount();

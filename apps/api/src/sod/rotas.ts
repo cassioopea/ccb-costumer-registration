@@ -243,16 +243,18 @@ export async function registerSodRoutes(
     );
   });
 
-  /** 
+  /**
    * Retorna a contagem agregada de pendências para o badge de navegação (US-11).
    * Considera apenas as requisições decidíveis pelo operador logado (lotes contam como 1).
+   * `count` é o total (contrato original do badge); `pendentes`/`falhas` são a
+   * quebra que a fila usa para não esconder falhas no filtro padrão.
    */
   app.get("/api/sod/pendencias-badge", async (req, reply) => {
     const session = exigirSessao(req, reply);
     if (!session) return;
-    
-    const count = servico.contarPendenciasBadge(session.username);
-    return reply.send({ count });
+
+    const c = servico.contarPendenciasBadge(session.username);
+    return reply.send({ count: c.total, pendentes: c.pendentes, falhas: c.falhas });
   });
 
   /**

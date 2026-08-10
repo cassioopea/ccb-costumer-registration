@@ -55,6 +55,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  contarPendenciasBadge,
   decidirLote,
   decidirRequisicao,
   detalharRequisicao,
@@ -105,12 +106,19 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
   const [dados, setDados] = useState<{ itens: RequisicaoSod[]; total: number } | null>(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  /**
+   * Contagem por estado do que ESTE operador pode decidir. Vem junto da
+   * listagem porque os dois chips ficam sempre visíveis: a fila abre em
+   * "Pendentes" e, sem o número ao lado, uma falha esperando decisão ficaria
+   * invisível — o badge da navegação a conta, a tela não a mostrava.
+   */
+  const [contagem, setContagem] = useState<{ pendentes: number; falhas: number } | null>(null);
 
   const carregar = useCallback(async () => {
     setErro(null);
     setCarregando(true);
     try {
-      const [lista, reqs] = await Promise.all([
+      const [lista, reqs, c] = await Promise.all([
         listarPendencias({
           tipo: filtroTipo || undefined,
           requisitante: filtroCriador || undefined,
@@ -119,9 +127,11 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
           offset: pagina * PAGE_SIZE,
         }),
         listarRequisitantesPendentes(estadoFiltro),
+        contarPendenciasBadge(),
       ]);
       setDados(lista);
       setCriadores(reqs);
+      setContagem({ pendentes: c.pendentes, falhas: c.falhas });
     } catch (e) {
       if (!(e instanceof SessaoExpiradaError)) setErro((e as Error).message);
     } finally {
@@ -380,26 +390,57 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
             <div>
               <CardTitle>Fila de pendências</CardTitle>
               <CardDescription>
-                {dados ? `${dados.total} pendência(s)` : "Carregando…"} · da mais antiga para a
-                mais nova
+                {dados
+                  ? `${dados.total} ${estadoFiltro === "falha" ? "falha(s)" : "pendência(s)"}`
+                  : "Carregando…"}{" "}
+                · da mais antiga para a mais nova
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-end gap-3">
-              <div className="w-48 space-y-1.5">
-                <Label htmlFor="filtro-estado-pend">Estado</Label>
-                <Combobox
-                  id="filtro-estado-pend"
-                  value={estadoFiltro}
-                  onChange={(v) => {
-                    setEstadoFiltro((v || "pendente") as "pendente" | "falha");
-                    setFiltroCriador(""); // Limpa criador ao mudar estado
-                    setPagina(0);
-                  }}
-                  options={[
-                    { value: "pendente", label: "Pendentes" },
-                    { value: "falha", label: "Falhas (Retry)" },
-                  ]}
-                />
+              <div className="space-y-1.5">
+                <Label>Estado</Label>
+                {/*
+                  Dois chips no lugar do seletor: os dois números ficam visíveis
+                  sem interação. O chip de falhas vai em destaque quando há o que
+                  analisar — é o que faltava para o badge da navegação e a fila
+                  contarem a mesma história.
+                */}
+                <div className="flex items-center gap-2" role="group" aria-label="Estado da fila">
+                  {(
+                    [
+                      { estado: "pendente" as const, rotulo: "Pendentes", n: contagem?.pendentes },
+                      { estado: "falha" as const, rotulo: "Falhas", n: contagem?.falhas },
+                    ]
+                  ).map(({ estado, rotulo, n }) => {
+                    const ativo = estadoFiltro === estado;
+                    const destaque = estado === "falha" && (n ?? 0) > 0;
+                    return (
+                      <Button
+                        key={estado}
+                        type="button"
+                        size="sm"
+                        variant={ativo ? "default" : "outline"}
+                        aria-pressed={ativo}
+                        onClick={() => {
+                          if (ativo) return;
+                          setEstadoFiltro(estado);
+                          setFiltroCriador(""); // Limpa criador ao mudar estado
+                          setPagina(0);
+                        }}
+                      >
+                        {rotulo}
+                        {n !== undefined && (
+                          <Badge
+                            variant={destaque ? "destructive" : ativo ? "secondary" : "outline"}
+                            className="ml-1.5 rounded-full px-1.5 py-0 tabular-nums"
+                          >
+                            {n}
+                          </Badge>
+                        )}
+                      </Button>
+                    );
+                  })}
+                </div>
               </div>
               <div className="w-56 space-y-1.5">
                 <Label htmlFor="filtro-tipo-pend">Tipo de ação</Label>
@@ -446,11 +487,42 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
           ) : !dados || dados.itens.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
               <Inbox className="h-8 w-8" />
-              <p className="text-body">
-                {filtroTipo || filtroCriador
-                  ? "Nenhuma pendência com esses filtros."
-                  : "Nenhuma requisição aguardando decisão. Tudo em dia!"}
-              </p>
+              {/*
+                "Tudo em dia" só quando os DOIS estados estão zerados. Com falha
+                esperando, o vazio da fila de pendentes aponta para ela — antes a
+                tela dizia "tudo em dia" com o badge da navegação em 1.
+              */}
+              {(() => {
+                const outro = estadoFiltro === "pendente" ? contagem?.falhas ?? 0 : contagem?.pendentes ?? 0;
+                const rotuloOutro = estadoFiltro === "pendente" ? "falha(s) para analisar" : "pendência(s) para decidir";
+                if (filtroTipo || filtroCriador) {
+                  return <p className="text-body">Nenhuma requisição com esses filtros.</p>;
+                }
+                if (outro > 0) {
+                  return (
+                    <>
+                      <p className="text-body">
+                        {estadoFiltro === "pendente"
+                          ? "Nenhuma requisição aguardando decisão."
+                          : "Nenhuma falha para analisar."}
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEstadoFiltro(estadoFiltro === "pendente" ? "falha" : "pendente");
+                          setFiltroCriador("");
+                          setPagina(0);
+                        }}
+                      >
+                        Ver {outro} {rotuloOutro}
+                      </Button>
+                    </>
+                  );
+                }
+                return <p className="text-body">Nenhuma requisição aguardando decisão. Tudo em dia!</p>;
+              })()}
             </div>
           ) : (
             <>

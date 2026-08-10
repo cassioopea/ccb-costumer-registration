@@ -154,6 +154,17 @@ export interface MovimentacaoAtivaSod {
 }
 
 /** Estado corrente de uma flag por tipo (US-05) — para o CLI operacional. */
+/**
+ * Contagem do badge (US-11), quebrada por estado: `total` alimenta o contador
+ * da navegação e a quebra alimenta a fila de "Pendências e Falhas" — sem ela a
+ * tela abre em "Pendentes" e esconde as falhas que o badge está contando.
+ */
+export interface ContagemPendencias {
+  pendentes: number;
+  falhas: number;
+  total: number;
+}
+
 export interface FlagSod {
   tipo: TipoAcaoSod;
   ativa: boolean;
@@ -626,16 +637,27 @@ export function criarSodRepositorio(db: DatabaseSync, ambiente: string) {
      * (ambiente, estado, requisitante) pode ser necessário, embora o índice
      * existente `idx_sod_req_estado` costume bastar devido à seletividade.
      */
-    contarPendenciasBadge(ator: string): number {
+    contarPendenciasBadge(ator: string): ContagemPendencias {
+      // Um SELECT só: o badge da navegação usa o total, e a fila mostra a
+      // quebra por estado (o operador precisa saber que há falha esperando
+      // mesmo quando não há nenhuma pendente).
       const sql = `
-        SELECT COUNT(*) AS n 
-          FROM sod_requisicoes 
-         WHERE ambiente = ? 
-           AND estado IN ('pendente', 'falha') 
+        SELECT
+          SUM(CASE WHEN estado = 'pendente' THEN 1 ELSE 0 END) AS pendentes,
+          SUM(CASE WHEN estado = 'falha'    THEN 1 ELSE 0 END) AS falhas
+          FROM sod_requisicoes
+         WHERE ambiente = ?
+           AND estado IN ('pendente', 'falha')
            AND requisitante != ?
       `;
-      const row = db.prepare(sql).get(ambiente, ator) as { n: number };
-      return row.n;
+      // SUM sobre zero linhas devolve NULL (SQLite e PostgreSQL) — daí o ?? 0.
+      const row = db.prepare(sql).get(ambiente, ator) as {
+        pendentes: number | null;
+        falhas: number | null;
+      };
+      const pendentes = row.pendentes ?? 0;
+      const falhas = row.falhas ?? 0;
+      return { pendentes, falhas, total: pendentes + falhas };
     },
 
     listarRequisicoes(f: FiltrosRequisicao): { itens: RequisicaoSod[]; total: number } {

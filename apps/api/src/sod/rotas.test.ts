@@ -29,10 +29,14 @@ let app: FastifyInstance;
 let db: ReturnType<typeof abrirBancoSod>;
 let sidMaria: string;
 let sidJoao: string;
+/** O mesmo serviço das rotas — usado para montar estados que não têm rota
+ *  própria neste arquivo (concluir execução como `falha`, por exemplo). */
+let servicoTeste: ReturnType<typeof criarSodServico>;
 
 before(async () => {
   db = abrirBancoSod(path.join(dir, "rotas.db"));
   const servico = criarSodServico(criarSodRepositorio(db, "hml"));
+  servicoTeste = servico;
 
   app = Fastify();
   await app.register(cookie);
@@ -235,7 +239,56 @@ describe("endpoints SoD", () => {
     const badgeMaria = (await get("/api/sod/pendencias-badge", sidMaria)).json();
     // Joao consulta o badge: deve ver as requisições de Maria que estão pendentes ou em falha
     const badgeJoao = (await get("/api/sod/pendencias-badge", sidJoao)).json();
-    
+
     assert.ok(badgeJoao.count >= badgeMaria.count, "João deve ter mais pendências que Maria para decidir");
+  });
+
+  /**
+   * O badge conta pendentes + falhas, mas a fila abre filtrada em "pendente":
+   * sem a quebra por estado, uma falha esperando decisão ficava invisível na
+   * tela enquanto o contador da navegação a somava.
+   */
+  test("pendencias-badge devolve a quebra por estado (count = pendentes + falhas)", async () => {
+    const zerado = (await get("/api/sod/pendencias-badge", sidJoao)).json();
+    assert.equal(typeof zerado.pendentes, "number");
+    assert.equal(typeof zerado.falhas, "number");
+    assert.equal(zerado.count, zerado.pendentes + zerado.falhas);
+    const basePendentes = zerado.pendentes;
+    const baseFalhas = zerado.falhas;
+
+    // Cenário misto: uma PENDENTE de Maria, uma FALHA de Maria e uma pendente
+    // do PRÓPRIO João (que não pode contar para ele).
+    const pendenteDeMaria = (await post("/api/sod/requisicoes", sidMaria, BODY_CRIACAO)).json()
+      .requisicao.id as string;
+
+    const paraFalhar = (await post("/api/sod/requisicoes", sidMaria, BODY_CRIACAO)).json().requisicao
+      .id as string;
+    // Pela CAMADA DE DOMÍNIO: a rota de decisão usa o executor fixture, que
+    // sempre dá certo e levaria a requisição a `executada`.
+    servicoTeste.aprovar(paraFalhar, "joao.souza");
+    servicoTeste.registrarInicioExecucao(paraFalhar, "joao.souza");
+    servicoTeste.concluirExecucao(paraFalhar, "joao.souza", "falha", {
+      causa: "erro_negocio",
+      mensagens: "fixture",
+    });
+
+    const propriaDeJoao = (await post("/api/sod/requisicoes", sidJoao, BODY_CRIACAO)).json()
+      .requisicao.id as string;
+
+    const joao = (await get("/api/sod/pendencias-badge", sidJoao)).json();
+    assert.equal(joao.pendentes, basePendentes + 1, "a pendente de Maria conta; a própria não");
+    assert.equal(joao.falhas, baseFalhas + 1, "a falha de Maria conta");
+    assert.equal(joao.count, joao.pendentes + joao.falhas);
+
+    // Simetria: para Maria, a própria pendente e a própria falha não contam,
+    // mas a pendente criada por João conta.
+    const maria = (await get("/api/sod/pendencias-badge", sidMaria)).json();
+    assert.equal(maria.count, maria.pendentes + maria.falhas);
+    assert.ok(maria.pendentes >= 1, "a pendente criada por João conta para Maria");
+
+    // Limpeza: devolve o cenário ao estado anterior ao teste.
+    await post(`/api/sod/requisicoes/${pendenteDeMaria}/decisao`, sidMaria, { decisao: "cancelar" });
+    await post(`/api/sod/requisicoes/${propriaDeJoao}/decisao`, sidJoao, { decisao: "cancelar" });
+    servicoTeste.descartarFalha(paraFalhar, "joao.souza", "fixture do teste de badge");
   });
 });

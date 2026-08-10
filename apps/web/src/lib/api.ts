@@ -349,10 +349,26 @@ export async function cancelarRequisicao(id: string): Promise<{ requisicao: Requ
 
 /* --- Painel de pendências (US-03, lado do aprovador) --- */
 
-/** Retorna a contagem de pendências e falhas tratáveis (US-11). */
-export async function contarPendenciasBadge(): Promise<number> {
+/** Contagem do badge (US-11): total decidível + quebra por estado. */
+export interface ContagemPendencias {
+  /** Total (pendentes + falhas) — o número do badge da navegação. */
+  count: number;
+  pendentes: number;
+  falhas: number;
+}
+
+/**
+ * Retorna a contagem de pendências e falhas tratáveis (US-11).
+ * A quebra por estado alimenta os chips da fila: sem ela, a tela abre em
+ * "Pendentes" e o operador não vê que existe falha esperando decisão.
+ */
+export async function contarPendenciasBadge(): Promise<ContagemPendencias> {
   const res = await fetch("/api/sod/pendencias-badge");
-  return lerResposta<{ count: number }>(res, "Falha ao contar pendências").then(r => r.count);
+  const r = await lerResposta<{ count: number; pendentes?: number; falhas?: number }>(
+    res,
+    "Falha ao contar pendências",
+  );
+  return { count: r.count, pendentes: r.pendentes ?? 0, falhas: r.falhas ?? 0 };
 }
 
 /**
