@@ -438,6 +438,34 @@
 .driver-popover.opea-tour .driver-popover-close-btn:hover {
   color: var(--color-foreground);
 }
+/* Ações do rodapé injetadas pelo motor do tour: índice e pular capítulo.
+   Ficam à esquerda, discretas — a ação primária continua sendo "Próximo". */
+.driver-popover.opea-tour .driver-popover-footer {
+  align-items: center;
+  gap: 0.75rem;
+}
+.driver-popover.opea-tour .opea-tour-acoes {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-right: auto;
+}
+.driver-popover.opea-tour .opea-tour-acoes button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+  color: var(--color-muted-foreground);
+  text-shadow: none;
+  cursor: pointer;
+  transition: color 150ms var(--ease-brand);
+}
+.driver-popover.opea-tour .opea-tour-acoes button:hover {
+  color: var(--color-foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 /* A seta do driver é um TRIÂNGULO de bordas (3 lados transparentes + 1
    colorido). NÃO colorir os 4 lados — vira um quadrado. Deixamos o driver
    pintar só o lado certo; o popover branco já casa com o padrão dele. */
