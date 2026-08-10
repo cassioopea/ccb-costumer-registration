@@ -17,6 +17,8 @@ import {
   consultarStatusTransf,
   transferirStatus,
   verificarSessaoSinqia,
+  alterarSituacaoCliente,
+  listarPropostasPorCpf,
 } from "./../sinqia-client.js";
 import { criarUma } from "./../criacao-job.js";
 import { abrirBancoSod, criarSodRepositorio, type ItemLoteSod } from "./repositorio.js";
@@ -169,6 +171,8 @@ export interface RegisterSodRoutesDeps {
   transferirStatusFn?: typeof transferirStatus;
   consultarStatusTransfFn?: typeof consultarStatusTransf;
   consultarHistoricoPropostaFn?: typeof consultarHistoricoProposta;
+  alterarSituacaoClienteFn?: typeof alterarSituacaoCliente;
+  listarPropostasPorCpfFn?: typeof listarPropostasPorCpf;
 }
 
 export async function registerSodRoutes(
@@ -184,6 +188,8 @@ export async function registerSodRoutes(
     transferirStatusFn: deps.transferirStatusFn ?? transferirStatus,
     consultarStatusTransfFn: deps.consultarStatusTransfFn ?? consultarStatusTransf,
     consultarHistoricoPropostaFn: deps.consultarHistoricoPropostaFn ?? consultarHistoricoProposta,
+    alterarSituacaoClienteFn: deps.alterarSituacaoClienteFn ?? alterarSituacaoCliente,
+    listarPropostasPorCpfFn: deps.listarPropostasPorCpfFn ?? listarPropostasPorCpf,
   };
   const verificarSessaoSinqiaFn = deps.verificarSessaoSinqiaFn ?? verificarSessaoSinqia;
   /** Criar requisição — o requisitante é SEMPRE a sessão, nunca o body. */

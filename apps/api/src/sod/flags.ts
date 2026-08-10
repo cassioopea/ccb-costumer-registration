@@ -26,6 +26,8 @@ export const TIPOS_COM_FLAG: readonly TipoAcaoSod[] = [
   "proposta.criar_lote", // US-07
   "proposta.movimentar", // US-08
   "proposta.movimentar_massa", // US-09
+  "situacao_tomador", // US-12
+  "situacao_tomador_lote", // US-12
 ];
 
 /** Nome de negócio da configuração de cada tipo (documentação, logs e CLI). */
@@ -36,6 +38,8 @@ export const CHAVE_APROVACAO: Partial<Record<TipoAcaoSod, string>> = {
   "proposta.criar_lote": "aprovacao.criacao_proposta_lote",
   "proposta.movimentar": "aprovacao.movimentacao_proposta",
   "proposta.movimentar_massa": "aprovacao.movimentacao_proposta_massa",
+  situacao_tomador: "aprovacao.situacao_tomador",
+  situacao_tomador_lote: "aprovacao.situacao_tomador",
 };
 
 /**

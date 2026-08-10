@@ -599,6 +599,12 @@ describe("US-06 — Cenário 4: interrupção no item K e reexecução forçada"
           consultarHistoricoPropostaFn: async () => {
             throw new Error("não deve consultar histórico em lote de tomadores");
           },
+          alterarSituacaoClienteFn: async () => {
+            throw new Error("não deve alterar situação em lote de tomadores");
+          },
+          listarPropostasPorCpfFn: async () => {
+            throw new Error("não deve listar propostas em lote de tomadores");
+          },
         },
         destroySessionFn: () => {},
       },

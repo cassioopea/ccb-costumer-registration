@@ -797,6 +797,12 @@ describe("US-07 — idempotência e falha parcial herdadas (dois tipos)", () => 
           consultarHistoricoPropostaFn: async () => {
             throw new Error("não deve consultar histórico em lote de propostas");
           },
+          alterarSituacaoClienteFn: async () => {
+            throw new Error("não deve alterar situação em lote de propostas");
+          },
+          listarPropostasPorCpfFn: async () => {
+            throw new Error("não deve listar propostas em lote de propostas");
+          },
         },
         destroySessionFn: () => {},
       },

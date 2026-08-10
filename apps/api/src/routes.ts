@@ -777,6 +777,53 @@ export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesD
     }
     const { cdSituacao, alvos } = parsed.data;
 
+    if (aprovacaoAtivaFn("situacao_tomador")) {
+      try {
+        if (alvos.length === 1) {
+          const requisicao = sodServico().criarRequisicao({
+            tipo: "situacao_tomador",
+            payload: { cdSituacao, alvo: alvos[0] },
+            requisitante: session.username,
+          });
+          return reply.code(201).send({
+            valido: true,
+            aprovacao: true,
+            requisicao: {
+              id: requisicao.id,
+              estado: requisicao.estado,
+              criadoEm: requisicao.criadoEm,
+            },
+            env: env.SINQIA_ENV,
+          });
+        } else {
+          // Lote
+          const requisicao = sodServico().criarRequisicaoLote({
+            tipo: "situacao_tomador_lote",
+            payload: { cdSituacao, totalItens: alvos.length },
+            itens: alvos.map((alvo, idx) => ({
+              ordem: idx + 1,
+              tipo: "situacao_tomador_lote",
+              documento: alvo.documento ? alvo.documento.replace(/\D/g, "") : null,
+              payload: { cdSituacao, alvo, ordem: idx + 1, resumo: { nome: alvo.nome, documento: alvo.documento } },
+            })),
+            requisitante: session.username,
+          });
+          return reply.code(201).send({
+            valido: true,
+            aprovacao: true,
+            requisicao: {
+              id: requisicao.id,
+              estado: requisicao.estado,
+              criadoEm: requisicao.criadoEm,
+            },
+            env: env.SINQIA_ENV,
+          });
+        }
+      } catch (e) {
+        return responderErroSod(reply, e);
+      }
+    }
+
     const jobId = startSituacaoJob({
       alvos,
       cdSituacao,

@@ -107,6 +107,10 @@ export function nomeDoPayload(
     if (!mov?.nrProsp) return "—";
     return `Proposta nº ${mov.nrProsp}${mov.nmCliente?.trim() ? ` — ${mov.nmCliente}` : ""}`;
   }
+  if (tipo === "situacao_tomador") {
+    const alvo = (payload.alvo as Record<string, unknown>) || {};
+    return typeof alvo.nome === "string" && alvo.nome.trim() ? alvo.nome : String(alvo.documento || "—");
+  }
   const campos = payload.campos;
   if (campos && typeof campos === "object" && !Array.isArray(campos)) {
     const nome = (campos as Record<string, unknown>).dsNome;
@@ -213,6 +217,7 @@ export function RequisicaoDetalhe({
   placar,
   placarPorTipo,
   marcacao,
+  acoesFalha,
 }: {
   requisicao: RequisicaoSod;
   historico: EventoAuditoriaSod[];
@@ -345,6 +350,8 @@ export function RequisicaoDetalhe({
         <PayloadProposta payload={req.payload} />
       ) : ehMovimentacao ? (
         <PayloadMovimentacao payload={req.payload} />
+      ) : req.tipo === "situacao_tomador" ? (
+        <PayloadSituacaoTomador payload={req.payload} resultado={req.resultado} estado={req.estado} />
       ) : (
         <PayloadTomador payload={req.payload} />
       )}
@@ -770,6 +777,55 @@ function PayloadLote({
   );
 }
 
+/**
+ * Payload de `situacao_tomador` (US-12): exibe os dados do cliente a ser alterado,
+ * a situação nova e, se executado, o impacto (propostas afetadas).
+ */
+function PayloadSituacaoTomador({
+  payload,
+  resultado,
+  estado,
+}: {
+  payload: Record<string, unknown>;
+  resultado?: Record<string, unknown> | null;
+  estado: string;
+}) {
+  const alvo = (payload.alvo as Record<string, unknown>) || {};
+  const cdSituacao = payload.cdSituacao as number;
+  
+  const rotuloSituacao =
+    cdSituacao === 1 ? "Inativo" : cdSituacao === 2 ? "Ativo" : cdSituacao === 3 ? "Em Análise" : String(cdSituacao ?? "—");
+
+  const propostasAfetadas = typeof resultado?.propostasAfetadas === "number" ? resultado.propostasAfetadas : null;
+
+  return (
+    <>
+      <section>
+        <h3 className="mb-2 text-subheading text-foreground">Alteração de Situação</h3>
+        <div className="grid gap-1 rounded-lg border border-border p-3">
+          <LinhaDetalhe rotulo="Tomador" valor={String(alvo.nome || "—")} />
+          <LinhaDetalhe rotulo="CPF/CNPJ" valor={alvo.documento ? formatCpf(String(alvo.documento)) : "—"} />
+          <LinhaDetalhe rotulo="Situação Anterior" valor={String(alvo.situacaoAnterior || "—")} />
+          <LinhaDetalhe rotulo="Nova Situação" valor={rotuloSituacao} />
+        </div>
+      </section>
+
+      {/* Impacto da alteração de situação (propostas afetadas) */}
+      {(estado === "executada" || estado === "falha") && propostasAfetadas !== null && (
+        <section className="mt-4">
+          <h3 className="mb-2 text-subheading text-foreground">Impacto da alteração</h3>
+          <div className="rounded-lg border border-warning/50 bg-warning/10 p-3">
+            <LinhaDetalhe 
+              rotulo="Propostas afetadas" 
+              valor={`${propostasAfetadas} proposta(s) ativa(s) pertencente(s) a este tomador sofreram impacto.`}
+            />
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
 /** Cor e rótulo de cada estado de ITEM — semântica de fila de execução. */
 const BADGE_ITEM: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" | "success" | "warning" }> = {
   pendente: { label: "Pendente", variant: "warning" },
@@ -851,6 +907,7 @@ function LoteItens({
   placar,
   placarPorTipo,
   marcacao,
+  acoesFalha,
 }: {
   requisicao: RequisicaoSod;
   itens: ItemLoteResumo[];
@@ -1112,7 +1169,7 @@ function LoteItens({
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    disabled={bloqueadoPeloPai}
+                                    disabled={!!bloqueadoPeloPai}
                                     title={bloqueadoPeloPai ? `Bloqueado pelo item ${pai.ordem} que não está executado` : "Reprocessar item em falha"}
                                     onClick={() => acoesFalha.onRetry(item.id)}
                                   >

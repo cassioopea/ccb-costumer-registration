@@ -346,7 +346,8 @@ Decisão é **atômica** na persistência (primeira vence; jamais segunda execu�
   customizado `sod:decisao` nas funções de resposta das ações do `PainelPendencias.tsx`. Lotes
   contam como uma unidade unificada na aprovação. Validado via testes unitários/integração do
   endpoint, assegurando distinção de decidibilidade maker-checker.
-- US-12: `pendente — aguarda aceite do negócio (ação 4)`
+- US-12: `entregue` — 2026-08-09
+  Decisões de implementação: adicionado aviso de impacto (consulta dinâmica ao backend durante a aprovação, não na submissão, mantendo a integridade no banco); reaproveitada arquitetura em massa da US-06 para suportar alteração de situação em lote (`situacao_tomador_lote`), reusando o executor individual pelo mapeamento de tipo; bloqueio de duplicidade unificado; e UI de detalhe customizada em `PayloadSituacaoTomador`. A métrica de extensibilidade se validou: o custo de integração do novo modelo foi muito reduzido (basicamente registrar o tipo, o handler em `execucao.ts`, o parser de payload no Frontend e a configuração do Lote no `sod.schema.ts`), comprovando o isolamento do motor da US-04. A Onda 2 se encerra aqui!
 
 ## 5. Regras técnicas transversais
 

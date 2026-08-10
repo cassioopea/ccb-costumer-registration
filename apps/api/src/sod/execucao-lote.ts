@@ -7,6 +7,7 @@ import {
   type ContextoExecucao,
   type ExecucaoDeps,
 } from "./execucao.js";
+import { TIPO_ITEM_DO_LOTE, type TipoAcaoSod } from "@cadastro-lote/shared";
 
 /**
  * Esteira de Aprovação (SoD) — execução SEQUENCIAL de requisição-LOTE (US-06).
@@ -130,7 +131,8 @@ async function executarLote(
     if (!reivindicado) continue;
 
     try {
-      const executor = EXECUTORES[item.tipo];
+      const tipoIndividual = TIPO_ITEM_DO_LOTE[item.tipo as TipoAcaoSod] ?? (item.tipo as TipoAcaoSod);
+      const executor = EXECUTORES[tipoIndividual];
       const t0 = Date.now();
       const execucao = executor
         ? await executor(itemComoRequisicao(reivindicado, requisicao), ctx, deps)

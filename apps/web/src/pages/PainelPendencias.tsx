@@ -12,6 +12,7 @@ import {
   ThumbsUp,
   XCircle,
 } from "lucide-react";
+import {
   ROTULO_TIPO_ACAO,
   TIPOS_ACAO_SOD,
   ehTipoLote,
@@ -202,7 +203,6 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
 
   const req = detalhe?.requisicao ?? null;
   const decidivelPorMim = req ? requisicaoDecidivelPor(req.estado, req.requisitante, meuLogin) : false;
-  const minhaRequisicao = !!req && normalizarLogin(req.requisitante) === meuLogin;
   const ehLote = !!req && ehTipoLote(req.tipo);
 
   const totalExcecoes = Object.keys(excecoes).length;

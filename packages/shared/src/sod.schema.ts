@@ -93,6 +93,7 @@ export const TIPO_ITEM_DO_LOTE: Partial<Record<TipoAcaoSod, TipoAcaoSod>> = {
   "tomador.cadastrar_lote": "tomador.cadastrar",
   "proposta.criar_lote": "proposta.criar",
   "proposta.movimentar_massa": "proposta.movimentar",
+  situacao_tomador_lote: "situacao_tomador",
 };
 
 /**
@@ -175,7 +176,8 @@ export const TIPOS_ACAO_SOD = [
   "proposta.criar_lote", // US-07
   "proposta.movimentar", // US-08
   "proposta.movimentar_massa", // US-09
-  "tomador.alterar_situacao", // US-12
+  "situacao_tomador", // US-12
+  "situacao_tomador_lote", // US-12
 ] as const;
 
 export type TipoAcaoSod = (typeof TIPOS_ACAO_SOD)[number];
@@ -190,7 +192,8 @@ export const ROTULO_TIPO_ACAO: Record<TipoAcaoSod, string> = {
   "proposta.criar_lote": "Criação de propostas em lote",
   "proposta.movimentar": "Movimentação de proposta",
   "proposta.movimentar_massa": "Movimentação de propostas em massa",
-  "tomador.alterar_situacao": "Alteração de situação de tomador",
+  situacao_tomador: "Alteração de situação de tomador",
+  situacao_tomador_lote: "Alteração de situação de tomador em lote",
 };
 
 /* ------------------------------------------------------------------ */
@@ -402,6 +405,13 @@ export function extrairDocumentoSod(
 ): string | null {
   if (tipo === "proposta.criar") return chaveDuplicidadeProposta(payload);
   if (tipo === "proposta.movimentar") return chaveBloqueioMovimentacao(payload);
+  if (tipo === "situacao_tomador") {
+    const alvo = payload.alvo as Record<string, unknown> | undefined;
+    if (!alvo || typeof alvo.documento !== "string") return null;
+    const doc = normalizarDocumento(alvo.documento);
+    return doc.length > 0 ? doc : null;
+  }
+  
   if (tipo !== "tomador.cadastrar") return null;
   const campos = payload.campos;
   if (!campos || typeof campos !== "object" || Array.isArray(campos)) return null;

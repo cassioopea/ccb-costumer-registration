@@ -7,13 +7,15 @@ import {
   type PropostaSodPayload,
   type TipoAcaoSod,
 } from "@cadastro-lote/shared";
-import type {
+import {
   cadastrarCliente,
   calcProsp,
   consultarHistoricoProposta,
   consultarStatusTransf,
   transferirStatus,
-  TransfStatusInput,
+  alterarSituacaoCliente,
+  listarPropostasPorCpf,
+  type TransfStatusInput,
 } from "./../sinqia-client.js";
 import { criarUma, SessaoExpiradaError } from "./../criacao-job.js";
 import type { RequisicaoSod } from "./repositorio.js";
@@ -37,6 +39,8 @@ export interface ExecucaoDeps {
   transferirStatusFn: typeof transferirStatus;
   consultarStatusTransfFn: typeof consultarStatusTransf;
   consultarHistoricoPropostaFn: typeof consultarHistoricoProposta;
+  alterarSituacaoClienteFn: typeof alterarSituacaoCliente;
+  listarPropostasPorCpfFn: typeof listarPropostasPorCpf;
 }
 
 /** Sessão do aprovador: token para a Sinqia + login para a base local. */
@@ -553,6 +557,90 @@ async function executarMovimentacaoProposta(
 }
 
 /**
+ * Executor da alteração de situação do tomador (US-12).
+ * Verifica propostas em andamento se for uma inativação (cdSituacao = 7).
+ */
+async function executarSituacaoTomador(
+  requisicao: RequisicaoSod,
+  ctx: ContextoExecucao,
+  deps: ExecucaoDeps,
+): Promise<ResultadoExecucao> {
+  const payload = requisicao.payload as Record<string, any>;
+  const cdSituacao = payload.cdSituacao;
+  const alvo = payload.alvo;
+  
+  if (typeof cdSituacao !== "number" || !alvo || typeof alvo.nrCliente !== "number") {
+    return falhaExecucao(
+      { causa: "payload_invalido", mensagem: "Payload inválido para situacao_tomador." },
+      { httpStatus: null, mensagens: "Payload inválido." },
+    );
+  }
+
+  let propostasAtivas = 0;
+  // Apenas consulta impacto se for inativação (ex: código 7 = Cancelado/Inativo, ou diferente de 1)
+  // Como não há enum no sistema detalhado, qualquer inativação gera impacto (vamos verificar se tem propostas).
+  if (cdSituacao !== 1 && alvo.documento) {
+    try {
+      const resp = await deps.listarPropostasPorCpfFn(ctx.token, alvo.documento);
+      if (resp.httpStatus === 401) {
+         return falhaExecucao(
+           { causa: "sessao_expirada_durante_execucao", mensagem: "Sessão expirou na consulta de impacto." },
+           { httpStatus: 401, mensagens: "Sessão expirou." }, true
+         );
+      }
+      propostasAtivas = resp.propostas.length;
+    } catch (e) {
+      // Ignora erro de consulta de impacto para não travar a inativação
+      console.warn("Erro ao consultar propostas ativas:", e);
+    }
+  }
+
+  try {
+    const r = await deps.alterarSituacaoClienteFn(ctx.token, { cdSituacao, nrCliente: alvo.nrCliente });
+    
+    if (r.httpStatus === 401) {
+      return falhaExecucao(
+        { causa: "sessao_expirada_durante_execucao", mensagem: "Sessão expirou.", httpStatus: r.httpStatus },
+        { httpStatus: r.httpStatus, mensagens: "Sessão expirou." }, true
+      );
+    }
+
+    const integral: Record<string, unknown> = {
+      origem: "sinqia",
+      httpStatus: r.httpStatus,
+      envelopeStatus: r.analysis.envelopeStatus,
+      globalMessage: r.analysis.globalMessage,
+      mensagens: r.analysis.messagesText,
+      envelope: r.envelope,
+      propostasAfetadas: propostasAtivas,
+    };
+
+    if (r.analysis.ok) {
+      return {
+        desfecho: "executada",
+        sessaoExpirou: false,
+        resultado: { ...integral, desfecho: "executada" },
+        publico: {
+          desfecho: "executada",
+          httpStatus: r.httpStatus,
+          mensagens: r.analysis.messagesText || "Situação alterada com sucesso.",
+        }
+      };
+    }
+    
+    return falhaExecucao(
+      { ...integral, causa: "erro_negocio", detalhe: r.analysis.reason },
+      { httpStatus: r.httpStatus, mensagens: r.analysis.messagesText || r.analysis.globalMessage || "", detalhe: r.analysis.reason }
+    );
+  } catch(e) {
+    return falhaExecucao(
+      { causa: "indisponibilidade_ou_timeout", mensagem: (e as Error).message },
+      { httpStatus: null, mensagens: (e as Error).message },
+    );
+  }
+}
+
+/**
  * Registro de executores por tipo de ação — o ponto de extensão que cada US
  * de novo tipo alimenta (US-04 acrescentou `proposta.criar`; a Onda 2
  * acrescenta os demais).
@@ -567,4 +655,5 @@ export const EXECUTORES: Partial<Record<TipoAcaoSod, Executor>> = {
   "tomador.cadastrar": executarCadastroTomador,
   "proposta.criar": executarCriacaoProposta,
   "proposta.movimentar": executarMovimentacaoProposta,
+  "situacao_tomador": executarSituacaoTomador,
 };

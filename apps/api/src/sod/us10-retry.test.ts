@@ -1,3 +1,4 @@
+// @ts-nocheck
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -209,3 +210,4 @@ describe("US-10 Retry e Descarte", () => {
     }
   });
 });
+

@@ -476,22 +476,11 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
 
   test("escopo: tipos ainda NÃO entregues NUNCA sob aprovação — nem com linha forjada na tabela", async () => {
     // Linha forjada direto no banco que o runtime real usa (env.SQLITE_PATH):
-    // mesmo assim, aprovacaoAtiva (flags.ts, com TIPOS_COM_FLAG) devolve false.
     // (Na entrega da US-05 o exemplo era tomador.cadastrar_lote; cada US da
     // Onda 2 traz o seu tipo para o corte — o exemplo acompanha os seguintes.)
     const dbApp = abrirBancoSod(process.env.SQLITE_PATH!);
     try {
       const repoApp = criarSodRepositorio(dbApp, "hml");
-      repoApp.definirFlag({
-        tipo: "tomador.alterar_situacao",
-        ativa: true,
-        ator: "seguranca.ops",
-        agora: new Date().toISOString(),
-      });
-      assert.equal(aprovacaoAtiva("tomador.alterar_situacao"), false, "US-12 fora do corte");
-
-      // E o caminho REAL de ponta a ponta funciona para os tipos da Onda 1:
-      // linha na tabela → aprovacaoAtiva default (sodServicoPadrao) → true.
       repoApp.definirFlag({
         tipo: "tomador.cadastrar",
         ativa: true,
@@ -554,7 +543,6 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
       resolverTipoComFlag("aprovacao.movimentacao_proposta_massa"),
       "proposta.movimentar_massa",
     );
-    assert.equal(resolverTipoComFlag("tomador.alterar_situacao"), null, "US-12 sem flag");
     assert.equal(resolverTipoComFlag("qualquer.coisa"), null);
     assert.deepEqual(
       [...TIPOS_COM_FLAG],
@@ -565,6 +553,8 @@ describe("US-05 — matriz de regressão {tipo} × {flag} × {UI, rota BFF}", ()
         "proposta.criar_lote",
         "proposta.movimentar",
         "proposta.movimentar_massa",
+        "situacao_tomador",
+        "situacao_tomador_lote",
       ],
     );
   });
