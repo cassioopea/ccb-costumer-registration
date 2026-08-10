@@ -50,7 +50,10 @@ export function IndiceTour() {
           </DialogDescription>
         </DialogHeader>
 
-        <ul className="space-y-1.5">
+        {/* min-w-0: o DialogContent é um GRID, e item de grid não encolhe
+            abaixo do próprio min-content por padrão — sem isto, um filho largo
+            (o rodapé) estica a coluna e TODOS os itens vazam do modal. */}
+        <ul className="min-w-0 space-y-1.5">
           {CAPITULOS_ATIVOS.map((c, i) => {
             const feito = concluidos.has(c.id);
             return (
@@ -87,10 +90,10 @@ export function IndiceTour() {
           })}
         </ul>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={fechar}>
-            Fechar
-          </Button>
+        {/* flex-wrap + gap: com nome de capítulo longo os botões quebram em
+            duas linhas em vez de espremer o rótulo. "Fechar" saiu — o X do
+            cabeçalho já fecha, e três botões não cabiam na linha. */}
+        <DialogFooter className="min-w-0 flex-wrap gap-2 sm:space-x-0">
           {capRetomada && retomada && (
             <Button
               variant="outline"
