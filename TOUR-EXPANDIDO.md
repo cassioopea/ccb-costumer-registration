@@ -394,8 +394,10 @@ Deixadas **de fora** de propósito (posso incluir se quiser):
 
 1. **Persistência: Opção A.** Capítulo concluído em `checklistItens` com chave reservada
    `tour:cap:<id>` (campo já é JSON livre — **sem migração de banco**); posição fina dentro
-   do capítulo em `localStorage` (descartável). Migração: `tourConcluido === true` → todos
-   os capítulos entram como vistos, com "Refazer" disponível por capítulo.
+   do capítulo em `localStorage` (descartável). **Migração (corrigida no teste do PM):** o
+   antigo `tourConcluido` NÃO marca capítulo nenhum — ele guarda "já viu o convite de 1º
+   acesso" e segue valendo só para isso. O roteiro expandido é conteúdo novo; dar tudo por
+   visto encheria o índice de check verde e esconderia justamente o que há de novo.
 2. **Branch:** `feature/sod-onda-2` foi mergeada em `development` (merge commit `fbcd946`,
    **local, sem push**) e `feature/tour-expandido` nasceu de `development`.
 3. **Flags SoD:** **todas as ações ficam sob aprovação** no ambiente da demonstração. Os

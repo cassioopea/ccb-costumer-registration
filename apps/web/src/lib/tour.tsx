@@ -139,16 +139,17 @@ export function TourProvider({ children }: { children: ReactNode }) {
   }, [chavePosicao]);
 
   /**
-   * Capítulos concluídos. MIGRAÇÃO: quem já tinha `tourConcluido` do roteiro
-   * antigo entra com todos os capítulos vistos — não reabre o convite de 1º
-   * acesso e continua podendo refazer capítulo a capítulo.
+   * Capítulos concluídos — só os que a pessoa realmente percorreu.
+   *
+   * MIGRAÇÃO: o antigo `tourConcluido` NÃO marca capítulo nenhum. Ele guarda
+   * outra coisa ("já viu o convite de 1º acesso") e continua valendo para
+   * isso; o roteiro expandido é conteúdo novo, que quem fez o tour antigo
+   * nunca viu. Dar tudo por visto encheria o índice de check verde e
+   * esconderia justamente o que há de novo.
    */
   const concluidos = useMemo(() => {
     const set = new Set<string>();
     if (!estado) return set;
-    if (estado.tourConcluido) {
-      for (const c of CAPITULOS_ATIVOS) set.add(c.id);
-    }
     for (const [chave, feito] of Object.entries(estado.checklistItens)) {
       if (feito && chave.startsWith(PREFIXO_CAPITULO)) set.add(chave.slice(PREFIXO_CAPITULO.length));
     }
