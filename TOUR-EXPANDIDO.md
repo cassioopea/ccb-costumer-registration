@@ -465,6 +465,32 @@ Os textos completos de cada passo vivem em `apps/web/src/lib/onboarding-roteiro.
 | 5.2 | Prazo de sessão e badge de pendências | `topbar-sessao` | sem renovação automática; badge = o que você pode decidir |
 | 5.3 | Para rever qualquer capítulo | `topbar-tour` | tour + checklist "Primeiros passos" |
 
+### 10.2 Fase 4 — QA
+
+**Conferência estática (feita, 2026-08-11).**
+- `tsc --noEmit` limpo nos três workspaces do front; suíte da API 157/157.
+- As **33 âncoras** declaradas no roteiro existem no código, cada uma definida em **um único
+  lugar** (as duas do painel de decisão compartilham um atributo de propósito: são estados
+  mutuamente exclusivos da mesma área).
+- **Cada âncora vive no arquivo da tela que o passo declara como destino** — nenhum passo
+  aponta para elemento de outra tela.
+- Correção preventiva aplicada: a busca da âncora varre todos os candidatos e escolhe o
+  visível (as telas ficam todas montadas, então a cópia escondida podia vencer).
+
+**Passe ao vivo (PENDENTE — exige sessão Sinqia).** Rode o tour do zero em viewport padrão e
+confira, passo a passo: o popover ancorou no elemento certo? Ficou cortado ou fora da tela? O
+recorte respira em volta do alvo? O passo caiu em texto alternativo por falta de dado?
+
+Pré-requisitos para o capítulo 4 testar de verdade:
+1. **Flags SoD ligadas em HML** — sem elas o passo 24 cai no texto alternativo.
+2. **Uma requisição pendente criada por você e outra por outro operador** — é esse par que
+   faz os passos 26–29 mostrarem decisão × bloqueio de maker-checker.
+
+Passos que dependem de dado em tela (caem em texto alternativo se faltar, por desenho):
+9 (linhas filtradas), 11 e 12 (primeira linha da base), 19 (fila com propostas + flag de
+movimentação), 21 (planilha carregada), 24 (flag ativa), 26–28 (requisição de outro operador),
+29 (requisição sua).
+
 **Passos cortados** (textos preservados na seção 6, prontos para reintrodução): persona
 tomadora como passo próprio, stat "Atrasadas", cabeçalho das quatro camadas, exemplos PF/PJ
 como passo próprio, filtros da fila e exportação como passos próprios, mover individual
