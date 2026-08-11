@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Ban,
   CheckCircle2,
@@ -71,6 +71,7 @@ import {
   type RequisicaoSod,
 } from "@/lib/api";
 import { SessaoExpiradaError, useSession } from "@/lib/session";
+import { useAcaoTour } from "@/lib/tour";
 import { BadgeEstado } from "@/pages/MinhasRequisicoes";
 import {
   RequisicaoDetalhe,
@@ -178,6 +179,30 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
     setDesfecho(null);
     setExcecoes({});
   }
+
+  /*
+   * Ações de tela para o tour guiado. O capítulo da Esteira de Aprovação
+   * precisa de duas requisições DIFERENTES abertas: uma de outro operador
+   * (mostra a decisão) e uma sua (mostra o bloqueio de maker-checker) — são
+   * estados mutuamente exclusivos da mesma área da tela. Nenhuma decisão é
+   * tomada aqui: abrir o detalhe é só uma leitura, o mesmo GET do clique em
+   * "Revisar e decidir".
+   */
+  const dadosRef = useRef(dados);
+  dadosRef.current = dados;
+  const abrirParaTour = async (querSuas: boolean) => {
+    const limite = Date.now() + 4000;
+    while (!dadosRef.current?.itens.length && Date.now() < limite) {
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    const alvo = (dadosRef.current?.itens ?? []).find((r) =>
+      querSuas ? r.requisitante === meuLogin : r.requisitante !== meuLogin,
+    );
+    if (alvo) await abrirDetalhe(alvo.id);
+  };
+  useAcaoTour("pendencias.abrirRequisicaoDeOutro", () => abrirParaTour(false));
+  useAcaoTour("pendencias.abrirRequisicaoPropria", () => abrirParaTour(true));
+  useAcaoTour("pendencias.fecharDetalhe", () => fecharDetalhe());
 
   /**
    * Progresso do LOTE (US-06): com a requisição aberta em
@@ -384,7 +409,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
         </div>
       )}
 
-      <Card className="reveal reveal-delay-1">
+      <Card className="reveal reveal-delay-1" data-tour="pendencias-fila">
         <CardHeader>
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -417,6 +442,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
                     return (
                       <Button
                         key={estado}
+                        data-tour={estado === "falha" ? "pendencias-chip-falhas" : undefined}
                         type="button"
                         size="sm"
                         variant={ativo ? "default" : "outline"}
@@ -694,7 +720,7 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
           )}
 
           {req && (
-            <div className="space-y-5 text-sm">
+            <div className="space-y-5 text-sm" data-tour="pendencias-detalhe">
               <RequisicaoDetalhe
                 requisicao={req}
                 historico={detalhe?.historico ?? []}
@@ -751,7 +777,13 @@ export function PainelPendencias({ ativa }: { ativa: boolean }) {
 
               {/* Decisão — só requisição pendente de OUTRO operador */}
               {req.estado === "pendente" && (
-                <div className="border-t border-border pt-4">
+                <div
+                  className="border-t border-border pt-4"
+                  /* O tour ancora aqui em dois passos diferentes: no bloqueio
+                     de SoD (requisição sua) e na decisão (de outro operador) —
+                     nunca os dois ao mesmo tempo, é o mesmo lugar da tela. */
+                  data-tour={decidivelPorMim ? "pendencias-decisao" : "pendencias-maker-checker"}
+                >
                   {!decidivelPorMim ? (
                     <>
                       <div className="flex gap-2">

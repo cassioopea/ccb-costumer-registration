@@ -13,6 +13,7 @@ const IS_PROD = ENV === "prod";
 function EnvironmentChip() {
   return (
     <span
+      data-tour="topbar-ambiente"
       className={cn(
         "flex items-center gap-2 rounded-full border px-3 py-1 text-caption",
         IS_PROD
@@ -53,6 +54,7 @@ function SessionChip({ onRefazerTour }: { onRefazerTour?: () => void }) {
         {session.username}
       </span>
       <span
+        data-tour="topbar-sessao"
         className="hidden items-center gap-1.5 text-caption text-sidebar-foreground/60 md:flex"
         title={`Sessão expira em ${formatarRestante(restante)}. ${tokenDesc}`}
       >
@@ -61,6 +63,7 @@ function SessionChip({ onRefazerTour }: { onRefazerTour?: () => void }) {
       </span>
       {onRefazerTour && (
         <button
+          data-tour="topbar-tour"
           type="button"
           onClick={onRefazerTour}
           title="Refazer o tour guiado"

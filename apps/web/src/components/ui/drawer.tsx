@@ -29,7 +29,7 @@ DrawerOverlay.displayName = "DrawerOverlay";
 const DrawerContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, onPointerDownOutside, onInteractOutside, ...props }, ref) => (
   <DrawerPortal>
     <DrawerOverlay />
     <DialogPrimitive.Content
@@ -38,6 +38,21 @@ const DrawerContent = React.forwardRef<
         "fixed inset-y-0 right-0 z-50 flex h-full w-full max-w-xl flex-col gap-4 overflow-y-auto border-l border-border bg-background p-6 shadow-elevated",
         className,
       )}
+      /*
+       * O popover do tour guiado vive fora do drawer, no body. Sem esta
+       * guarda, clicar em "Próximo" conta como interação externa e o Radix
+       * fecha o drawer no meio do capítulo. `driver-active` é a classe que o
+       * driver.js põe no body enquanto o tour está aberto — fora do tour o
+       * comportamento padrão continua idêntico.
+       */
+      onPointerDownOutside={(e) => {
+        if (document.body.classList.contains("driver-active")) e.preventDefault();
+        else onPointerDownOutside?.(e);
+      }}
+      onInteractOutside={(e) => {
+        if (document.body.classList.contains("driver-active")) e.preventDefault();
+        else onInteractOutside?.(e);
+      }}
       {...props}
     >
       {children}
