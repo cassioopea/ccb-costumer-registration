@@ -428,7 +428,7 @@ export function CadastroLote({ onVoltar }: { onVoltar?: () => void }) {
       {/* 1/3 upload + 2/3 controles — mesmo layout do lote de propostas. */}
       <div className="grid items-start gap-6 lg:grid-cols-3">
         {/* Upload */}
-        <Card className="reveal reveal-delay-1 lg:col-span-1">
+        <Card className="reveal reveal-delay-1 lg:col-span-1" data-tour="cadastro-lote-upload">
           <CardHeader>
             <CardTitle>Arquivo do lote</CardTitle>
             <CardDescription>

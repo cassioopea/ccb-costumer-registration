@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check, ChevronDown, ListChecks, X } from "lucide-react";
-import { CHECKLIST_ITENS, type PaginaTour } from "@/lib/onboarding-roteiro";
+import { CHECKLIST_ITENS, type DestinoTour } from "@/lib/onboarding-roteiro";
 import { useOnboarding } from "@/lib/onboarding";
 import { cn } from "@/lib/utils";
 
@@ -13,8 +13,8 @@ import { cn } from "@/lib/utils";
 export function ChecklistOnboarding({
   onIr,
 }: {
-  /** Leva à página do item ao clicar. */
-  onIr: (pagina: PaginaTour) => void;
+  /** Leva à tela do item ao clicar. */
+  onIr: (destino: DestinoTour) => void;
 }) {
   const { estado, marcarChecklist } = useOnboarding();
   const [aberto, setAberto] = useState(true);
@@ -99,7 +99,7 @@ export function ChecklistOnboarding({
                   <button
                     type="button"
                     onClick={() => {
-                      onIr(item.pagina);
+                      onIr(item.destino);
                       marcarChecklist(item.id);
                     }}
                     className={cn(

@@ -342,7 +342,7 @@ export function CadastroIndividual({
       {/* Consulta de obrigatórios + controles lado a lado — compactos. */}
       <div className="reveal reveal-delay-2 grid items-start gap-6 lg:grid-cols-2">
       {/* Campos obrigatórios da Sinqia */}
-      <Card>
+      <Card data-tour="cadastro-obrigatorios">
         <CardHeader>
           <CardTitle className="flex items-center gap-1.5">
             Campos obrigatórios da Sinqia
@@ -439,7 +439,7 @@ export function CadastroIndividual({
       </Card>
 
       {/* Controles do lote (valem para o cadastro individual também) */}
-      <Card>
+      <Card data-tour="cadastro-controles">
         <CardHeader>
           <CardTitle>Controles do cadastro</CardTitle>
           <CardDescription>

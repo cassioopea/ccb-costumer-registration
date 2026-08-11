@@ -21,6 +21,7 @@ export function ResumoOperacao({
   status,
   alerta,
   cta,
+  dataTour,
 }: {
   itens: ItemResumo[];
   /** Linha de status das fases (verificação/cálculo/criação), já formatada. */
@@ -29,10 +30,15 @@ export function ResumoOperacao({
   alerta?: string | null;
   /** Ação primária da fase atual. */
   cta: ReactNode;
+  /** Âncora do tour guiado (`data-tour`), quando a tela quiser destacá-lo. */
+  dataTour?: string;
 }) {
   return (
     <div className="sticky bottom-4 z-30">
-      <div className="panel-dark flex flex-wrap items-center justify-between gap-x-8 gap-y-3 rounded-xl border border-border bg-panel px-6 py-4 shadow-elevated">
+      <div
+        data-tour={dataTour}
+        className="panel-dark flex flex-wrap items-center justify-between gap-x-8 gap-y-3 rounded-xl border border-border bg-panel px-6 py-4 shadow-elevated"
+      >
         <div className="min-w-0 space-y-1.5">
           <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             {itens.map((item) => (
