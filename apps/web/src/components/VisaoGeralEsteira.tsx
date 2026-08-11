@@ -123,7 +123,7 @@ export function VisaoGeralEsteira({
               </div>
 
               {/* Gargalos — onde as propostas estão paradas (FILA, não duração) */}
-              <div className="reveal reveal-delay-3">
+              <div className="reveal reveal-delay-3" data-tour="inicio-gargalos">
                 <h3 className="text-subheading text-foreground">Onde está travando</h3>
                 <p className="mb-4 text-caption text-muted-foreground">
                   Quantas propostas estão paradas em cada etapa agora

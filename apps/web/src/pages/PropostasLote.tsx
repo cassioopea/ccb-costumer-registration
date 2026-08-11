@@ -58,14 +58,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Hint } from "@/components/onboarding/Hint";
 import { cn, rolarAte } from "@/lib/utils";
 import {
+  getEnv,
   getLookups,
   parseEmissoes,
+  parseTomadoresLote,
   startCalcular,
   startCriarPropostas,
   startVerificarClientes,
   streamCalculo,
   streamCriacao,
   streamVerificacao,
+  TEMPLATE_PROPOSTAS_URL,
+  TEMPLATE_URL,
   type CalculoRowResult,
   type CriacaoRowResult,
   type LookupsResponse,
@@ -117,6 +121,49 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [base, setBase] = useState<ParseEmissoesResult | null>(null);
   const [dragOver, setDragOver] = useState(false);
+
+  /**
+   * Esteira de Aprovação (SoD, US-07): com a flag do lote de propostas ativa,
+   * o CTA final vira "Enviar para aprovação" (nada é criado na Sinqia) e o
+   * upload opcional de TOMADORES habilita o lote COMPOSTO (vínculo por CPF).
+   */
+  const [aprovacaoOn, setAprovacaoOn] = useState(false);
+  useEffect(() => {
+    getEnv()
+      .then((e) => setAprovacaoOn(!!e.aprovacao?.criacaoPropostaLote))
+      .catch(() => {});
+  }, []);
+  /** Arquivo de tomadores retido no servidor (lote composto). */
+  const [tomadoresUpload, setTomadoresUpload] = useState<{
+    uploadId: string;
+    arquivo: string;
+    total: number;
+    tomadores: Array<{ index: number; nome: string; documento: string; tipo: string }>;
+  } | null>(null);
+  const [tomadoresErro, setTomadoresErro] = useState<string | null>(null);
+  const [lendoTomadores, setLendoTomadores] = useState(false);
+  const tomadoresInputRef = useRef<HTMLInputElement>(null);
+  /** Requisição-lote criada (sob aprovação) — banner de sucesso. */
+  const [requisicaoCriada, setRequisicaoCriada] = useState<{
+    id: string;
+    totalItens: number;
+    composto: boolean;
+    vinculos: number;
+  } | null>(null);
+
+  async function lerTomadores(file: File) {
+    setTomadoresErro(null);
+    setLendoTomadores(true);
+    try {
+      const res = await parseTomadoresLote(file);
+      setTomadoresUpload(res);
+    } catch (e) {
+      if (!(e instanceof SessaoExpiradaError)) setTomadoresErro((e as Error).message);
+      setTomadoresUpload(null);
+    } finally {
+      setLendoTomadores(false);
+    }
+  }
 
   const [params, setParams] = useState<ParamsLote>(PARAMS_DEFAULT);
 
@@ -502,6 +549,27 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
     () => calcResults.filter((r) => r.status === "OK").map((r) => r.linha),
     [calcResults],
   );
+
+  /**
+   * Vínculos do lote COMPOSTO (US-07): CPFs do arquivo de tomadores × linhas
+   * OK do cálculo. `semVinculo` > 0 será rejeitado pelo servidor — o aviso
+   * aparece antes, aqui.
+   */
+  const vinculosComposto = useMemo(() => {
+    if (!tomadoresUpload) return { vinculadas: 0, semVinculo: 0 };
+    const okSet = new Set(linhasOK);
+    const cpfsOK = new Set(
+      rowsEfetivas.filter((r) => okSet.has(r.linha)).map((r) => r.cpf.replace(/\D/g, "")),
+    );
+    const docsTomadores = new Set(
+      tomadoresUpload.tomadores.map((t) => t.documento.replace(/\D/g, "")),
+    );
+    let vinculadas = 0;
+    for (const cpf of cpfsOK) if (docsTomadores.has(cpf)) vinculadas++;
+    let semVinculo = 0;
+    for (const doc of docsTomadores) if (!cpfsOK.has(doc)) semVinculo++;
+    return { vinculadas, semVinculo };
+  }, [tomadoresUpload, rowsEfetivas, linhasOK]);
   const conferidas = linhasOK.length;
   const somaFinanciadoOK = useMemo(
     () =>
@@ -645,9 +713,17 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
             setCriarConfirmText("");
             setCriarOpen(true);
           }}
-          title="Cria as propostas na Sinqia — ação irreversível, com confirmação"
+          title={
+            aprovacaoOn
+              ? "Cria uma requisição-lote pendente para outro operador aprovar — nada é criado na Sinqia agora"
+              : "Cria as propostas na Sinqia — ação irreversível, com confirmação"
+          }
         >
-          Criar propostas ({conferidas} OK)
+          {aprovacaoOn
+            ? `Enviar para aprovação (${conferidas} OK${
+                tomadoresUpload ? ` + ${tomadoresUpload.total} tomador(es)` : ""
+              })`
+            : `Criar propostas (${conferidas} OK)`}
         </Button>
       ) : (
         <Button onClick={() => void calcular()} disabled={!podeCalcular}>
@@ -658,16 +734,21 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
     </>
   );
 
-  /** Dispara a criação (irreversível) das linhas OK do cálculo retido. */
+  /**
+   * Dispara a criação (irreversível) das linhas OK do cálculo retido — ou,
+   * sob aprovação (US-07), cria a requisição-lote pendente (zero Sinqia),
+   * possivelmente COMPOSTA com o arquivo de tomadores.
+   */
   async function criarPropostas() {
     if (!calcJobId || linhasOK.length === 0) return;
     setCriarOpen(false);
     setCriarConfirmText("");
     setError(null);
+    setRequisicaoCriada(null);
     setCriacaoResults([]);
     setCriacaoProgress({
       processed: 0,
-      total: criarPiloto ? 1 : linhasOK.length,
+      total: criarPiloto && !aprovacaoOn ? 1 : linhasOK.length,
       success: 0,
       jaExiste: 0,
       error: 0,
@@ -675,7 +756,7 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
     });
     setPhase("criando");
     try {
-      const { jobId, total } = await startCriarPropostas({
+      const inicio = await startCriarPropostas({
         calcJobId,
         linhas: linhasOK,
         params: {
@@ -689,7 +770,27 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
         },
         piloto: criarPiloto,
         forcarDuplicadas: criarForcar,
+        ...(aprovacaoOn && tomadoresUpload
+          ? { tomadoresUploadId: tomadoresUpload.uploadId }
+          : {}),
+        ...(aprovacaoOn && base ? { arquivo: base.arquivo } : {}),
       });
+
+      // Sob aprovação: virou requisição-lote pendente — nada foi à Sinqia.
+      if (inicio.aprovacao && inicio.requisicao) {
+        setRequisicaoCriada({
+          id: inicio.requisicao.id,
+          totalItens: inicio.requisicao.totalItens,
+          composto: inicio.requisicao.composto,
+          vinculos: inicio.requisicao.vinculos,
+        });
+        setTomadoresUpload(null); // consumido pela requisição
+        setPhase("calculado");
+        return;
+      }
+
+      const jobId = inicio.jobId!;
+      const total = inicio.total ?? linhasOK.length;
       setCriacaoProgress((p) => ({ ...p, total }));
       streamCriacao(jobId, {
         onSnapshot: (d) => {
@@ -728,7 +829,9 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
             criar. O cálculo (calcProsp) não grava nada na Sinqia.
           </p>
         </div>
-        <PipelineSteps etapas={etapas} />
+        <div data-tour="lote-pipeline">
+          <PipelineSteps etapas={etapas} />
+        </div>
       </div>
 
       {error && (
@@ -745,8 +848,16 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
           <CardHeader>
             <CardTitle>Planilha de emissões</CardTitle>
             <CardDescription>
-              Aceita <code>.xlsx</code> no formato do Emissoes (Nome, CPF, ID_Sinqia,
-              valores, 1º vcto., Situação).
+              Aceita <code>.xlsx</code> ou <code>.csv</code> no formato do Emissoes (Nome,
+              CPF, ID_Sinqia, valores, 1º vcto., Situação).{" "}
+              <a
+                href={TEMPLATE_PROPOSTAS_URL}
+                className="focus-ring inline-flex items-center gap-1 text-primary hover:underline"
+                download
+              >
+                <Download className="h-3 w-3" />
+                Baixar modelo CSV
+              </a>
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -793,7 +904,7 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".xlsx,.xls"
+                accept=".xlsx,.xls,.csv"
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
@@ -812,6 +923,90 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
                   </li>
                 ))}
               </ul>
+            )}
+
+            {/* Lote COMPOSTO (US-07, sob aprovação): tomadores a cadastrar
+                ANTES das propostas, vinculados por CPF */}
+            {aprovacaoOn && (
+              <div className="mt-4 space-y-2 rounded-lg border border-border p-3">
+                <p className="text-label font-medium">Tomadores a cadastrar (opcional)</p>
+                <p className="text-caption text-muted-foreground">
+                  Para propostas de tomadores AINDA NÃO cadastrados: envie um{" "}
+                  <code>.csv</code>/<code>.json</code> no formato do módulo Tomadores — o
+                  vínculo com as propostas é pelo CPF, e o cadastro executa ANTES delas na
+                  aprovação.{" "}
+                  <a
+                    href={TEMPLATE_URL}
+                    className="focus-ring inline-flex items-center gap-1 text-primary hover:underline"
+                    download
+                  >
+                    <Download className="h-3 w-3" />
+                    Modelo de tomadores
+                  </a>
+                </p>
+                {tomadoresUpload ? (
+                  <div className="space-y-1 text-caption">
+                    <p className="flex items-center gap-1.5">
+                      <FileSpreadsheet className="h-3.5 w-3.5 text-primary" />
+                      <span className="font-medium">{tomadoresUpload.arquivo}</span>
+                      <span className="text-muted-foreground">
+                        · {tomadoresUpload.total} tomador(es)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setTomadoresUpload(null)}
+                        className="focus-ring text-destructive hover:underline"
+                      >
+                        remover
+                      </button>
+                    </p>
+                    {linhasOK.length > 0 && (
+                      <p
+                        className={cn(
+                          vinculosComposto.semVinculo > 0
+                            ? "text-destructive"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        {vinculosComposto.vinculadas} proposta(s) OK vinculada(s) por CPF.
+                        {vinculosComposto.semVinculo > 0 &&
+                          ` ${vinculosComposto.semVinculo} tomador(es) sem proposta correspondente — o envio será rejeitado; confira os CPFs.`}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => tomadoresInputRef.current?.click()}
+                    disabled={lendoTomadores}
+                  >
+                    {lendoTomadores ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="h-4 w-4" />
+                    )}
+                    Carregar arquivo de tomadores
+                  </Button>
+                )}
+                {tomadoresErro && (
+                  <p className="flex items-start gap-1.5 text-caption text-destructive">
+                    <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {tomadoresErro}
+                  </p>
+                )}
+                <input
+                  ref={tomadoresInputRef}
+                  type="file"
+                  accept=".csv,.json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void lerTomadores(f);
+                    e.target.value = "";
+                  }}
+                />
+              </div>
             )}
           </CardContent>
         </Card>
@@ -1440,6 +1635,34 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
         </Card>
       )}
 
+      {/* Requisição-lote criada (US-07, sob aprovação) — nada foi à Sinqia */}
+      {requisicaoCriada && (
+        <Card className="border-[var(--success)]">
+          <CardContent className="flex items-start gap-3 pt-6">
+            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[var(--success)]" />
+            <div className="space-y-1 text-body">
+              <p>
+                <strong>{requisicaoCriada.totalItens}</strong> item(ns) entraram na fila de
+                aprovação
+                {requisicaoCriada.composto && (
+                  <>
+                    {" "}
+                    — lote <strong>composto</strong>, com{" "}
+                    <strong>{requisicaoCriada.vinculos}</strong> proposta(s) vinculada(s) a
+                    tomadores que serão cadastrados ANTES delas
+                  </>
+                )}
+                . Nada foi criado na Sinqia: um segundo operador precisa aprovar.
+              </p>
+              <p className="text-caption text-muted-foreground">
+                Requisição <code className="text-caption">{requisicaoCriada.id}</code> —
+                acompanhe em <strong>Requisições → Minhas requisições</strong>.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Resumo vivo da operação — sempre à vista, carrega o CTA da fase */}
       {base && (
         <ResumoOperacao
@@ -1451,39 +1674,77 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
               : null
           }
           cta={ctaResumo}
+          dataTour="lote-resumo"
         />
       )}
 
-      {/* Confirmação da criação — fricção deliberada: é irreversível */}
+      {/* Confirmação da criação — fricção deliberada: é irreversível.
+          Sob aprovação (US-07), nada vai à Sinqia: vira requisição pendente. */}
       <Dialog open={criarOpen} onOpenChange={setCriarOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}>
-              <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
-              Criar propostas na Sinqia
+            <DialogTitle
+              className={cn(
+                "flex items-center gap-2",
+                IS_PROD && !aprovacaoOn && "text-destructive",
+              )}
+            >
+              {aprovacaoOn ? (
+                <>
+                  <ClipboardList className="h-5 w-5 text-primary" />
+                  Enviar o lote para aprovação
+                </>
+              ) : (
+                <>
+                  <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
+                  Criar propostas na Sinqia
+                </>
+              )}
             </DialogTitle>
             <DialogDescription>
-              Você está prestes a criar{" "}
-              <strong>{criarPiloto ? 1 : conferidas} proposta(s)</strong> em{" "}
-              <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>, total financiado de{" "}
-              <strong className="tabular-nums">{formatBRL(somaFinanciadoOK)}</strong>. Esta
-              ação é <strong>irreversível</strong> pela ferramenta.
+              {aprovacaoOn ? (
+                <>
+                  <strong>{conferidas} proposta(s)</strong>
+                  {tomadoresUpload && (
+                    <>
+                      {" "}
+                      + <strong>{tomadoresUpload.total} tomador(es)</strong> (
+                      {vinculosComposto.vinculadas} vínculo(s) por CPF)
+                    </>
+                  )}{" "}
+                  vão virar uma requisição-lote <strong>pendente</strong> — total financiado
+                  de <strong className="tabular-nums">{formatBRL(somaFinanciadoOK)}</strong>.
+                  NADA é criado na Sinqia agora: um segundo operador aprova, e a execução
+                  (cadastro dos tomadores → cálculo oficial + conferência → criação) acontece
+                  na sessão dele.
+                </>
+              ) : (
+                <>
+                  Você está prestes a criar{" "}
+                  <strong>{criarPiloto ? 1 : conferidas} proposta(s)</strong> em{" "}
+                  <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>, total financiado de{" "}
+                  <strong className="tabular-nums">{formatBRL(somaFinanciadoOK)}</strong>. Esta
+                  ação é <strong>irreversível</strong> pela ferramenta.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           {/* Controles fora da description — descrição é descrição, formulário é formulário. */}
           <div className="space-y-3">
-            <label className="flex items-center gap-2 text-body">
-              <input
-                type="checkbox"
-                className="focus-ring h-4 w-4 accent-[var(--primary)]"
-                checked={criarPiloto}
-                onChange={(e) => setCriarPiloto(e.target.checked)}
-              />
-              <span>
-                Piloto: criar <strong>somente a 1ª linha</strong> e conferir na Sinqia antes
-                das demais
-              </span>
-            </label>
+            {!aprovacaoOn && (
+              <label className="flex items-center gap-2 text-body">
+                <input
+                  type="checkbox"
+                  className="focus-ring h-4 w-4 accent-[var(--primary)]"
+                  checked={criarPiloto}
+                  onChange={(e) => setCriarPiloto(e.target.checked)}
+                />
+                <span>
+                  Piloto: criar <strong>somente a 1ª linha</strong> e conferir na Sinqia antes
+                  das demais
+                </span>
+              </label>
+            )}
             <p className="text-caption text-muted-foreground">
               Cada cliente é verificado antes do envio: se já existir proposta{" "}
               <strong>idêntica</strong> (produto, parcelas, valores e 1º vencimento),
@@ -1501,7 +1762,7 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
                 <span className="text-muted-foreground"> (só para reemissão consciente)</span>
               </span>
             </label>
-            {IS_PROD && (
+            {IS_PROD && !aprovacaoOn && (
               <div className="space-y-1">
                 <Label htmlFor="confirma-criar" className="text-caption">
                   Digite <strong>CRIAR</strong> para liberar:
@@ -1520,11 +1781,15 @@ export function PropostasLote({ onVoltar }: { onVoltar?: () => void }) {
               Cancelar
             </Button>
             <Button
-              variant={IS_PROD ? "destructive" : "default"}
+              variant={IS_PROD && !aprovacaoOn ? "destructive" : "default"}
               onClick={() => void criarPropostas()}
-              disabled={!confirmacaoProdOk}
+              disabled={!aprovacaoOn && !confirmacaoProdOk}
             >
-              {criarPiloto ? "Criar 1 proposta (piloto)" : `Criar ${conferidas} proposta(s)`}
+              {aprovacaoOn
+                ? "Enviar para aprovação"
+                : criarPiloto
+                  ? "Criar 1 proposta (piloto)"
+                  : `Criar ${conferidas} proposta(s)`}
             </Button>
           </DialogFooter>
         </DialogContent>

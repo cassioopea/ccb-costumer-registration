@@ -1,0 +1,1 @@
+1. Para a entrega da Esteira de Aprovação (SoD), leia CONTEXTO-SOD.md integralmente antes de qualquer história.

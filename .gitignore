@@ -9,6 +9,7 @@ dist/
 
 # env — NUNCA versionar credenciais/hosts sensíveis
 .env
+.env.test
 .env.hml
 .env.prod
 .env.local
@@ -46,3 +47,9 @@ apps/api/tmp/
 
 # Base local da aplicação (SQLite) — dados reais, nunca no repo
 apps/api/data/
+
+# Evidências da validação em homologação: respostas integrais da Sinqia,
+# nº de cliente/proposta e dados dos tomadores de teste. O repositório é
+# PÚBLICO — o relatório traz as evidências-chave transcritas, com placeholders.
+test-artifacts/evidencias/
+test-artifacts/estado.json

@@ -253,6 +253,31 @@ export async function consultarCamposObrigatorios(
   return { httpStatus: res.statusCode, body: json, rawBody };
 }
 
+/** Desfecho da sonda de sessão (pré-verificação RN03 da Esteira de Aprovação). */
+export type SessaoSinqia = "valida" | "invalida" | "indisponivel";
+
+/**
+ * Verifica se o token ainda é aceito pela Sinqia SEM efeito colateral —
+ * usa o consultarCamposObrigatorios (GET, somente leitura, sem parâmetros),
+ * o mesmo cliente e timeout de todas as chamadas.
+ *
+ * A US-03 chama isto ANTES de transicionar uma aprovação: sessão inválida
+ * bloqueia a decisão com a requisição ainda `pendente`.
+ */
+export async function verificarSessaoSinqia(token: string): Promise<SessaoSinqia> {
+  try {
+    const res = await consultarCamposObrigatorios(token);
+    if (res.httpStatus === 401 || res.httpStatus === 403) return "invalida";
+    // Qualquer resposta não-auth (200/204/5xx) prova que autenticou? Não:
+    // 5xx não diz nada sobre o token — trata como indisponibilidade.
+    if (res.httpStatus >= 500) return "indisponivel";
+    return "valida";
+  } catch {
+    // Timeout/rede: não dá para afirmar nada sobre o token.
+    return "indisponivel";
+  }
+}
+
 export interface TodosClientesResult {
   items: ClienteResumo[];
   /** Bateu no teto de segurança — a lista pode estar incompleta. */

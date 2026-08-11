@@ -81,12 +81,15 @@ export function toAAAAMMDD(v: unknown): number | null {
   return null;
 }
 
-/** number | "R$ 1.234,56" | "1234,56" → number, ou null. */
+/** number | "R$ 1.234,56" | "1234,56" | "416.78" → number, ou null. */
 export function toMoney(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string") {
-    const cleaned = v.replace(/[R$\s.]/g, "").replace(",", ".");
+    let cleaned = v.replace(/[R$\s]/g, "");
+    // Com vírgula, o ponto é separador de milhar (BR); sem vírgula, o ponto
+    // é decimal (formato do template CSV — US-07).
+    if (cleaned.includes(",")) cleaned = cleaned.replace(/\./g, "").replace(",", ".");
     const n = Number(cleaned);
     return Number.isFinite(n) ? n : null;
   }
@@ -121,9 +124,26 @@ export interface ParseEmissoesResult {
 export function parseEmissoesXlsx(buf: Buffer): ParseEmissoesResult {
   let wb: XLSX.WorkBook;
   try {
-    wb = XLSX.read(buf, { cellDates: true });
+    // A lib detecta o formato pelo conteúdo: .xlsx/.xls E .csv (US-07) caem
+    // no MESMO caminho de parse/normalização — não há segundo parser.
+    // CSV (texto plano, sem assinatura ZIP/OLE) é lido com raw:true: a lib
+    // interpretaria "05/09/2026" como data AMERICANA (9 de maio); com raw,
+    // tudo chega string e as normalizações daqui (toAAAAMMDD dd/mm/aaaa,
+    // toMoney, normalizeCpf) mandam — determinístico nos dois formatos.
+    // A decodificação também é nossa: UTF-8 (formato do template), com
+    // fallback latin1 para CSV "ANSI" salvo pelo Excel — sem isso a lib
+    // assume cp1252 e corrompe os acentos do cabeçalho ("Situação").
+    const ehTextoPlano =
+      !(buf[0] === 0x50 && buf[1] === 0x4b) && !(buf[0] === 0xd0 && buf[1] === 0xcf);
+    if (ehTextoPlano) {
+      const utf8 = buf.toString("utf8");
+      const conteudo = utf8.includes("�") ? buf.toString("latin1") : utf8;
+      wb = XLSX.read(conteudo, { type: "string", raw: true });
+    } else {
+      wb = XLSX.read(buf, { cellDates: true });
+    }
   } catch {
-    throw new Error("Arquivo não pôde ser lido como planilha Excel (.xlsx).");
+    throw new Error("Arquivo não pôde ser lido como planilha (.xlsx ou .csv).");
   }
   if (wb.SheetNames.length === 0) throw new Error("A planilha não tem nenhuma aba.");
 

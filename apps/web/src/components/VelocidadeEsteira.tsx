@@ -22,7 +22,7 @@ export function VelocidadeEsteira({ velocidade }: { velocidade: VelocidadeResumo
   const labelHoras = (h: number) => (h <= 72 ? `${Math.round(h)} h` : `${(h / 24).toFixed(1)} d`);
 
   return (
-    <Card className="reveal reveal-delay-2">
+    <Card className="reveal reveal-delay-2" data-tour="inicio-velocidade">
       <CardHeader>
         <div className="text-caption font-medium uppercase tracking-label text-wine-500">
           Velocidade

@@ -3,9 +3,14 @@ import { z } from "zod";
 import {
   batchControlSchema,
   cdSituacaoSchema,
+  normalizarDocumento,
   normalizeCamposObrigatorios,
+  temDuplicidades,
+  TIPO_ITEM_DO_LOTE,
   type BatchControl,
   type Cliente,
+  type ItemLoteSodPayload,
+  type LoteSodPayload,
 } from "@cadastro-lote/shared";
 import { env, isProd } from "./env.js";
 import { buildTemplateCsv } from "./template.js";
@@ -35,6 +40,10 @@ import {
   sessionPublica,
   type Session,
 } from "./session.js";
+import { aprovacaoAtiva, type AprovacaoAtivaFn } from "./sod/flags.js";
+import { guardarExecucaoDireta } from "./sod/corte.js";
+import { responderErroSod, sodServicoPadrao } from "./sod/rotas.js";
+import type { SodServico } from "./sod/dominio.js";
 
 /** Nome do cookie de sessão. httpOnly — o JS da página nunca lê. */
 const COOKIE_SID = "sid";
@@ -98,7 +107,22 @@ function exigirSessao(req: FastifyRequest, reply: FastifyReply): Session | null 
   return res.session;
 }
 
-export async function registerRoutes(app: FastifyInstance) {
+/**
+ * Dependências injetáveis nos testes — o runtime usa os padrões. Existem para
+ * os cenários da Esteira de Aprovação provarem "zero chamadas à Sinqia" (spy
+ * em cadastrarCliente) e usarem banco/toggle temporários, offline.
+ */
+export interface RegisterRoutesDeps {
+  cadastrarClienteFn?: typeof cadastrarCliente;
+  /** Preguiçoso: só abre o banco quando o toggle está ativo. */
+  sodServico?: () => SodServico;
+  aprovacaoAtivaFn?: AprovacaoAtivaFn;
+}
+
+export async function registerRoutes(app: FastifyInstance, deps: RegisterRoutesDeps = {}) {
+  const cadastrarClienteFn = deps.cadastrarClienteFn ?? cadastrarCliente;
+  const sodServico = deps.sodServico ?? sodServicoPadrao;
+  const aprovacaoAtivaFn = deps.aprovacaoAtivaFn ?? aprovacaoAtiva;
   /* ---------------------------------------------------------------- */
   /* Público (a tela de login precisa antes de qualquer sessão)        */
   /* ---------------------------------------------------------------- */
@@ -114,6 +138,19 @@ export async function registerRoutes(app: FastifyInstance) {
     env: env.SINQIA_ENV,
     isProd: isProd(),
     baseUrl: env.SINQIA_BASE_URL,
+    // Toggles da Esteira de Aprovação (SoD) — a UI adapta CTAs e mensagens.
+    aprovacao: {
+      cadastroTomadorIndividual: aprovacaoAtivaFn("tomador.cadastrar"),
+      criacaoPropostaIndividual: aprovacaoAtivaFn("proposta.criar"),
+      cadastroTomadorLote: aprovacaoAtivaFn("tomador.cadastrar_lote"),
+      criacaoPropostaLote: aprovacaoAtivaFn("proposta.criar_lote"),
+      movimentacaoProposta: aprovacaoAtivaFn("proposta.movimentar"),
+      movimentacaoPropostaMassa: aprovacaoAtivaFn("proposta.movimentar_massa"),
+      // US-12: sem estas duas a tela de situação não tinha como saber que a
+      // ação está sob aprovação — ela descobria só na resposta do POST.
+      situacaoTomador: aprovacaoAtivaFn("situacao_tomador"),
+      situacaoTomadorLote: aprovacaoAtivaFn("situacao_tomador_lote"),
+    },
   }));
 
   app.get("/api/template.csv", async (_req, reply) => {
@@ -256,11 +293,29 @@ export async function registerRoutes(app: FastifyInstance) {
     });
 
     const totalErros = rows.filter((r) => r.errors.length > 0).length;
+
+    /*
+     * Esteira de Aprovação (SoD, US-06): com a flag do lote ativa, a
+     * conferência aponta a duplicidade TRIDIMENSIONAL (RN06) ANTES do envio —
+     * intra-arquivo, pendentes individuais e itens pendentes de outros lotes.
+     * Consulta pura, zero Sinqia, zero efeito colateral.
+     */
+    const aprovacaoLote = aprovacaoAtivaFn("tomador.cadastrar_lote");
+    const duplicidades = aprovacaoLote
+      ? sodServico().conferirDuplicidadesLote(
+          TIPO_ITEM_DO_LOTE["tomador.cadastrar_lote"]!,
+          rows.map((r) => ({
+            ordem: r.index,
+            documento: normalizarDocumento(r.documento ?? "") || null,
+          })),
+        )
+      : undefined;
+
     return reply.send({
       env: env.SINQIA_ENV,
       total: rows.length,
       totalErros,
-      valido: totalErros === 0,
+      valido: totalErros === 0 && (!duplicidades || !temDuplicidades(duplicidades)),
       rows: rows.map((r) => ({
         index: r.index,
         nome: r.nome,
@@ -269,6 +324,7 @@ export async function registerRoutes(app: FastifyInstance) {
         errors: r.errors,
       })),
       preview,
+      ...(aprovacaoLote ? { aprovacao: true, duplicidades } : {}),
     });
   });
 
@@ -302,6 +358,88 @@ export async function registerRoutes(app: FastifyInstance) {
         invalidas: rows.length,
       });
     }
+
+    /*
+     * Esteira de Aprovação (SoD, US-06): flag do lote ativa → o upload VÁLIDO
+     * vira requisição-LOTE pendente (um item por linha, payload integral com o
+     * request Sinqia já montado). Diferença deliberada do fluxo direto: sob
+     * aprovação NÃO existe "pular inválidas" — o aprovador confere mérito, não
+     * formato (decisão 7 do CONTEXTO), então arquivo com erro volta inteiro.
+     * Zero Sinqia neste caminho; duplicidade RN06 → 409 estruturado.
+     */
+    if (aprovacaoAtivaFn("tomador.cadastrar_lote")) {
+      if (validas.length < rows.length) {
+        return reply.code(422).send({
+          error:
+            "O arquivo tem linhas inválidas. Sob aprovação, o lote só vira requisição com todas as linhas válidas — corrija e envie novamente.",
+          total: rows.length,
+          invalidas: rows.length - validas.length,
+          rows: rows
+            .filter((r) => r.errors.length > 0)
+            .map((r) => ({ index: r.index, nome: r.nome, documento: r.documento, errors: r.errors })),
+        });
+      }
+
+      const tipoItem = TIPO_ITEM_DO_LOTE["tomador.cadastrar_lote"]!;
+      let itens: Array<{
+        ordem: number;
+        tipo: typeof tipoItem;
+        payload: Record<string, unknown>;
+        documento: string | null;
+      }>;
+      try {
+        itens = rows.map((r) => {
+          const request = buildRequest(r.cliente, payload.control);
+          const itemPayload: ItemLoteSodPayload = {
+            ordem: r.index,
+            resumo: { nome: r.nome, documento: r.documento, tipo: r.tipo },
+            control: payload.control as Record<string, unknown>,
+            request: request as unknown as Record<string, unknown>,
+          };
+          return {
+            ordem: r.index,
+            tipo: tipoItem,
+            payload: itemPayload as unknown as Record<string, unknown>,
+            documento: normalizarDocumento(r.documento ?? "") || null,
+          };
+        });
+      } catch (e) {
+        return reply.code(422).send({
+          error: `Falha ao montar o request de uma das linhas: ${(e as Error).message}`,
+        });
+      }
+
+      try {
+        const lotePayload: LoteSodPayload = {
+          control: payload.control as Record<string, unknown>,
+          arquivo: { nome: payload.filename, totalItens: itens.length },
+        };
+        const requisicao = sodServico().criarRequisicaoLote({
+          tipo: "tomador.cadastrar_lote",
+          payload: lotePayload as unknown as Record<string, unknown>,
+          requisitante: session.username,
+          itens,
+        });
+        return reply.code(201).send({
+          aprovacao: true,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+            totalItens: itens.length,
+          },
+          total: rows.length,
+          env: env.SINQIA_ENV,
+        });
+      } catch (e) {
+        // Duplicidade RN06 → 409 com as três dimensões estruturadas.
+        return responderErroSod(reply, e);
+      }
+    }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — segura flag ativada entre as duas leituras.
+    if (guardarExecucaoDireta("tomador.cadastrar_lote", reply, aprovacaoAtivaFn)) return;
 
     const jobId = startJob({
       items: rows.map((r) => ({
@@ -456,8 +594,44 @@ export async function registerRoutes(app: FastifyInstance) {
       });
     }
 
+    /*
+     * Esteira de Aprovação (SoD, US-02): toggle do tipo ativo → a submissão
+     * VÁLIDA vira requisição pendente pela camada da US-01, com payload
+     * integral (campos como digitados + controles + request Sinqia montado).
+     * NENHUMA chamada à Sinqia neste caminho (RN04); a execução acontece na
+     * sessão do aprovador (US-03). Toggle inativo → fluxo direto intacto.
+     */
+    if (aprovacaoAtivaFn("tomador.cadastrar")) {
+      try {
+        const requisicao = sodServico().criarRequisicao({
+          tipo: "tomador.cadastrar",
+          payload: { campos, control, request: payload },
+          requisitante: session.username,
+        });
+        return reply.code(201).send({
+          valido: true,
+          aprovacao: true,
+          tipo: row.tipo,
+          requisicao: {
+            id: requisicao.id,
+            estado: requisicao.estado,
+            criadoEm: requisicao.criadoEm,
+          },
+          env: env.SINQIA_ENV,
+        });
+      } catch (e) {
+        // Duplicidade pendente (RN02) → 409 com a requisição existente.
+        return responderErroSod(reply, e);
+      }
+    }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta. Com o desvio acima, é inalcançável em operação normal —
+    // segura flag ativada entre as duas leituras e rotas futuras sem desvio.
+    if (guardarExecucaoDireta("tomador.cadastrar", reply, aprovacaoAtivaFn)) return;
+
     try {
-      const { httpStatus, analysis } = await cadastrarCliente(session.token, payload);
+      const { httpStatus, analysis } = await cadastrarClienteFn(session.token, payload);
       if (httpStatus === 401) {
         destroySession(session.id);
         reply.clearCookie(COOKIE_SID, { path: "/" });
@@ -606,6 +780,60 @@ export async function registerRoutes(app: FastifyInstance) {
         .send({ error: parsed.error.issues[0]?.message ?? "Requisição inválida." });
     }
     const { cdSituacao, alvos } = parsed.data;
+
+    if (aprovacaoAtivaFn("situacao_tomador")) {
+      try {
+        if (alvos.length === 1) {
+          const requisicao = sodServico().criarRequisicao({
+            tipo: "situacao_tomador",
+            payload: { cdSituacao, alvo: alvos[0] },
+            requisitante: session.username,
+          });
+          return reply.code(201).send({
+            valido: true,
+            aprovacao: true,
+            requisicao: {
+              id: requisicao.id,
+              estado: requisicao.estado,
+              criadoEm: requisicao.criadoEm,
+            },
+            env: env.SINQIA_ENV,
+          });
+        } else {
+          // Lote
+          const requisicao = sodServico().criarRequisicaoLote({
+            tipo: "situacao_tomador_lote",
+            payload: { cdSituacao, totalItens: alvos.length },
+            itens: alvos.map((alvo, idx) => ({
+              ordem: idx + 1,
+              tipo: "situacao_tomador_lote",
+              documento: alvo.documento ? alvo.documento.replace(/\D/g, "") : null,
+              payload: { cdSituacao, alvo, ordem: idx + 1, resumo: { nome: alvo.nome, documento: alvo.documento } },
+            })),
+            requisitante: session.username,
+          });
+          return reply.code(201).send({
+            valido: true,
+            aprovacao: true,
+            requisicao: {
+              id: requisicao.id,
+              estado: requisicao.estado,
+              criadoEm: requisicao.criadoEm,
+            },
+            env: env.SINQIA_ENV,
+          });
+        }
+      } catch (e) {
+        return responderErroSod(reply, e);
+      }
+    }
+
+    // Corte SoD (US-05, RN01): barreira centralizada IMEDIATAMENTE antes da
+    // execução direta — era a única rota coberta sem o guard. O tipo guardado é
+    // o da ação em curso, para que o lote sob aprovação não vaze pelo caminho
+    // direto quando só a flag dele estiver ativa.
+    const tipoSituacao = alvos.length === 1 ? "situacao_tomador" : "situacao_tomador_lote";
+    if (guardarExecucaoDireta(tipoSituacao, reply, aprovacaoAtivaFn)) return;
 
     const jobId = startSituacaoJob({
       alvos,

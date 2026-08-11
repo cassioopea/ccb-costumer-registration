@@ -8,3 +8,4 @@ export * from "./exemplos.js";
 export * from "./proposta.schema.js";
 export * from "./emissoes.schema.js";
 export * from "./esteira-categorias.js";
+export * from "./sod.schema.js";

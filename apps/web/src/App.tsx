@@ -9,13 +9,15 @@ import { SituacaoClientes } from "@/pages/SituacaoClientes";
 import { PropostasLote } from "@/pages/PropostasLote";
 import { PropostaIndividual } from "@/pages/PropostaIndividual";
 import { PainelPropostas } from "@/pages/PainelPropostas";
+import { Requisicoes, type TelaRequisicoes } from "@/pages/Requisicoes";
 import { Login } from "@/pages/Login";
 import { PrimeiroAcessoDialog } from "@/components/onboarding/PrimeiroAcessoDialog";
 import { ProductTour } from "@/components/onboarding/ProductTour";
 import { ChecklistOnboarding } from "@/components/onboarding/ChecklistOnboarding";
 import { OnboardingProvider, useOnboarding } from "@/lib/onboarding";
+import { TourProvider, useNavegacaoTour, useTour } from "@/lib/tour";
 import { SessionProvider, useSession } from "@/lib/session";
-import type { PaginaTour } from "@/lib/onboarding-roteiro";
+import type { DestinoTour } from "@/lib/onboarding-roteiro";
 import type { ClienteResumo } from "@cadastro-lote/shared";
 
 /**
@@ -33,7 +35,9 @@ export default function App() {
   return (
     <SessionProvider>
       <OnboardingProvider>
-        <Shell />
+        <TourProvider>
+          <Shell />
+        </TourProvider>
       </OnboardingProvider>
     </SessionProvider>
   );
@@ -46,6 +50,8 @@ function Shell() {
   const [modulo, setModulo] = useState<Modulo>("inicio");
   const [telaClientes, setTelaClientes] = useState<TelaClientes>("situacao");
   const [telaPropostas, setTelaPropostas] = useState<TelaPropostas>("painel-propostas");
+  /** Requisições: pendências (aprovador) ou minhas (requisitante). */
+  const [telaRequisicoes, setTelaRequisicoes] = useState<TelaRequisicoes>("pendencias");
   /** Pedido do Início (gargalo clicado): fila + convênio — o painel consome e limpa. */
   const [filaExterna, setFilaExterna] = useState<{
     nrStatus: number;
@@ -53,21 +59,36 @@ function Shell() {
   } | null>(null);
   /** Tomador da Base enviado para EDIÇÃO no Cadastro Individual. */
   const [clienteEdicao, setClienteEdicao] = useState<ClienteResumo | null>(null);
-  /** Tour: null = fechado; o dialog de 1º acesso e o menu de perfil o abrem. */
-  const [tourAberto, setTourAberto] = useState(false);
   const [conviteRecusado, setConviteRecusado] = useState(false);
+  const tour = useTour();
+  /** Enquanto o tour percorre um capítulo, a UI não mostra o checklist. */
+  const tourAtivo = tour.capituloAtual !== null;
 
-  /** Leva a UI à página de um passo do tour (o tour conduz a navegação). */
-  const irParaPaginaTour = (pagina: PaginaTour) => {
-    if (pagina === "inicio") setModulo("inicio");
-    else if (pagina === "tomadores") {
-      setTelaClientes("situacao");
-      setModulo("clientes");
-    } else {
-      setTelaPropostas(pagina);
-      setModulo("propostas");
+  /**
+   * Leva a UI ao destino de um passo do tour (o tour conduz a navegação).
+   * Cobre as nove telas do produto — inclusive as sub-páginas de cadastro e
+   * as duas abas de Requisições.
+   */
+  const irParaDestino = (destino: DestinoTour) => {
+    switch (destino.modulo) {
+      case "inicio":
+        setModulo("inicio");
+        return;
+      case "clientes":
+        setTelaClientes(destino.tela);
+        setModulo("clientes");
+        return;
+      case "propostas":
+        setTelaPropostas(destino.tela);
+        setModulo("propostas");
+        return;
+      case "requisicoes":
+        setTelaRequisicoes(destino.aba);
+        setModulo("requisicoes");
+        return;
     }
   };
+  useNavegacaoTour(irParaDestino);
 
   // Enquanto rehidrata a sessão do cookie, não pisca a tela de login.
   if (carregando) {
@@ -82,11 +103,7 @@ function Shell() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <Topbar
-        modulo={modulo}
-        onModuloChange={setModulo}
-        onRefazerTour={() => setTourAberto(true)}
-      />
+      <Topbar modulo={modulo} onModuloChange={setModulo} onRefazerTour={() => tour.abrir()} />
 
       <main className="mx-auto w-full max-w-shell flex-1 px-8 py-10">
         {/* Mantém todas montadas: navegar não perde arquivo selecionado,
@@ -124,6 +141,18 @@ function Shell() {
             onVoltar={() => setTelaClientes("situacao")}
             edicao={clienteEdicao}
             onEdicaoConsumida={() => setClienteEdicao(null)}
+            onVerRequisicoes={() => {
+              // Quem acabou de criar uma requisição quer acompanhá-la.
+              setTelaRequisicoes("minhas");
+              setModulo("requisicoes");
+            }}
+          />
+        </div>
+        <div className={modulo === "requisicoes" ? undefined : "hidden"}>
+          <Requisicoes
+            ativa={modulo === "requisicoes"}
+            tela={telaRequisicoes}
+            onTelaChange={setTelaRequisicoes}
           />
         </div>
         <div className={modulo === "clientes" && telaClientes === "cadastro" ? undefined : "hidden"}>
@@ -173,24 +202,18 @@ function Shell() {
 
       {/* Onboarding: convite de 1º acesso + tour guiado sobre as telas reais. */}
       <PrimeiroAcessoDialog
-        aberto={primeiroAcesso && !tourAberto && !conviteRecusado}
-        onFazerTour={() => setTourAberto(true)}
+        aberto={primeiroAcesso && !tourAtivo && !tour.indiceAberto && !conviteRecusado}
+        onFazerTour={() => tour.abrir()}
         onPular={() => {
           setConviteRecusado(true);
           concluirTour(); // registra que viu — não pergunta de novo
         }}
       />
-      <ProductTour
-        aberto={tourAberto}
-        navegar={irParaPaginaTour}
-        onFim={() => {
-          setTourAberto(false);
-          concluirTour();
-        }}
-      />
+      {/* Índice dos capítulos + motor do tour (um driver por capítulo). */}
+      <ProductTour onConcluirTudo={concluirTour} />
 
-      {/* Checklist de primeiros passos — canto inferior, leva às telas. */}
-      {!tourAberto && <ChecklistOnboarding onIr={irParaPaginaTour} />}
+      {/* Checklist de primeiros passos — canto inferior, abre os capítulos. */}
+      {!tourAtivo && <ChecklistOnboarding />}
     </div>
   );
 }

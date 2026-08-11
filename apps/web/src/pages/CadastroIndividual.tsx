@@ -6,9 +6,11 @@ import {
   ChevronRight,
   Eraser,
   FileJson,
+  Hourglass,
   ListChecks,
   Loader2,
   Play,
+  Send,
   ShieldCheck,
   Sparkles,
   UserPlus,
@@ -52,6 +54,7 @@ import { cn } from "@/lib/utils";
 import {
   cadastrarUm,
   getCamposObrigatorios,
+  getEnv,
   type CadastrarUmResponse,
   type CamposObrigatoriosResponse,
 } from "@/lib/api";
@@ -69,11 +72,14 @@ export function CadastroIndividual({
   onVoltar,
   edicao = null,
   onEdicaoConsumida,
+  onVerRequisicoes,
 }: {
   onVoltar?: () => void;
   /** Tomador vindo da Base para EDIÇÃO — pré-preenche e arma idAcao "AL". */
   edicao?: ClienteResumo | null;
   onEdicaoConsumida?: () => void;
+  /** Navega ao módulo "Requisições" após criar uma requisição de aprovação. */
+  onVerRequisicoes?: () => void;
 }) {
   /** Estado do formulário: mapa achatado, igual a uma linha de CSV. */
   const [campos, setCampos] = useState<Record<string, string>>({});
@@ -84,6 +90,20 @@ export function CadastroIndividual({
   const [verPayload, setVerPayload] = useState(false);
 
   const { control, setControl } = useControlesLote();
+
+  /**
+   * Esteira de Aprovação (SoD): com o toggle do tipo ativo, a submissão cria
+   * uma requisição pendente em vez de cadastrar na Sinqia — os CTAs e as
+   * mensagens se adaptam. O backend é a fonte da verdade; isto é só UI.
+   */
+  const [aprovacaoOn, setAprovacaoOn] = useState(false);
+  useEffect(() => {
+    getEnv()
+      .then((e) => setAprovacaoOn(!!e.aprovacao?.cadastroTomadorIndividual))
+      .catch(() => {
+        /* sem resposta, assume fluxo direto — o backend decide de verdade */
+      });
+  }, []);
 
   /** Campos obrigatórios segundo a Sinqia (consultarCamposObrigatorios). */
   const [obrig, setObrig] = useState<CamposObrigatoriosResponse | null>(null);
@@ -174,8 +194,10 @@ export function CadastroIndividual({
 
   function onCadastrarClick() {
     if (!podeEnviar) return;
-    // Cadastro real em produção pede confirmação, como no lote.
-    if (IS_PROD) setConfirmOpen(true);
+    // Cadastro real em produção pede confirmação, como no lote. Com a
+    // aprovação ativa não há efeito na Sinqia (vira requisição pendente,
+    // cancelável) — segue direto.
+    if (IS_PROD && !aprovacaoOn) setConfirmOpen(true);
     else void enviar(false);
   }
 
@@ -253,6 +275,21 @@ export function CadastroIndividual({
         </div>
       )}
 
+      {/* Esteira de Aprovação ativa para este tipo de ação */}
+      {aprovacaoOn && (
+        <div
+          data-tour="sod-banner-acao"
+          className="flex items-start gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3 text-body text-accent-foreground"
+        >
+          <Hourglass className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            <strong>Sob aprovação (SoD):</strong> este cadastro não é enviado direto à Sinqia — a
+            submissão cria uma <strong>requisição pendente</strong>, que um segundo operador
+            precisa aprovar. Acompanhe em "Requisições".
+          </span>
+        </div>
+      )}
+
       {/* Modo edição — vindo da Base de tomadores */}
       {editando && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3">
@@ -308,7 +345,7 @@ export function CadastroIndividual({
       {/* Consulta de obrigatórios + controles lado a lado — compactos. */}
       <div className="reveal reveal-delay-2 grid items-start gap-6 lg:grid-cols-2">
       {/* Campos obrigatórios da Sinqia */}
-      <Card>
+      <Card data-tour="cadastro-obrigatorios">
         <CardHeader>
           <CardTitle className="flex items-center gap-1.5">
             Campos obrigatórios da Sinqia
@@ -405,7 +442,7 @@ export function CadastroIndividual({
       </Card>
 
       {/* Controles do lote (valem para o cadastro individual também) */}
-      <Card>
+      <Card data-tour="cadastro-controles">
         <CardHeader>
           <CardTitle>Controles do cadastro</CardTitle>
           <CardDescription>
@@ -481,10 +518,16 @@ export function CadastroIndividual({
         <Button onClick={onCadastrarClick} disabled={!podeEnviar}>
           {fase === "enviando" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
+          ) : aprovacaoOn ? (
+            <Send className="h-4 w-4" />
           ) : (
             <UserPlus className="h-4 w-4" />
           )}
-          {editando ? "Salvar alterações" : "Cadastrar"}
+          {aprovacaoOn
+            ? "Enviar para aprovação"
+            : editando
+              ? "Salvar alterações"
+              : "Cadastrar"}
         </Button>
         {tipo === "?" && (
           <span className="text-sm text-muted-foreground">
@@ -502,6 +545,11 @@ export function CadastroIndividual({
                 <>
                   <XCircle className="h-5 w-5 text-[var(--destructive)]" />
                   Reprovado na validação
+                </>
+              ) : resultado.aprovacao ? (
+                <>
+                  <Hourglass className="h-5 w-5 text-[var(--warning)]" />
+                  Requisição criada — aguardando aprovação
                 </>
               ) : resultado.dryRun ? (
                 <>
@@ -521,11 +569,13 @@ export function CadastroIndividual({
               )}
             </CardTitle>
             <CardDescription>
-              {resultado.dryRun
-                ? "O payload abaixo é exatamente o que seria enviado."
-                : resultado.valido
-                  ? "O resultado vem da análise do envelope da Sinqia, não só do HTTP."
-                  : "Corrija os campos marcados e valide novamente."}
+              {resultado.valido && resultado.aprovacao
+                ? "Nada foi enviado à Sinqia: o cadastro só acontece quando um segundo operador aprovar a requisição."
+                : resultado.dryRun
+                  ? "O payload abaixo é exatamente o que seria enviado."
+                  : resultado.valido
+                    ? "O resultado vem da análise do envelope da Sinqia, não só do HTTP."
+                    : "Corrija os campos marcados e valide novamente."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
@@ -540,7 +590,21 @@ export function CadastroIndividual({
               </div>
             )}
 
-            {resultado.valido && !resultado.dryRun && (
+            {resultado.aprovacao && resultado.requisicao && (
+              <div className="space-y-3">
+                <div className="grid gap-1">
+                  <Linha rotulo="Requisição" valor={resultado.requisicao.id} />
+                  <Linha rotulo="Estado" valor="pendente" />
+                </div>
+                {onVerRequisicoes && (
+                  <Button variant="outline" onClick={onVerRequisicoes}>
+                    Ver minhas requisições
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {resultado.valido && !resultado.dryRun && !resultado.aprovacao && (
               <div className="grid gap-1">
                 <Linha rotulo="HTTP" valor={resultado.httpStatus} />
                 <Linha rotulo="Status do envelope" valor={resultado.envelopeStatus} />

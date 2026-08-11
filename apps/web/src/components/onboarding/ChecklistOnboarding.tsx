@@ -1,29 +1,34 @@
 import { useState } from "react";
-import { Check, ChevronDown, ListChecks, X } from "lucide-react";
-import { CHECKLIST_ITENS, type PaginaTour } from "@/lib/onboarding-roteiro";
+import { Check, ChevronDown, ListChecks, Play, X } from "lucide-react";
+import { CAPITULOS_ATIVOS } from "@/lib/onboarding-roteiro";
 import { useOnboarding } from "@/lib/onboarding";
+import { useTour } from "@/lib/tour";
 import { cn } from "@/lib/utils";
 
 /**
- * Checklist de primeiros passos — painel recolhível no canto inferior. Cada
- * item leva à tela correspondente e marca-se como feito (persistido por
- * usuário). Ao concluir tudo, minimiza para uma pílula discreta (não some de
- * vez — dá para reabrir). Fecha por sessão sem apagar o progresso.
+ * Checklist de primeiros passos — painel recolhível no canto inferior. Agora
+ * ele espelha os CAPÍTULOS do tour: cada item abre o capítulo correspondente e
+ * se marca quando o capítulo é concluído (mesma fonte do índice, persistida por
+ * usuário). Antes os itens eram atalhos de navegação soltos, que não diziam se
+ * a pessoa tinha entendido a tela — só se tinha passado por ela.
+ *
+ * Ao concluir tudo, minimiza para uma pílula discreta (não some de vez — dá
+ * para reabrir). Fecha por sessão sem apagar o progresso.
  */
-export function ChecklistOnboarding({
-  onIr,
-}: {
-  /** Leva à página do item ao clicar. */
-  onIr: (pagina: PaginaTour) => void;
-}) {
-  const { estado, marcarChecklist } = useOnboarding();
+export function ChecklistOnboarding() {
+  const { estado } = useOnboarding();
+  const { concluidos, iniciarCapitulo } = useTour();
   const [aberto, setAberto] = useState(true);
   const [fechadoNaSessao, setFechadoNaSessao] = useState(false);
 
   if (!estado || fechadoNaSessao) return null;
 
-  const feitos = CHECKLIST_ITENS.filter((i) => estado.checklistItens[i.id]).length;
-  const total = CHECKLIST_ITENS.length;
+  // A abertura é só enquadramento — não é "primeiro passo" a cumprir.
+  const itens = CAPITULOS_ATIVOS.filter((c) => c.id !== "abertura");
+  if (itens.length === 0) return null;
+
+  const feitos = itens.filter((c) => concluidos.has(c.id)).length;
+  const total = itens.length;
   const tudoPronto = feitos === total;
   const pct = Math.round((feitos / total) * 100);
 
@@ -88,22 +93,20 @@ export function ChecklistOnboarding({
         {tudoPronto ? (
           <p className="py-2 text-body text-success">
             <Check className="mr-1 inline h-4 w-4" />
-            Tudo pronto! Você já conhece o essencial da esteira.
+            Tudo pronto! Você já conhece a esteira de ponta a ponta.
           </p>
         ) : (
           <ul className="space-y-1">
-            {CHECKLIST_ITENS.map((item) => {
-              const feito = !!estado.checklistItens[item.id];
+            {itens.map((cap) => {
+              const feito = concluidos.has(cap.id);
               return (
-                <li key={item.id}>
+                <li key={cap.id}>
                   <button
                     type="button"
-                    onClick={() => {
-                      onIr(item.pagina);
-                      marcarChecklist(item.id);
-                    }}
+                    onClick={() => iniciarCapitulo(cap.id, "capitulo", 0)}
+                    title={cap.resumo}
                     className={cn(
-                      "focus-ring flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body transition-colors duration-150 hover:bg-accent",
+                      "focus-ring group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body transition-colors duration-150 hover:bg-accent",
                       feito && "text-muted-foreground",
                     )}
                   >
@@ -115,7 +118,10 @@ export function ChecklistOnboarding({
                     >
                       {feito && <Check className="h-3 w-3" />}
                     </span>
-                    <span className={cn("flex-1", feito && "line-through")}>{item.label}</span>
+                    <span className={cn("flex-1 truncate", feito && "line-through")}>
+                      {cap.titulo}
+                    </span>
+                    <Play className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
                   </button>
                 </li>
               );

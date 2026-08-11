@@ -117,7 +117,7 @@ export function Inicio({
           </p>
         </div>
         {/* Filtro GLOBAL: governa todos os blocos do dashboard */}
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2" data-tour="inicio-filtro-convenio">
           <Hint id="filtro_convenio" />
           {convenios.length > 0 && (
             <Combobox

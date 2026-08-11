@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Calculator,
   Check,
+  Hourglass,
   Loader2,
   Search,
   XCircle,
@@ -42,11 +43,12 @@ import {
   buscarClienteParaProposta,
   calcularUmaProposta,
   criarUmaProposta,
+  getEnv,
   getLookups,
   listarPropostasCliente,
   type CalcularUmaResponse,
   type ClienteBuscaResponse,
-  type CriacaoRowResult,
+  type CriarUmaPropostaResponse,
   type LookupsResponse,
   type PropostaResumo,
 } from "@/lib/api";
@@ -125,11 +127,19 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
   const [fase, setFase] = useState<Fase>("editando");
   const [erro, setErro] = useState<string | null>(null);
   const [calc, setCalc] = useState<CalcularUmaResponse | null>(null);
-  const [resultado, setResultado] = useState<CriacaoRowResult | null>(null);
+  const [resultado, setResultado] = useState<CriarUmaPropostaResponse | null>(null);
   const [criarOpen, setCriarOpen] = useState(false);
   const [criarForcar, setCriarForcar] = useState(false);
   const [criarConfirmText, setCriarConfirmText] = useState("");
   const [verRequest, setVerRequest] = useState(false);
+
+  /** Esteira de Aprovação (SoD, US-04): criação vira requisição pendente. */
+  const [aprovacaoOn, setAprovacaoOn] = useState(false);
+  useEffect(() => {
+    getEnv()
+      .then((e) => setAprovacaoOn(!!e.aprovacao?.criacaoPropostaIndividual))
+      .catch(() => setAprovacaoOn(false));
+  }, []);
 
   /** Editar qualquer entrada invalida o cálculo retido — criar exige recalcular. */
   const invalidarCalculo = () => {
@@ -244,7 +254,10 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
     }
   }
 
-  const confirmacaoProdOk = !IS_PROD || criarConfirmText.trim().toUpperCase() === "CRIAR";
+  // Com a aprovação ativa nada vai à Sinqia (vira requisição cancelável) —
+  // a fricção de digitar CRIAR em produção não se aplica.
+  const confirmacaoProdOk =
+    !IS_PROD || aprovacaoOn || criarConfirmText.trim().toUpperCase() === "CRIAR";
 
   async function criar() {
     if (!calc) return;
@@ -293,11 +306,14 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
     },
     {
       id: "criar",
-      label: "Criar proposta",
+      label: aprovacaoOn ? "Enviar para aprovação" : "Criar proposta",
       estado:
         fase === "criando"
           ? "ativa"
-          : resultado && (resultado.status === "OK" || resultado.status === "JA_EXISTE")
+          : resultado &&
+              (resultado.aprovacao ||
+                resultado.status === "OK" ||
+                resultado.status === "JA_EXISTE")
             ? "concluida"
             : "pendente",
     },
@@ -330,7 +346,11 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
 
   const statusResumo = resultado ? (
     <span>
-      {resultado.status === "OK" ? (
+      {resultado.aprovacao ? (
+        <span className="text-accent-foreground">
+          Requisição criada — aguardando aprovação de um segundo operador.
+        </span>
+      ) : resultado.status === "OK" ? (
         <span className="text-success">
           Proposta nº {resultado.nrProsp ?? "—"} criada na Sinqia.
         </span>
@@ -341,7 +361,11 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
       )}
     </span>
   ) : calc ? (
-    "Cálculo conferido? A criação é irreversível."
+    aprovacaoOn ? (
+      "Cálculo conferido? A submissão cria uma requisição para aprovação."
+    ) : (
+      "Cálculo conferido? A criação é irreversível."
+    )
   ) : (
     "O cálculo só confere — nada é gravado na Sinqia até a criação."
   );
@@ -360,12 +384,12 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
           Recalcular
         </Button>
       )}
-      {fase === "criado" && resultado?.status === "OK" ? (
+      {fase === "criado" && (resultado?.status === "OK" || resultado?.aprovacao) ? (
         <Button onClick={novaProposta}>Nova proposta deste cliente</Button>
       ) : fase === "criando" ? (
         <Button disabled>
           <Loader2 className="h-4 w-4 animate-spin" />
-          Criando proposta…
+          {aprovacaoOn ? "Enviando para aprovação…" : "Criando proposta…"}
         </Button>
       ) : fase === "calculando" ? (
         <Button disabled>
@@ -379,9 +403,13 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
             setCriarConfirmText("");
             setCriarOpen(true);
           }}
-          title="Cria a proposta na Sinqia — ação irreversível, com confirmação"
+          title={
+            aprovacaoOn
+              ? "Cria uma requisição pendente — um segundo operador aprova e executa"
+              : "Cria a proposta na Sinqia — ação irreversível, com confirmação"
+          }
         >
-          Criar proposta
+          {aprovacaoOn ? "Enviar para aprovação" : "Criar proposta"}
         </Button>
       ) : (
         <Button onClick={() => void calcular()} disabled={!podeCalcular}>
@@ -415,6 +443,19 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
         <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-body text-destructive">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{erro}</span>
+        </div>
+      )}
+
+      {/* Esteira de Aprovação ativa para este tipo de ação (US-04) */}
+      {aprovacaoOn && (
+        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3 text-body text-accent-foreground">
+          <Hourglass className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            <strong>Sob aprovação (SoD):</strong> esta proposta não é criada direto na Sinqia — a
+            submissão cria uma <strong>requisição pendente</strong>, que um segundo operador
+            precisa aprovar. Os valores calculados aqui são <strong>referência</strong>; o
+            cálculo oficial acontece na aprovação. Acompanhe em "Requisições".
+          </span>
         </div>
       )}
 
@@ -675,8 +716,38 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
         </Card>
       )}
 
-      {/* Resultado da criação */}
-      {resultado && (
+      {/* Resultado da submissão com aprovação ativa: requisição pendente */}
+      {resultado?.aprovacao && resultado.requisicao && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Hourglass className="h-5 w-5 text-primary" />
+              Requisição enviada para aprovação
+            </CardTitle>
+            <CardDescription>
+              Nada foi criado na Sinqia. Um segundo operador precisa aprovar — a proposta é
+              criada na sessão dele, com o cálculo oficial.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-body">
+            <p>
+              <span className="text-muted-foreground">Requisição:</span>{" "}
+              <strong className="tabular-nums">{resultado.requisicao.id}</strong>
+            </p>
+            <p>
+              <span className="text-muted-foreground">Estado:</span>{" "}
+              <strong>{resultado.requisicao.estado}</strong>
+            </p>
+            <p className="text-caption text-muted-foreground">
+              Acompanhe (ou cancele enquanto pendente) no módulo Requisições, em "Minhas
+              requisições".
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Resultado da criação (fluxo direto) */}
+      {resultado && !resultado.aprovacao && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -744,30 +815,62 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
         cta={ctaResumo}
       />
 
-      {/* Confirmação da criação — fricção deliberada: é irreversível */}
+      {/* Confirmação da criação — fricção deliberada: é irreversível.
+          Com a aprovação ativa, vira o envio de uma requisição (cancelável). */}
       <Dialog open={criarOpen} onOpenChange={setCriarOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className={cn("flex items-center gap-2", IS_PROD && "text-destructive")}>
-              <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
-              Criar proposta na Sinqia
+            <DialogTitle
+              className={cn(
+                "flex items-center gap-2",
+                IS_PROD && !aprovacaoOn && "text-destructive",
+              )}
+            >
+              {aprovacaoOn ? (
+                <Hourglass className="h-5 w-5 text-primary" />
+              ) : (
+                <AlertTriangle className={cn("h-5 w-5", IS_PROD ? "" : "text-warning")} />
+              )}
+              {aprovacaoOn ? "Enviar proposta para aprovação" : "Criar proposta na Sinqia"}
             </DialogTitle>
             <DialogDescription>
-              Você está prestes a criar <strong>1 proposta</strong> para{" "}
-              <strong>{cliente?.nome || formatCpf(cpfDigits)}</strong> em{" "}
-              <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>: financiado de{" "}
-              <strong className="tabular-nums">
-                {formatBRL(calc?.resumo.vlFinanciado ?? null)}
-              </strong>{" "}
-              em <strong className="tabular-nums">{calc?.resumo.qtPrest}x</strong> de{" "}
-              <strong className="tabular-nums">{formatBRL(calc?.resumo.vlPresta ?? null)}</strong>
-              . Esta ação é <strong>irreversível</strong> pela ferramenta.
+              {aprovacaoOn ? (
+                <>
+                  A proposta para <strong>{cliente?.nome || formatCpf(cpfDigits)}</strong> —
+                  financiado de{" "}
+                  <strong className="tabular-nums">
+                    {formatBRL(calc?.resumo.vlFinanciado ?? null)}
+                  </strong>{" "}
+                  em <strong className="tabular-nums">{calc?.resumo.qtPrest}x</strong> de{" "}
+                  <strong className="tabular-nums">
+                    {formatBRL(calc?.resumo.vlPresta ?? null)}
+                  </strong>{" "}
+                  (valores de referência) — vira uma <strong>requisição pendente</strong>.
+                  Nada é criado na Sinqia até um segundo operador aprovar; o cálculo oficial
+                  acontece na aprovação.
+                </>
+              ) : (
+                <>
+                  Você está prestes a criar <strong>1 proposta</strong> para{" "}
+                  <strong>{cliente?.nome || formatCpf(cpfDigits)}</strong> em{" "}
+                  <strong>{IS_PROD ? "PRODUÇÃO" : "HOMOLOGAÇÃO"}</strong>: financiado de{" "}
+                  <strong className="tabular-nums">
+                    {formatBRL(calc?.resumo.vlFinanciado ?? null)}
+                  </strong>{" "}
+                  em <strong className="tabular-nums">{calc?.resumo.qtPrest}x</strong> de{" "}
+                  <strong className="tabular-nums">
+                    {formatBRL(calc?.resumo.vlPresta ?? null)}
+                  </strong>
+                  . Esta ação é <strong>irreversível</strong> pela ferramenta.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <p className="text-caption text-muted-foreground">
               Se já existir proposta <strong>idêntica</strong> (produto, parcelas, valores e 1º
-              vencimento), nada é criado — a proposta existente é apontada.
+              vencimento){aprovacaoOn ? " — ou uma requisição pendente equivalente —" : ""},
+              nada é criado — a existente é apontada.
             </p>
             <label className="flex items-center gap-2 text-body">
               <input
@@ -781,7 +884,7 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
                 <span className="text-muted-foreground"> (só para reemissão consciente)</span>
               </span>
             </label>
-            {IS_PROD && (
+            {IS_PROD && !aprovacaoOn && (
               <div className="space-y-1">
                 <Label htmlFor="confirma-criar-uma" className="text-caption">
                   Digite <strong>CRIAR</strong> para liberar:
@@ -800,11 +903,11 @@ export function PropostaIndividual({ onVoltar }: { onVoltar?: () => void }) {
               Cancelar
             </Button>
             <Button
-              variant={IS_PROD ? "destructive" : "default"}
+              variant={IS_PROD && !aprovacaoOn ? "destructive" : "default"}
               onClick={() => void criar()}
               disabled={!confirmacaoProdOk}
             >
-              Criar 1 proposta
+              {aprovacaoOn ? "Enviar para aprovação" : "Criar 1 proposta"}
             </Button>
           </DialogFooter>
         </DialogContent>
