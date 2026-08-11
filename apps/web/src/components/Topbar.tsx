@@ -160,7 +160,7 @@ export function Topbar({ modulo, onModuloChange, onRefazerTour }: TopbarProps) {
           <OpeaLogo className="h-6 w-auto text-sidebar-foreground" />
           <span aria-hidden className="h-5 w-px bg-sidebar-foreground/25" />
           <span className="text-caption font-medium uppercase tracking-label text-sidebar-foreground/70">
-            Esteira de Originação
+            Backoffice de Originação
           </span>
         </div>
 

@@ -21,7 +21,7 @@ import type { DestinoTour } from "@/lib/onboarding-roteiro";
 import type { ClienteResumo } from "@cadastro-lote/shared";
 
 /**
- * Esteira de Originação — dois módulos, cada um com uma PÁGINA PRINCIPAL
+ * Backoffice de Originação — dois módulos, cada um com uma PÁGINA PRINCIPAL
  * (a listagem) e sub-páginas alcançadas por CTAs nela:
  *  - Clientes: Base de clientes → Cadastro individual / Cadastro em lote;
  *  - Propostas: Painel de propostas → Lote de propostas / Proposta individual.
@@ -192,7 +192,7 @@ function Shell() {
         <div className="mx-auto flex max-w-shell items-center justify-between">
           <span>© Opea Solutions — Ferramenta interna</span>
           <span className="text-muted-foreground/80">
-            Opea SCD · Esteira de Originação · Sinqia
+            Opea SCD · Backoffice de Originação · Sinqia
           </span>
         </div>
       </footer>

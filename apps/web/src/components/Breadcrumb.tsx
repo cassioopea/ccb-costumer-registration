@@ -14,7 +14,7 @@ export function Breadcrumb({
 }) {
   return (
     <div className="mb-3 flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
-      <span>Esteira de Originação</span>
+      <span>Backoffice de Originação</span>
       <span aria-hidden>›</span>
       {onVoltar ? (
         <button

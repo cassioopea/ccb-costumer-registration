@@ -174,8 +174,8 @@ Convenções: **[flag]** = passo condicionado a flag SoD ativa; **[dado]** = dep
 
 ### Capítulo 0 — Abertura (2 passos)
 
-**0.1 · Bem-vindo à Esteira de Originação** — *centralizado*
-A Esteira automatiza a originação de CCB sobre a Sinqia: cadastro do tomador, proposta, movimentação pelo workflow e governança. Vou percorrer isso em cinco capítulos — você pode fazer tudo em sequência ou entrar direto no que interessa. `←/→` navegam, `Esc` sai a qualquer momento.
+**0.1 · Bem-vindo ao Backoffice de Originação** — *centralizado*
+O Backoffice automatiza a originação de CCB sobre a Sinqia: cadastro do tomador, proposta, movimentação pelo workflow e governança. Vou percorrer isso em cinco capítulos — você pode fazer tudo em sequência ou entrar direto no que interessa. `←/→` navegam, `Esc` sai a qualquer momento.
 
 **0.2 · Escolha por onde começar** — *centralizado, índice*
 Dashboard, Tomadores, Propostas, Esteira de Aprovação e Sessão. Cada capítulo dura cerca de dois minutos e pode ser pulado pelo rodapé. Seu progresso fica salvo — se sair no meio, você volta de onde parou.

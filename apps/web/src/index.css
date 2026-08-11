@@ -129,7 +129,7 @@
   /* Largura do shell da aplicação (topbar, main, footer). */
   --container-shell: 90rem;
 
-  /* Tracking do rótulo institucional em caixa alta (ex.: "Esteira de Originação"). */
+  /* Tracking do rótulo institucional em caixa alta (ex.: "Backoffice de Originação"). */
   --tracking-label: 0.2em;
 }
 

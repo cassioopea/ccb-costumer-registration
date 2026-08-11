@@ -755,7 +755,7 @@ export function streamSituacao(jobId: string, handlers: SituacaoStreamHandlers):
 }
 
 /* ------------------------------------------------------------------ */
-/* Propostas (Esteira de Originação)                                    */
+/* Propostas (Backoffice de Originação)                                    */
 /* ------------------------------------------------------------------ */
 
 export interface ParseEmissoesResult {

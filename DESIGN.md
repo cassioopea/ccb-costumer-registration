@@ -1,4 +1,4 @@
-# DESIGN.md — Esteira de Originação (Opea)
+# DESIGN.md — Backoffice de Originação (Opea)
 
 Direção estética do produto. **Toda sessão futura (humana ou do Claude Code) herda
 estas decisões** — mudanças aqui exigem justificativa, não gosto pessoal.

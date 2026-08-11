@@ -1,4 +1,4 @@
-# CONTEXTO-SOD.md — Esteira de Aprovação (SoD) na Esteira de Originação
+# CONTEXTO-SOD.md — Esteira de Aprovação (SoD) no Backoffice de Originação
 
 > **Instrução ao agente (Claude Code):** leia este arquivo integralmente no início de TODA sessão
 > desta entrega, antes do prompt da história. Ele é o contexto mestre — a visão do todo.
@@ -11,7 +11,7 @@
 ## 1. O que estamos construindo e por quê
 
 A Opea SCD é regulada pelo Banco Central: todo produto com impacto financeiro exige **segregação
-de funções (SoD)** e **log auditável de todas as ações**. Hoje a Esteira de Originação executa
+de funções (SoD)** e **log auditável de todas as ações**. Hoje o Backoffice de Originação executa
 toda ação sensível diretamente na Sinqia (API, ambiente BJ21M05), no ato, pelo usuário logado —
 quem cria também executa. Esta entrega transforma toda ação sensível em uma **requisição
 persistida** que exige **aprovação de um segundo operador** antes de executar na Sinqia.
