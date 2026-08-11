@@ -1,4 +1,4 @@
-# Esteira de Originação — API Sinqia (BJ21M05)
+# Backoffice de Originação — API Sinqia (BJ21M05)
 
 Aplicação web **local** (roda na sua máquina, atrás da VPN da Opea) para originar
 CCBs na Sinqia, em dois módulos:
@@ -12,7 +12,7 @@ backend + frontend.
 
 > ⚠️ **Requer a VPN da Opea ativa.** Sem VPN, o login na Sinqia falha.
 
-## Módulo Propostas (Esteira) — estado atual
+## Módulo Propostas — estado atual
 
 Fluxo da API (gravado do Portal de Crédito): `calcProsp` → `primeiro-vencimento`
 → `cadastrarProposta`.

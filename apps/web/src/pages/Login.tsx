@@ -78,7 +78,7 @@ export function Login() {
           </span>
 
           <h1 className="text-display font-bold tracking-tight">
-            Esteira de Originação
+            Backoffice de Originação e Formalização de CCB
           </h1>
           <p className="text-body text-[var(--sidebar-foreground)]/75">
             Importe ou inclua novos tomadores, gerencie a situação dos cadastros e gere novas propostas.

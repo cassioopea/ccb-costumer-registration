@@ -93,14 +93,14 @@ export const CAPITULOS: CapituloTour[] = [
   {
     id: "abertura",
     titulo: "Abertura",
-    resumo: "O que é a Esteira e como navegar por este tour.",
+    resumo: "O que é o Backoffice e como navegar por este tour.",
     passos: [
       {
         id: "boas-vindas",
         destino: DESTINO.inicio,
-        titulo: "Bem-vindo à Esteira de Originação",
+        titulo: "Bem-vindo ao Backoffice de Originação",
         texto:
-          "A Esteira automatiza a originação de CCB sobre a Sinqia — do cadastro do " +
+          "O Backoffice automatiza a originação de CCB sobre a Sinqia — do cadastro do " +
           "tomador ao contrato, com governança no meio. Vou mostrar isso em capítulos: " +
           "faça todos em sequência ou entre direto no que interessa. ←/→ navegam, Esc sai.",
       },

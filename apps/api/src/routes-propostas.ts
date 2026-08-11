@@ -85,7 +85,7 @@ import { responderErroSod, sodServicoPadrao } from "./sod/rotas.js";
 import type { SodServico } from "./sod/dominio.js";
 
 /**
- * Rotas do módulo PROPOSTAS (Esteira de Originação).
+ * Rotas do módulo PROPOSTAS (Backoffice de Originação).
  *
  * Fase 1: só o parse/pré-visualização do Emissoes.xlsx — nenhuma chamada à
  * Sinqia além da sessão. Cálculo (Fase 2) e criação (Fase 3) entram depois.

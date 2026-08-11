@@ -2,7 +2,7 @@ import { z } from "zod";
 import { dateInt } from "./cliente.schema.js";
 
 /**
- * Schemas do fluxo de PROPOSTA (Esteira de Originação — módulo Propostas).
+ * Schemas do fluxo de PROPOSTA (Backoffice de Originação — módulo Propostas).
  *
  * Fonte: payloads reais gravados do Portal de Crédito (DevTools) em
  * `exemplos/payloads_proposta_referencia.json`. O fluxo que importa são

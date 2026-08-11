@@ -33,7 +33,7 @@ const envSchema = z.object({
     .string()
     .default("/BJ21M05/BJ21M05/BJ21SS0501F/consultarCamposObrigatorios"),
   /**
-   * Módulo Propostas (Esteira de Originação). Paths extraídos da collection
+   * Módulo Propostas (Backoffice de Originação). Paths extraídos da collection
    * gravada do Portal de Crédito — usados a partir da Fase 2 (cálculo).
    */
   SINQIA_CALCPROSP_PATH: z

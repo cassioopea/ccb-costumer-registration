@@ -31,8 +31,8 @@ export function PrimeiroAcessoDialog({
             É o seu primeiro acesso?
           </DialogTitle>
           <DialogDescription>
-            Posso te dar um tour guiado de ~2 minutos pelas telas, explicando como a
-            Esteira agiliza a emissão de uma CCB de ponta a ponta. Dá para pular e refazer
+            Posso te dar um tour guiado de ~2 minutos pelas telas, explicando como o
+            Backoffice agiliza a emissão de uma CCB de ponta a ponta. Dá para pular e refazer
             depois pelo menu do seu perfil.
           </DialogDescription>
         </DialogHeader>
