@@ -385,7 +385,7 @@ export function RequisicaoDetalhe({
       </section>
 
       {/* Histórico de transições (trilha de auditoria) */}
-      <section>
+      <section data-tour="pendencias-historico">
         {(() => {
           let numTentativa = 1;
           const historicoAnotado = historico.map((ev) => {

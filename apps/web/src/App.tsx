@@ -212,8 +212,8 @@ function Shell() {
       {/* Índice dos capítulos + motor do tour (um driver por capítulo). */}
       <ProductTour onConcluirTudo={concluirTour} />
 
-      {/* Checklist de primeiros passos — canto inferior, leva às telas. */}
-      {!tourAtivo && <ChecklistOnboarding onIr={irParaDestino} />}
+      {/* Checklist de primeiros passos — canto inferior, abre os capítulos. */}
+      {!tourAtivo && <ChecklistOnboarding />}
     </div>
   );
 }

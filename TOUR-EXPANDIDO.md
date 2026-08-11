@@ -400,9 +400,16 @@ Deixadas **de fora** de propósito (posso incluir se quiser):
    visto encheria o índice de check verde e esconderia justamente o que há de novo.
 2. **Branch:** `feature/sod-onda-2` foi mergeada em `development` (merge commit `fbcd946`,
    **local, sem push**) e `feature/tour-expandido` nasceu de `development`.
-3. **Flags SoD:** **todas as ações ficam sob aprovação** no ambiente da demonstração. Os
-   passos marcados `[flag]` no capítulo 4 renderizam normalmente; o fallback `aoFaltar`
-   continua implementado como rede de segurança.
+3. **Flags SoD:** **todas as ações ficam sob aprovação** — na demonstração e, por decisão do
+   PM em 2026-08-11, **também em `master`: a SoD entra LIGADA**. Os passos marcados `[flag]`
+   no capítulo 4 renderizam normalmente; o fallback `aoFaltar` continua implementado como
+   rede de segurança.
+   ⚠️ **Ligar as flags é passo de GO-LIVE, não de merge.** Elas vivem na tabela `sod_flags`
+   por ambiente (HML ≠ prod), ausência de linha = inativa (US-05, RN07), e só mudam pelo CLI
+   auditado `npm run sod:flag -- <tipo|chave> on --por <login>` executado NO ambiente de
+   destino. Nenhum merge liga flag. Tipos a ligar: `tomador.cadastrar`,
+   `tomador.cadastrar_lote`, `proposta.criar`, `proposta.criar_lote`, `proposta.movimentar`,
+   `proposta.movimentar_massa`, `situacao_tomador`, `situacao_tomador_lote`.
 4. **Lote composto (US-07): FORA do tour.** Decisão de produto do PM: a feature composta
    tomador→proposta **não se sustenta** — o tomador sempre precisa existir antes da proposta.
    **Pendência registrada fora do escopo deste trabalho:** voltar ao lote composto para

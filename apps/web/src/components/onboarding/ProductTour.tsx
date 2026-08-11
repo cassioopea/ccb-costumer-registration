@@ -22,13 +22,20 @@ import { IndiceTour } from "./IndiceTour";
  * Textos, ordem e capítulos vivem em `lib/onboarding-roteiro.ts`.
  */
 
-/** Espera o `data-tour` existir E estar visível (as telas montam com `hidden`). */
+/**
+ * Espera o `data-tour` existir E estar visível (as telas montam com `hidden`).
+ *
+ * Procura entre TODOS os candidatos, não só o primeiro: as telas do app ficam
+ * todas montadas, então uma âncora repetida em duas telas devolveria a cópia
+ * escondida e o passo cairia no fallback com o alvo certo bem à vista.
+ */
 function esperarElemento(seletor: string, timeout = 3000): Promise<HTMLElement | null> {
   return new Promise((resolve) => {
     const inicio = Date.now();
     const tenta = () => {
-      const el = document.querySelector<HTMLElement>(`[data-tour="${seletor}"]`);
-      if (el && el.offsetParent !== null) {
+      const candidatos = document.querySelectorAll<HTMLElement>(`[data-tour="${seletor}"]`);
+      const el = [...candidatos].find((c) => c.offsetParent !== null);
+      if (el) {
         resolve(el);
         return;
       }

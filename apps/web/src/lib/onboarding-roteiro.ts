@@ -41,14 +41,11 @@ export const DESTINO = {
  * ------------------------------------------------------------------ */
 
 export type AcaoTourNome =
-  | "tomadores.abrirPropostasDoPrimeiro"
-  | "tomadores.fecharPropostas"
-  | "tomadores.abrirAlterarSituacao"
-  | "tomadores.fecharAlterarSituacao"
   | "painel.selecionarPrimeiraFila"
-  | "painel.abrirMoverLote"
-  | "painel.fecharMoverLote"
-  | "pendencias.abrirPrimeiraRequisicao"
+  /** Abre uma requisição de OUTRO operador — a que dá para decidir. */
+  | "pendencias.abrirRequisicaoDeOutro"
+  /** Abre uma requisição CRIADA POR VOCÊ — a que mostra o bloqueio de SoD. */
+  | "pendencias.abrirRequisicaoPropria"
   | "pendencias.fecharDetalhe";
 
 export interface PassoTour {
@@ -389,13 +386,162 @@ export const CAPITULOS: CapituloTour[] = [
     id: "aprovacao",
     titulo: "Esteira de Aprovação",
     resumo: "Segregação de funções: nada sensível executa sem um segundo operador.",
-    passos: [], // Fase 3
+    passos: [
+      {
+        id: "sod-abertura",
+        destino: DESTINO.cadastroIndividual,
+        titulo: "Nada sensível executa direto",
+        texto:
+          "Somos regulados pelo Banco Central: ação com impacto financeiro exige segregação " +
+          "de funções. Cadastrar um tomador, criar proposta, mover na esteira ou alterar " +
+          "situação não vai mais direto à Sinqia — vira uma requisição que um segundo " +
+          "operador precisa aprovar.",
+      },
+      {
+        id: "sod-banner-acao",
+        destino: DESTINO.cadastroIndividual,
+        seletor: "sod-banner-acao",
+        titulo: "O aviso na própria tela da ação",
+        texto:
+          "A tela avisa ANTES de você enviar: a submissão cria uma requisição pendente, não " +
+          "um cadastro. Ninguém descobre a governança pela mensagem de erro — e o payload já " +
+          "passou pelas mesmas validações do fluxo direto, então o aprovador confere mérito.",
+        aoFaltar: "centralizar",
+        textoSemAlvo:
+          "Quando a ação está sob aprovação, a tela avisa ANTES de você enviar: a submissão " +
+          "cria uma requisição pendente, não um cadastro. Este aviso aparece em cada tela de " +
+          "ação sensível — cadastro, proposta, movimentação e situação.",
+      },
+      {
+        id: "pendencias-fila",
+        destino: DESTINO.pendencias,
+        seletor: "pendencias-fila",
+        titulo: "A fila de quem aprova",
+        texto:
+          "Requisições esperando decisão, da mais antiga para a mais nova, com quem pediu e " +
+          "quando. Os filtros de tipo e criador organizam o dia; os dois chips mostram " +
+          "pendências e falhas ao mesmo tempo — o mesmo número que aparece no badge da " +
+          "navegação.",
+      },
+      {
+        id: "pendencias-detalhe",
+        destino: DESTINO.pendencias,
+        seletor: "pendencias-detalhe",
+        titulo: "Revisar antes de decidir",
+        texto:
+          "O painel mostra o que exatamente será executado — dados do tomador, da proposta " +
+          "ou da movimentação. Como o formato já foi validado na criação, o aprovador olha " +
+          "para o mérito da operação, não para o preenchimento.",
+        acao: "pendencias.abrirRequisicaoDeOutro",
+        aoFaltar: "centralizar",
+        textoSemAlvo:
+          "Ao abrir uma requisição, o painel lateral mostra o que exatamente será executado " +
+          "— dados do tomador, da proposta ou da movimentação. O formato já foi validado na " +
+          "criação: o aprovador olha para o mérito da operação. (Nenhuma requisição de outro " +
+          "operador na fila agora.)",
+      },
+      {
+        id: "pendencias-decisao",
+        destino: DESTINO.pendencias,
+        seletor: "pendencias-decisao",
+        titulo: "Aprovar executa no ato",
+        texto:
+          "Aprovar executa na Sinqia na hora, na sessão de quem aprova. Reprovar exige um " +
+          "motivo, que fica visível ao requisitante. Em lotes dá para marcar exceções — " +
+          "linhas que recebem a direção contrária à decisão, cada uma com o seu motivo.",
+        acao: "pendencias.abrirRequisicaoDeOutro",
+        aoFaltar: "centralizar",
+        textoSemAlvo:
+          "Na requisição pendente, aprovar executa na Sinqia na hora, na sessão de quem " +
+          "aprova; reprovar exige um motivo, visível ao requisitante. Em lotes dá para " +
+          "marcar exceções, cada uma com o seu motivo.",
+      },
+      {
+        id: "pendencias-historico",
+        destino: DESTINO.pendencias,
+        seletor: "pendencias-historico",
+        titulo: "A trilha responde “quem pediu”",
+        texto:
+          "A Sinqia registra o APROVADOR como executor — quem pediu existe aqui. " +
+          "Requisitante, aprovador, horário, tentativas e a resposta integral da Sinqia, em " +
+          "trilha append-only. Ela é parte do controle exigido, não um log acessório.",
+        acao: "pendencias.abrirRequisicaoDeOutro",
+        aoFaltar: "centralizar",
+        textoSemAlvo:
+          "Cada requisição carrega a trilha: requisitante, aprovador, horário, tentativas e " +
+          "a resposta integral da Sinqia. Como a Sinqia registra o aprovador como executor, " +
+          "é aqui que existe o registro de quem pediu — trilha append-only, parte do " +
+          "controle exigido.",
+      },
+      {
+        id: "pendencias-maker-checker",
+        destino: DESTINO.pendencias,
+        seletor: "pendencias-maker-checker",
+        titulo: "Quem cria não aprova",
+        texto:
+          "Nesta requisição os botões estão desabilitados, com a razão à vista: ela é sua. " +
+          "E não é convenção de tela — o bloqueio está na camada de domínio, então a " +
+          "tentativa é recusada e auditada mesmo que alguém chame a API por fora.",
+        acao: "pendencias.abrirRequisicaoPropria",
+        aoFaltar: "centralizar",
+        textoSemAlvo:
+          "Quando a requisição é sua, os botões de decisão aparecem desabilitados com a " +
+          "razão à vista. Não é convenção de tela: o bloqueio está na camada de domínio — a " +
+          "tentativa é recusada e auditada mesmo que alguém chame a API por fora. (Nenhuma " +
+          "requisição sua na fila agora.)",
+      },
+      {
+        id: "pendencias-falhas",
+        destino: DESTINO.pendencias,
+        seletor: "pendencias-chip-falhas",
+        titulo: "Falha não se resolve sozinha",
+        texto:
+          "Requisição que falhou na Sinqia fica em repouso, sem retentativa automática. Um " +
+          "aprovador — nunca o requisitante — analisa, reprocessa com o payload original ou " +
+          "descarta com motivo. Do outro lado, em “Minhas requisições”, você acompanha o que " +
+          "pediu e cancela o que ainda está pendente.",
+        limpar: "pendencias.fecharDetalhe",
+        lado: "bottom",
+      },
+    ],
   },
   {
     id: "sessao",
     titulo: "Sessão e ambiente",
     resumo: "Onde você está, quanto tempo tem e como reabrir este tour.",
-    passos: [], // Fase 3
+    passos: [
+      {
+        id: "topbar-ambiente",
+        destino: DESTINO.inicio,
+        seletor: "topbar-ambiente",
+        titulo: "Você sabe sempre onde está",
+        texto:
+          "O chip mostra o ambiente. Em PRODUÇÃO ele fica vermelho — cadastros e propostas " +
+          "são reais e têm efeito financeiro. Em homologação, dá para testar à vontade.",
+        lado: "bottom",
+      },
+      {
+        id: "topbar-sessao",
+        destino: DESTINO.inicio,
+        seletor: "topbar-sessao",
+        titulo: "A sessão tem prazo",
+        texto:
+          "O relógio mostra quanto falta: o menor prazo entre inatividade, teto absoluto e " +
+          "validade do token da Sinqia. Não há renovação automática — antes de um lote " +
+          "longo, vale sair e entrar de novo para não interromper no meio.",
+        lado: "bottom",
+      },
+      {
+        id: "topbar-tour",
+        destino: DESTINO.inicio,
+        seletor: "topbar-tour",
+        titulo: "Para rever qualquer capítulo",
+        texto:
+          "Este botão reabre o tour no índice, e o checklist “Primeiros passos”, no canto " +
+          "inferior, acompanha o que você já percorreu. Bom trabalho.",
+        lado: "bottom",
+      },
+    ],
   },
 ];
 
@@ -409,25 +555,14 @@ export function capituloPorId(id: string): CapituloTour | undefined {
 /** Total de passos do tour completo — usado no índice ("N passos"). */
 export const TOTAL_PASSOS = CAPITULOS_ATIVOS.reduce((acc, c) => acc + c.passos.length, 0);
 
-/** Itens do checklist de primeiros passos (ordem = ordem exibida). */
-export interface ItemChecklist {
-  id: string;
-  label: string;
-  /** Para onde o item leva ao clicar. */
-  destino: DestinoTour;
-}
-
-export const CHECKLIST_ITENS: ItemChecklist[] = [
-  { id: "ver_saude", label: "Ver a saúde da esteira", destino: DESTINO.inicio },
-  { id: "consultar_tomador", label: "Consultar um tomador", destino: DESTINO.tomadores },
-  { id: "abrir_painel", label: "Abrir o painel de propostas", destino: DESTINO.painel },
-  {
-    id: "proposta_individual",
-    label: "Criar uma proposta individual",
-    destino: DESTINO.propostaIndividual,
-  },
-  { id: "rodar_lote", label: "Rodar um lote de teste (HML)", destino: DESTINO.lotePropostas },
-];
+/*
+ * O checklist "Primeiros passos" não tem mais lista própria: ele espelha os
+ * CAPÍTULOS (ver ChecklistOnboarding). Os itens antigos (`ver_saude`,
+ * `consultar_tomador`, `abrir_painel`, `proposta_individual`, `rodar_lote`)
+ * eram atalhos de navegação — diziam que a pessoa passou pela tela, não que
+ * entendeu. As marcações antigas continuam gravadas no onboarding do usuário,
+ * apenas não são mais exibidas; nada é apagado.
+ */
 
 /** Hints contextuais — texto ancorado a um `data-hint`, dispensável por usuário. */
 export interface HintDef {

@@ -277,7 +277,10 @@ export function CadastroIndividual({
 
       {/* Esteira de Aprovação ativa para este tipo de ação */}
       {aprovacaoOn && (
-        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3 text-body text-accent-foreground">
+        <div
+          data-tour="sod-banner-acao"
+          className="flex items-start gap-2 rounded-lg border border-primary/30 bg-accent px-4 py-3 text-body text-accent-foreground"
+        >
           <Hourglass className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             <strong>Sob aprovação (SoD):</strong> este cadastro não é enviado direto à Sinqia — a
